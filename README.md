@@ -5,6 +5,10 @@
 <h1 align="center">omni2api</h1>
 
 <p align="center">
+  <sub>开源二创项目 · 基线仓库 <a href="https://github.com/Practice019/multi2api">Practice019/multi2api</a>（MIT）</sub>
+</p>
+
+<p align="center">
   <b>把 12 个 AI 上游聚合成 OpenAI 兼容 API 的多账号网关</b><br>
   统一鉴权 · 账号池轮转 · 熔断与冷却 · 会话粘性 · 定时签到与续期 · 管理控制台
 </p>
@@ -343,10 +347,61 @@ go test ./... -count=1
 
 安全问题的报告方式见 [SECURITY.md](SECURITY.md)。
 
+## 🧬 来源与二次开发
+
+本项目是**开源项目基础上的二次开发（二创）**。来源链条：
+
+```
+Sliverkiss/workbuddy2api  ──►  Practice019/multi2api  ──►  NaiZi899/omni2api
+    WorkBuddy 专用反代            多上游聚合网关（10 个上游）        本仓库：12 个上游 + 优化
+```
+
+| 层级 | 仓库 | 说明 |
+| --- | --- | --- |
+| 原始项目 | [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) | WorkBuddy 专用反代，MIT |
+| **二创基线** | [Practice019/multi2api](https://github.com/Practice019/multi2api) | 扩展为多上游聚合网关，**本项目的全部改动都在它之上进行** |
+| 本仓库 | [NaiZi899/omni2api](https://github.com/NaiZi899/omni2api) | 在 multi2api 基础上继续二创，沿用 MIT |
+
+三层的 MIT 版权声明都保留在 [LICENSE](LICENSE) 里。
+
+### 相对基线做的主要改动
+
+**页面渲染优化**
+
+- 控制台操作后就地刷新快照：此前点一次操作要等约 7 秒全量回源，现改为读缓存（约 1ms）
+- 按钮点击立即进入「进行中」状态：此前约 6.9 秒页面完全静止，看起来像没响应
+- 模型目录改为非阻塞加载 + 缓存，修掉「状态判定与取数互相依赖」导致的冷启动自锁
+- 账号探测并发化（上限 5）：3 个账号强制刷新由 7.2s 降到 2.5s
+- 前端渲染层重构，并新增静态探测（`tests/frontend/`）拦截渲染期脚本错误；
+  修掉裸插值把脏数据渲染成 `[object Object]` 的问题
+- 控制台模型目录的加载不再阻塞首屏（见 `internal/server/models_catalog*.go`）
+
+**跳转优化**
+
+- TRAE 页内添加账号：浏览器 OAuth 授权后由本机回调端口自动接收登录回跳
+  （端口可配 `trae.oauth_callback_port`）
+- Raccoon「添加账号」不再落到微信落地页：改走本机回调，并把防串号标识放进
+  `redirect` 的 query（`nonce`）而不是 `state`
+- LobsterAI 浏览器 OAuth 回跳链路收口
+- 各上游的深链 / 回调形态差异统一由适配层吸收，核心不感知
+
+**新增模块**
+
+- **InkStone**（书生·端砚 TokenPlan）上游适配
+- **Jiyuan**（基元律动 TokenRhythm）上游适配
+- 配套：账号导入按类型分发、错误解释扩展（把上游业务码翻译成可读原因）、
+  额度单位与上限按上游自报
+
+上游从 10 个扩到 12 个，核心包依然零改动 —— 这条由
+`internal/gateway/arch_test.go` 的可执行断言守着。
+
+> 上游自身的版本变化请见对应原仓库；本仓库的逐条变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 📄 许可证
 
-[MIT](LICENSE)。本项目 fork 自 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)
-（同为 MIT），沿用该许可证；上游版权与本仓库增量的版权声明都在 `LICENSE` 文件里。
+[MIT](LICENSE)。本项目二创自 [Practice019/multi2api](https://github.com/Practice019/multi2api)
+（同为 MIT，其本身 fork 自 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)），
+沿用该许可证；三层版权与本仓库增量的声明都在 `LICENSE` 文件里。
 
 ## 免责声明
 
