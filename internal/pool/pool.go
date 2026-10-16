@@ -1,0 +1,2331 @@
+// Package pool 账号池：单一状态机（健康/冷却/熔断）+ 在途租约 + 三因子加权挑选 + state.json 持久化。
+//
+// 每个账号只有三个正交状态维度：
+//  1. 健康维度（唯一权威）：healthy = !disabled && !until 生效 && !breakerUntil 生效
+//     - until：按错误类型的即时冷却（CoolSoft 429 / CoolHard 余额耗尽）
+//     - breakerUntil：连续失败（fails）累计触发熔断的指数退避截止
+//  2. 并发维度：inFlight（在途租约，运行态）
+//  3. 统计维度：successCount / errTotal（累计，供成功率权重）/ lastUsed / lastSuccess / lastErr
+//
+// 挑选策略：healthy 账号中按三因子权重（credits 占比 ×10 + 闲置补偿 + 成功率 ×3）取 Top5，
+// 再在 Top5 内按同一三因子权重加权随机（credits 只是权重的一个因子，不单独决定短名单）。
+package pool
+
+import (
+	"encoding/json"
+	"log"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/NaiZi899/omni2api/internal/auth"
+)
+
+// CoolKind 冷却类型。
+type CoolKind int
+
+// 冷却种类。**故意只表达"冷却多久"这个通用维度**，
+// 不掺入任何上游的业务原因（谁因为什么被冷却由调用方自己记）。
+const (
+	// CoolHard 长冷却：直到调用方指定的重置时刻（额度耗尽/配额用尽等）。
+	// 时长由调用方通过 CooldownUntilNextReset 给出 —— pool 不知道"消耗完"的语义。
+	CoolHard CoolKind = iota
+	// CoolSoft 短冷却：限流类（如 429），通常几分钟。
+	CoolSoft
+)
+
+func (k CoolKind) String() string {
+	switch k {
+	case CoolHard:
+		return "hard_credit"
+	case CoolSoft:
+		return "soft_rate"
+	}
+	return "unknown"
+}
+
+// DefaultProvider 未打标签的账号归属的默认上游标识。
+//
+// # 为什么是空串而不是某个具体名字
+//
+// pool 是**上游无关**的核心包（判据 3 由 arch_test.go 强制）：它不得出现
+// "workbuddy"/"codearts" 这类具体上游词汇。所以这里只表达"默认"这个**通用**
+// 概念 —— 空串即默认。具体哪个上游是默认，由装配层（cmd/server）通过
+// SetDefaultProvider 注入。
+//
+// 默认上游的取值同时决定了选号时的**向后兼容**行为：未打标签的账号
+// （即改造前就读进来的那批凭证）全部落在默认上游下，行为与改造前逐字节一致。
+const DefaultProvider = ""
+
+// Status 单个账号对外暴露的状态（脱敏）。
+type Status struct {
+	UID      string `json:"uid"`
+	Nickname string `json:"nickname,omitempty"`
+
+	// Provider 该账号属于哪个上游（与 gateway.Provider.ID() 对应）。
+	//
+	// 刻意是**通用 string**而不是枚举：加第 N 个上游时本文件一行都不用改
+	// （判据 1）。空串表示"未打标签"，按 DefaultProvider 解释 ——
+	// 旧 state.json 与旧调用方因此不需要任何迁移。
+	//
+	// 为什么每个账号都要带它：账号池是多上游共用的，
+	// /admin/accounts 要能按上游分组展示，选号要能按上游过滤。
+	// 没有这个标签，两个上游的账号在同一张表里无法区分。
+	Provider string `json:"provider,omitempty"`
+
+	// Quota 额度视图。支持单值（workbuddy 积分）与按模型（codearts）两种形态。
+	//
+	// 取代了原来作为**真相来源**的 Credits int64 —— 单个整数装不下按模型配额。
+	// pool 只存不算，语义由上游解释（见 quota.go）。
+	Quota QuotaView `json:"quota"`
+
+	// Credits 是 Quota 的**派生标量**，保留是为了向后兼容：
+	// 前端、统计、以及 55 处既有测试都在用它。
+	//
+	// ⚠ 它不再是真相来源。新代码请用 Quota。
+	Credits         int64     `json:"credits"`
+	Cooling         bool      `json:"cooling"`
+	CoolKind        string    `json:"cool_kind,omitempty"`
+	CoolRemaining   int64     `json:"cool_remaining_sec,omitempty"`
+	Until           time.Time `json:"until,omitempty"`
+	Reason          string    `json:"reason,omitempty"`
+	Disabled        bool      `json:"disabled"`
+	SuccessCount    int64     `json:"success_count,omitempty"`
+	ErrTotal        int64     `json:"err_total,omitempty"`
+	LastSuccessTime time.Time `json:"last_success,omitempty"`
+	LastErrTime     time.Time `json:"last_err,omitempty"`
+
+	// LastError 上游对**最近一次错误**的解读（gateway.ErrorExplainExt 的产物）。
+	//
+	// # 为什么它与 Reason 并存而不是取代它
+	//
+	//	Reason     核心写的**分类**描述（"额度不足"）—— 恒定可用、粒度粗
+	//	LastError  上游写的**具体错误**解读（状态码 + 为什么会这样 + 怎么办）
+	//
+	// 前者是核心对 ErrorKind 的中文名（不需要上游配合就有），后者只有
+	// 实现了 ErrorExplainExt 的上游才有。两者都在状态列与提示里露出：
+	// 有解读就显示解读，没有就回落 Reason —— 用户任何时候都至少看到前者。
+	LastError *ErrorExplainView `json:"last_error,omitempty"`
+
+	// 运行态（不持久化）：在途请求数 + 熔断器状态。
+	InFlight     int       `json:"in_flight"`
+	BreakerFails int       `json:"breaker_fails"`
+	BreakerUntil time.Time `json:"breaker_until,omitempty"`
+}
+
+// ErrorExplainView 上游对一次错误的解读（脱敏后可下发给前端）。
+//
+// # 为什么在 pool 里重新声明一遍，而不是直接用 gateway.ErrorExplain
+//
+// pool **不得 import 任何上游包**，但它**可以** import gateway（判据允许：
+// gateway 是核心与上游共用的中立层，见其包注释）。所以这里本可以直接用
+// gateway.ErrorExplain。
+//
+// 之所以仍然另立一个 View，是因为两者的**契约不同**：
+//
+//	gateway.ErrorExplain  上游的**输出**结构（含 Kind ErrorKind 枚举）
+//	ErrorExplainView      下发给前端的**展示**结构（Kind 是字符串，便于日志比对）
+//
+// 混用会让"上游加一个字段"直接变成"下发多一个字段"—— 而"下发什么"是
+// 脱敏与契约问题，不该被上游的单方面改动带着走（本项目对 Secret 就是这条纪律）。
+type ErrorExplainView struct {
+	// Code 上游错误码（原样）。空串表示上游没给码。
+	Code string `json:"code,omitempty"`
+	// HTTPStatus 触发这次解读的 HTTP 状态码（0 = 与状态码无关）。
+	HTTPStatus int `json:"http_status,omitempty"`
+	// Kind 分类的可读名（"hard_credit" / "session_dead" …）。
+	Kind string `json:"kind,omitempty"`
+	// Summary 一句话结论（显示在状态单元格里）。
+	Summary string `json:"summary,omitempty"`
+	// Detail 详细解读（显示在悬浮提示里）。
+	Detail string `json:"detail,omitempty"`
+	// At 这次解读的记录时刻（前端据此判断"这是多久前的错"）。
+	At time.Time `json:"at,omitempty"`
+}
+
+type entry struct {
+	a *auth.Auth
+
+	// provider 该账号归属的上游标识（通用 string，见 Status.Provider）。
+	// 空串 = 未打标签 = 默认上游。
+	provider string
+
+	// secret 该账号的**上游私有凭证**（codearts 的 AK/SK/DPoP 等）。
+	//
+	// # 为什么用 any 而不是给每个上游加字段
+	//
+	// pool 不得 import 任何上游包（判据 3），所以它无法声明上游的凭证类型。
+	// 用 any 承载、由上游自己断言取回（gateway.Credential.Secret 是同一手法），
+	// 是"核心不认识上游凭证结构"的唯一可行解。
+	//
+	// 默认上游（workbuddy）的凭证就是 a 本身，secret 保持 nil ——
+	// 它的消费方读 *auth.Auth，读不到 secret 也不受影响。
+	secret any
+
+	// quota 是额度的**真相来源**（支持单值与按模型两种形态）。
+	// credits 保留为派生标量，供既有消费者与选号权重使用。
+	quota        QuotaView
+	credits      int64
+	successCount int64     // 累计成功
+	errTotal     int64     // 累计错误（供成功率权重 successRate = successCount/(successCount+errTotal)，不清零）
+	lastErr      time.Time // 最近一次错误时间
+	lastSuccess  time.Time // 最近一次成功时间
+	coolKind     CoolKind
+	until        time.Time // 冷却截止（即时冷却：CoolSoft 429 / CoolHard 余额耗尽）
+	disabled     bool
+	reason       string
+	// lastExplain 上游对最近一次错误的解读（gateway.ErrorExplainExt 的产物）。
+	// 由 NoteErrorExplain 写入，随 Status 下发；成功一次也不清 —— 见该方法的注释。
+	lastExplain *ErrorExplainView
+	lastUsed    time.Time // 最近被选中时刻（防并发撞号）
+	// lastPickSeq 最近被选中时的单调序号，只用于 lastUsed 相等时的破平。
+	//
+	// 为什么需要它：Windows 的 time.Now() 粒度可粗到 ~15ms，若 top5 全部落在同一个
+	// tick 内，五条 lastUsed 完全相同，LRU 兜底里 `c.lastUsed.Before(e.lastUsed)` 永不成立
+	// → 每次都返回 cands[0]，选号退化成「只打字母序第一个账号」。序号来自进程内单调
+	// 计数器，不受时钟粒度影响，能把这种退化掰回真正的轮转。
+	lastPickSeq int64
+
+	// breakerUntil / fails / retryCount 为熔断器运行态（不持久化）。
+	// fails 是唯一的"连续失败"计数器：任何错误喂入，达到 breakerThreshold 触发熔断（指数退避），
+	// 跨入口累计，成功/熔断/统一复活时清零（保留 retryCount 驱动退避指数）。
+	breakerUntil time.Time // 熔断截止（指数退避）
+	fails        int       // 连续失败计数（熔断用，唯一权威）
+	retryCount   int       // 已熔断次数（指数退避的指数）
+
+	// refreshFails 凭证续期连续失败计数（A2 移植，见 health.go 的 NoteRefreshFailure）。
+	// 成功清零；连续失败达上限 → 禁用（refresh token 已死）。
+	refreshFails int
+
+	// softStreak / softRateModel 为软限流（429）的指数退避状态（**持久化**，见 stateAccount）。
+	//
+	// 与熔断器是**两条并行的升级线**，计数器独立、互不污染：
+	//
+	//	softStreak 管"最近被限流"：从 soft_rate 起按分钟~小时级放大
+	//	fails      管"病态反复失败"：按 30m→1h→2h→6h 长期封禁
+	//
+	// 两者共用冷却入口，但语义不同 —— 合并成一个计数器会让
+	// "偶尔被限流"与"上游持续故障"无法区分。
+	softStreak    int
+	softRateModel string
+
+	// sessionDeadStreak 连续 session 失效（12153）计数（**持久化**，见 stateAccount）。
+	//
+	// 达到 sessionDeadThreshold 才真正 Disable：让网络抖动/刷新竞态自愈，
+	// 而真正失效的 session（每次都会 12153）仍会被停掉。
+	sessionDeadStreak int
+
+	// inFlight 单账号在途请求数（运行态，不持久化）。用 atomic 避免 Pick 热路径拿写锁。
+	inFlight atomic.Int64
+}
+
+// healthy 报告账号当前是否可选（未禁用、未处于任一冷却/熔断期）。
+func (e *entry) healthy(now time.Time) bool {
+	return e.healthyForModel(now, "")
+}
+
+// healthyForModel 与 healthy 相同，但额外考虑**模型级软冷却豁免**。
+//
+// # 语义
+//
+// 当 e.softRateModel 非空且 model 非空且 model != e.softRateModel 时，
+// `until` 这一条冷却**不适用**于本次请求：那个冷却只属于被限流的那个模型，
+// 换一个模型该账号完全可用。
+//
+// 熔断（breakerUntil）与禁用**不受豁免影响** —— 它们是账号级事实，
+// 与"请求哪个模型"无关。
+//
+// # 为什么需要它
+//
+// 上游 429 code=6004 是**模型级**限流（"该模型将在 X 时刻重置"），
+// 而不是账号级。改造前所有 429 都按账号级冷却处理，后果是：
+//
+//	账号因 gpt-5.5 被限流 30 分钟 → 请求 glm-5.2 也选不到它
+//	→ 明明还有可用的模型额度，却表现为"这个号废了"
+//
+// 在单账号部署下这更严重：整个网关对该账号的所有请求都被拒，
+// 而用户只是想换个模型。
+//
+// model 为空（无模型上下文，如额度刷新、保活）时**不豁免** ——
+// 无从判断"换了哪个模型"，保守按账号级冷却处理。
+func (e *entry) healthyForModel(now time.Time, model string) bool {
+	if e.disabled {
+		return false
+	}
+	if !e.until.IsZero() && now.Before(e.until) {
+		// 模型级豁免：冷却只属于另一个模型。
+		exempt := e.softRateModel != "" && model != "" && model != e.softRateModel
+		if !exempt {
+			return false
+		}
+	}
+	if !e.breakerUntil.IsZero() && now.Before(e.breakerUntil) {
+		return false
+	}
+	return true
+}
+
+// expiry 返回账号当前仍在生效的最近冷却/熔断截止时间（两个截止取较早者）；不在冷却期返回零值。
+// 供全冷却兜底选取"最早到期"账号用。
+func (e *entry) expiry(now time.Time) time.Time {
+	var t time.Time
+	if !e.until.IsZero() && now.Before(e.until) {
+		t = e.until
+	}
+	if !e.breakerUntil.IsZero() && now.Before(e.breakerUntil) {
+		if t.IsZero() || e.breakerUntil.Before(t) {
+			t = e.breakerUntil
+		}
+	}
+	return t
+}
+
+// fallbackKind 报告兜底账号属于哪一类冷却（soft：即时软冷却；breaker：熔断期）。
+// 只对参与兜底的账号调用（CoolHard 已被 pickEarliestExpiryLocked 排除）。判定口径：
+// 若熔断截止是当前生效的最近截止（含"仅有熔断无软冷却"），记为 breaker；否则记为 soft。
+func (e *entry) fallbackKind(now time.Time) string {
+	if !e.breakerUntil.IsZero() && now.Before(e.breakerUntil) {
+		if e.until.IsZero() || !now.Before(e.until) || e.breakerUntil.Before(e.until) {
+			return "breaker"
+		}
+	}
+	return "soft"
+}
+
+// stateAccount 单个账号的持久化状态（JSON tag 全小写下划线，向后兼容：缺字段零值）。
+type stateAccount struct {
+	// Quota 额度视图（支持单值与按模型两种形态）。
+	//
+	// 旧状态文件没有这个字段 → 反序列化得到零值 → restoreQuota 会回落到 Credits。
+	// 这样升级不需要迁移脚本。
+	Quota   QuotaView `json:"quota,omitempty"`
+	Credits int64     `json:"credits"`
+	// Provider 账号归属的上游标识。
+	//
+	// 旧状态文件没有这个字段 → 反序列化得空串 → 按默认上游解释，
+	// 与"改造前只可能有一个上游"的事实一致，因此升级不需要迁移脚本。
+	//
+	// ⚠ 必须落盘：否则重启后 codearts 账号会被当成默认上游的账号，
+	// 选号时被派给 workbuddy 的 Provider（凭空多出一批必然失败的号）。
+	Provider     string    `json:"provider,omitempty"`
+	Disabled     bool      `json:"disabled"`
+	Reason       string    `json:"reason,omitempty"`
+	Until        time.Time `json:"until,omitempty"`
+	CoolKind     CoolKind  `json:"cool_kind"`
+	SuccessCount int64     `json:"success_count,omitempty"`
+	// err_total 累计错误计数。旧版 err_count（连续错误）仍可读：加载时映射到 err_total，
+	// 仅作一次性迁移，不再回写 err_count。
+	ErrTotal    int64     `json:"err_total,omitempty"`
+	ErrCount    int       `json:"err_count,omitempty"` // 兼容旧文件的迁移源，仅读取
+	LastSuccess time.Time `json:"last_success,omitempty"`
+	LastErr     time.Time `json:"last_err,omitempty"`
+
+	// SoftStreak 连续软限流次数（429 指数退避的指数）。
+	//
+	// ⚠ 必须落盘。它是"这个号最近被限流了几次"的记忆：
+	// 不落盘的话，一次重启就把退避指数清零 —— 而上游的限流并未因我们重启而消失，
+	// 表现是"重启后立刻又被限流一次"（正是这个指数要防的）。
+	//
+	// 旧状态文件没有这个字段 → 零值 0 → 等价于"没有连续限流记录"，
+	// 与改造前的行为一致，因此升级不需要迁移脚本。
+	SoftStreak int `json:"soft_streak,omitempty"`
+	// SoftRateModel 触发软冷却时记录的**模型名**（仅 6004 带重置时间时记）。
+	//
+	// 非空表示这次软冷却只对这一个模型生效：换个模型请求时该账号仍可用
+	// （见 entry.healthyForModel）。空 = 账号级软冷却，对所有模型生效。
+	SoftRateModel string `json:"soft_rate_model,omitempty"`
+
+	// SessionDeadStreak 连续 session 失效次数（12153）。
+	//
+	// # 为什么需要计数，而不是"一次就禁用"
+	//
+	// 12153 的实际成因里有一大类是**瞬时抖动**：网络闪断、上游瞬时故障、
+	// token 刷新的竞态窗口。这些情况下账号完全健康 ——
+	// 而改造前一次 12153 就 `Disable`（永久禁用，需人工重登），
+	// 于是一次网络抖动就能让一个好好的号掉出池子，且界面上只显示"已禁用"，
+	// 没有任何线索指向"它其实是被一次抖动误杀的"。
+	//
+	// 计数到阈值（3）才禁用，让抖动自愈（下一次成功会清零），
+	// 而真正失效的 session 仍然会被停掉（它每次都会 12153）。
+	//
+	// 落盘理由同 SoftStreak：重启不该让"这个号已经连续 2 次 session 失效"
+	// 这件事被忘掉 —— 那样它永远攒不满阈值。
+	SessionDeadStreak int `json:"session_dead_streak,omitempty"`
+}
+
+// stateFile 持久化格式。
+type stateFile struct {
+	Accounts map[string]stateAccount `json:"accounts"`
+}
+
+// flushInterval 后台落盘周期。
+var flushInterval = 5 * time.Second
+
+// persistLogEvery 连续落盘失败每 N 次打一条提醒（flusher 5s 一把 ≈ 1 分钟一次），
+// 避免磁盘持续满/权限丢失时日志刷屏。
+const persistLogEvery = 12
+
+// snapshot 池状态快照（Redis 镜像用）。与本地 state.json 同源（stateFile），
+// 额外带 savedAt 时间戳供"择新恢复"（比较本地与 Redis 快照的新旧）。
+type snapshot struct {
+	stateFile
+	SavedAt time.Time `json:"saved_at"`
+}
+
+// Pool 账号池。
+type Pool struct {
+	mu      sync.RWMutex
+	byUID   map[string]*entry
+	stateFp string
+	dirty   atomic.Bool // 内存有变更待落盘
+
+	// pickSeq 选号单调序号（每次成功 Pick 自增，仅在持有 mu 时写）。
+	// 给 entry.lastPickSeq 分配值，用于 lastUsed 撞平时的确定性破平。
+	pickSeq int64
+
+	// store 池状态快照镜像（redisstore.Store）；nil = 无需镜像（未配置 Redis / Noop 之外也可能 nil）。
+	// SaveState/LoadState 经它接线，与本地 state.json 并存作启动恢复备份。
+	store StoreSnapshotter
+
+	// 熔断器调优（SetBreaker 注入；默认值见 defaultBreaker*）。
+	breakerThreshold   int
+	breakerCooldown    time.Duration
+	breakerCooldownMax time.Duration
+
+	// softRateMax 软冷却指数退避的封顶（SetSoftRateMax 注入；默认 defaultSoftRateMax）。
+	softRateMax time.Duration
+
+	// 三因子加权调优（SetWeights 注入；默认值见 defaultIdle*）。
+	idleWeightPerHour float64
+	idleWeightMax     float64
+
+	// maxInFlight 单账号最大在途请求数；0 = 不限（租约关闭）。
+	maxInFlight int
+
+	// defaultProvider 默认上游标识（由装配层注入，见 SetDefaultProvider）。
+	//
+	// 含义：未打标签（provider == ""）的账号按它解释。
+	// 空串表示"没有默认上游概念的纯单上游部署" —— 此时
+	// providerOf(e) 对未打标签账号返回 ""，与改造前的行为完全一致。
+	defaultProvider string
+
+	// randInt64N 仅供测试注入确定性随机源；nil 时用 math/rand/v2 全局源。
+	// 生产代码不应设置此字段。
+	randInt64N func(n int64) int64
+
+	// persistFails 本地 state.json 连续落盘失败计数（仅 saveLocked 在持锁下读写，无需 atomic）。
+	// 用于落盘失败的日志节流：首败/每 N 次提醒/恢复各打一条，避免磁盘满时刷屏。
+	persistFails int
+}
+
+// defaultBreaker* 熔断器默认参数（FreeBuff2API 参考口径）。
+const (
+	defaultBreakerThreshold   = 3
+	defaultBreakerCooldown    = 30 * time.Minute
+	defaultBreakerCooldownMax = 6 * time.Hour
+)
+
+// 软限流指数退避（429）的默认参数与上限。
+const (
+	// defaultSoftRateMax 软冷却指数放大的封顶（2 小时）。
+	//
+	// 为什么是 2h 而不是与熔断同级的 6h：软限流是**上游的窗口性限流**，
+	// 窗口通常以分钟~小时计；封顶过高会让一个本来 1 小时就恢复的号
+	// 被我们自己冷掉 6 小时。真正病态反复失败的号由熔断器接管（30m→6h）。
+	defaultSoftRateMax = 2 * time.Hour
+	// softStreakShiftMax 左移位数上限。
+	//
+	// 无上限的左移会让 time.Duration（int64 纳秒）溢出成负数 ——
+	// 冷却截止变成**过去的时刻**，表现为"这个号突然又能用了"，
+	// 且没有任何日志线索。30 位 ≈ 2^30 倍，早已越过任何封顶值，
+	// 因此这个上限只在"封顶逻辑本身失效"时兜底。
+	softStreakShiftMax = 30
+)
+
+// sessionDeadThreshold 连续 session 失效多少次才真正禁用。
+//
+// 取 3 的理由：一次 12153 无法区分"瞬时抖动"与"session 真的死了"
+// （见 stateAccount.SessionDeadStreak），而两次仍可能是同一次抖动的余波
+// （网络恢复后第一次重试、刷新竞态的第二发）。三次则几乎必然是持续性失效。
+//
+// 代价分析：阈值过大（如 10）会让真正失效的号在池子里反复被选中、
+// 每次都白跑一次往返；阈值过小（如 1）就退回了改造前的误杀行为。
+const sessionDeadThreshold = 3
+
+// StoreSnapshotter 池状态快照镜像的最小接口（redisstore.Store 满足；Noop 空实现安全）。
+// 与本地 state.json 并存，作启动恢复备份：快照比本地新才采用，否则本地优先。
+type StoreSnapshotter interface {
+	SaveState(data []byte)
+	LoadState() ([]byte, bool)
+}
+
+// defaultIdle* 闲置补偿默认参数（claude-api selectWeightedRandom 参考口径）。
+const (
+	defaultIdleWeightPerHour = 0.5
+	defaultIdleWeightMax     = 5.0
+)
+
+// New 构建池；stateFp 非空时尝试加载旧状态，并启动后台周期性落盘 goroutine。
+func New(stateFp string) *Pool {
+	p := &Pool{
+		byUID:              map[string]*entry{},
+		stateFp:            stateFp,
+		breakerThreshold:   defaultBreakerThreshold,
+		breakerCooldown:    defaultBreakerCooldown,
+		breakerCooldownMax: defaultBreakerCooldownMax,
+		softRateMax:        defaultSoftRateMax,
+		idleWeightPerHour:  defaultIdleWeightPerHour,
+		idleWeightMax:      defaultIdleWeightMax,
+	}
+	if stateFp != "" {
+		p.load()
+		p.startFlusher()
+	}
+	return p
+}
+
+// SetBreaker 注入熔断器参数（main 从 config 解析后调用）。非正值保留原值（用默认）。
+func (p *Pool) SetBreaker(threshold int, cooldown, cooldownMax time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if threshold > 0 {
+		p.breakerThreshold = threshold
+	}
+	if cooldown > 0 {
+		p.breakerCooldown = cooldown
+	}
+	if cooldownMax > 0 {
+		p.breakerCooldownMax = cooldownMax
+	}
+}
+
+// SetSoftRateMax 注入软冷却指数退避的封顶（main 从 config 解析后调用）。
+// 非正值保留原值（用 defaultSoftRateMax）。
+//
+// 它同时是"账号级软冷却最多冷多久"与"6004 带重置时间时的上限"两个语义的封顶 ——
+// 两处共用一个值是有意的：它们回答同一个问题（"这个号因为限流最多该被排到多后"）。
+func (p *Pool) SetSoftRateMax(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if d > 0 {
+		p.softRateMax = d
+	}
+}
+
+// SetWeights 注入三因子加权的闲置补偿参数。非正值保留原值（用默认）。
+func (p *Pool) SetWeights(idlePerHour, idleMax float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if idlePerHour > 0 {
+		p.idleWeightPerHour = idlePerHour
+	}
+	if idleMax > 0 {
+		p.idleWeightMax = idleMax
+	}
+}
+
+// SetMaxInFlight 注入单账号最大在途请求数；0 = 不限。负值保留原值。
+func (p *Pool) SetMaxInFlight(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if n >= 0 {
+		p.maxInFlight = n
+	}
+}
+
+// SetDefaultProvider 注入默认上游标识。
+//
+// 必须在 SyncToDir 之前调用：对齐时要用它判断"未打标签的账号算谁"。
+//
+// 为什么要显式注入而不是在 pool 里写死：pool 不得知道任何具体上游名
+// （判据 3）。默认上游是**装配层的事实**（谁先注册谁就是默认），
+// 由 cmd/server 告诉池子。
+//
+// 向后兼容：不调用本方法时 defaultProvider 保持 ""，
+// 未打标签的账号仍全部落在 "" 这一个"上游"下 —— 与改造前完全一致。
+func (p *Pool) SetDefaultProvider(id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.defaultProvider = id
+}
+
+// providerOf 返回账号的**生效**上游标识：打了标签用它，没打标签用默认。
+// 调用方必须已持有 p.mu（只读 p.defaultProvider）。
+func (p *Pool) providerOf(e *entry) string {
+	if e.provider != "" {
+		return e.provider
+	}
+	return p.defaultProvider
+}
+
+// normalizeProvider 把"未指定上游"归一成默认上游标识。
+// 空入参表示调用方没有上游上下文（如探活、刷新额度），走默认。
+func (p *Pool) normalizeProvider(provider string) string {
+	if provider != "" {
+		return provider
+	}
+	return p.defaultProvider
+}
+
+func (p *Pool) SetStore(s StoreSnapshotter) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.store = s
+}
+
+// RestoreFromSnapshot 择新恢复：比较本地 state.json 与 Redis 快照，采用较新者。
+// 无快照、快照无 savedAt、或本地不存在/不可读时，都会被判定为"本地优先/跳过快照"，
+// 同时打一条恢复来源日志。必须在 SyncToDir 之前调用（SyncToDir 只增删不入值）。
+func (p *Pool) RestoreFromSnapshot() {
+	store := p.store
+	if store == nil || p.stateFp == "" {
+		return
+	}
+	localInfo, localErr := os.Stat(p.stateFp)
+	raw, ok := store.LoadState()
+	if !ok {
+		if localErr == nil {
+			log.Printf("pool: 恢复来源=本地 state.json（无 Redis 快照）")
+		}
+		return
+	}
+	var snap snapshot
+	if json.Unmarshal(raw, &snap) != nil || snap.SavedAt.IsZero() {
+		// 快照无 savedAt：无法比较新旧，本地优先。
+		log.Printf("pool: 恢复来源=本地 state.json（Redis 快照无 saved_at）")
+		return
+	}
+	if localErr == nil && !localInfo.ModTime().After(snap.SavedAt) {
+		// 快照不早于本地 → 采用快照。
+		p.mu.Lock()
+		p.applySnapshotLocked(snap)
+		p.mu.Unlock()
+		p.dirty.Store(true)
+		log.Printf("pool: 恢复来源=Redis 快照 (saved_at=%s)", snap.SavedAt.Format(time.RFC3339))
+		return
+	}
+	log.Printf("pool: 恢复来源=本地 state.json（较新于 Redis 快照 %s）", snap.SavedAt.Format(time.RFC3339))
+}
+
+// Acquire 为账号占一个在途名额；false 表示该账号已达上限（或不存在）。
+// 必须在成功 Pick 后调用；调用方负责 defer Release。
+func (p *Pool) Acquire(uid string) bool {
+	p.mu.RLock()
+	e, ok := p.byUID[uid]
+	limit := p.maxInFlight
+	p.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	if limit <= 0 {
+		// 不限：计数仍累加（供状态观测），但永不拒绝。
+		e.inFlight.Add(1)
+		return true
+	}
+	for {
+		cur := e.inFlight.Load()
+		if cur >= int64(limit) {
+			return false
+		}
+		if e.inFlight.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// Release 释放一个在途名额。幂等减到 0 为止（防重复释放扣成负数）。
+func (p *Pool) Release(uid string) {
+	p.mu.RLock()
+	e, ok := p.byUID[uid]
+	p.mu.RUnlock()
+	if !ok {
+		return
+	}
+	for {
+		cur := e.inFlight.Load()
+		if cur <= 0 {
+			return
+		}
+		if e.inFlight.CompareAndSwap(cur, cur-1) {
+			return
+		}
+	}
+}
+
+// SetRandomSource 仅供测试注入确定性随机源；生产代码不应调用。
+// 注入源取 n∈[0,n) 后，pickWeighted 的抽签结果完全可预测。
+func (p *Pool) SetRandomSource(fn func(n int64) int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.randInt64N = fn
+}
+
+// startFlusher 每 flushInterval 检查 dirty 标志，有变更则 saveLocked 落盘。
+func (p *Pool) startFlusher() {
+	interval := flushInterval // 在启动 goroutine 前同步读取，避免与测试对 flushInterval 的恢复写竞争
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for range t.C {
+			p.mu.Lock()
+			if p.dirty.Swap(false) {
+				p.saveLocked()
+			}
+			p.mu.Unlock()
+		}
+	}()
+}
+
+// Flush 同步把内存状态落盘（幂等：无变更不写盘）。供进程退出前调用。
+func (p *Pool) Flush() {
+	p.mu.Lock()
+	if p.dirty.Swap(false) {
+		p.saveLocked()
+	}
+	p.mu.Unlock()
+}
+
+// Add 加入账号；已存在则保留原状态、更新凭证（upsert 单账号，不影响其他账号）。
+func (p *Pool) Add(a *auth.Auth) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.upsertLocked(a)
+}
+
+// SyncToDir 用最新扫描结果对齐池：新账号加入、消失的账号剔除（状态保留）。
+// 剔除结果持久化回 state.json，避免已删账号在下次启动时被 load() 复活。
+//
+// # ⚠ 这是"单上游对齐"，只能剔除**默认上游**的账号
+//
+// 多上游部署下必须用 SyncToDirFor。原因（这是本方法最容易踩的坑）：
+// 本方法的语义是"扫描结果的**全集**就是池中应有的全集"，于是它会剔除
+// 所有不在 auths 里的账号。若拿它同步某一个上游的目录，
+// 另一个上游的账号（不在这次扫描结果里）会被**整体误删**。
+//
+// 实测场景：workbuddy 与 codearts 的凭证都放在 auths/ 下，
+// cmd/server 用 auth.LoadDir 扫 workbuddy*.json。若在加载 codearts 之后
+// 再调一次 SynctoDir(workbuddyAuths)，codearts 账号会被全部剔除 ——
+// 且剔除会落盘，重启也回不来。
+//
+// 因此保留本方法是为了**向后兼容**（既有调用方与 55 处测试零改动），
+// 它等价于 SyncToDirFor(DefaultProvider, auths)：只在一个上游存在时，
+// "只删默认上游"与"删全部"是同一件事，行为与改造前逐字节一致。
+func (p *Pool) SyncToDir(auths []*auth.Auth) {
+	p.SyncToDirFor(DefaultProvider, auths)
+}
+
+// SyncToDirFor 按上游维度对齐账号：只增删**该上游**的账号，别家的一律不动。
+//
+// provider 为空串时归一成默认上游（见 normalizeProvider），
+// 所以 SyncToDir 与 SyncToDirFor("", ...) 等价。
+//
+// # 剔除范围如何被限制在本上游内（本方法的正确性核心）
+//
+// 剔除判据是"该账号属于本次同步的上游 **且** 不在 seen 里"：
+//
+//	belongs := p.providerOf(e) == want
+//	if belongs && !seen[uid] { 剔除 }
+//
+// 两个上游若出现同名 uid（理论上可以：不同上游的 uid 空间独立），
+// 也不会互相误删 —— 因为只有一个上游的账号会满足 belongs。
+//
+// # 文件名冲突
+//
+// 池不关心文件名，只关心 uid。两个上游的凭证文件放在同一目录
+// （auths/workbuddy-*.json 与 auths/codearts-*.json）时，
+// 各自的 LoadDir 用不同前缀通配，扫出来的集合天然不相交；
+// 池按 provider 分域存放，因此即使**同名**也不冲突：
+// 真正的冲突只在"同一上游内两个文件给出同一个 uid"时发生，
+// 那时后写入者通过 upsert 覆盖前者（与改造前同一语义）。
+func (p *Pool) SyncToDirFor(provider string, auths []*auth.Auth) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	want := p.normalizeProvider(provider)
+	seen := make(map[string]bool, len(auths))
+	added := false
+	for _, a := range auths {
+		seen[a.UID] = true
+		if p.upsertLockedFor(want, a) {
+			added = true
+		}
+	}
+	changed := added
+	for uid, e := range p.byUID {
+		if p.providerOf(e) != want {
+			continue // 别的上游的账号：本次同步**不碰**
+		}
+		if !seen[uid] {
+			delete(p.byUID, uid)
+			changed = true
+		}
+	}
+	if changed {
+		p.saveLocked()
+	}
+}
+
+// upsertLocked 更新或插入单个**默认上游**的账号；已存在则只换凭证、保留状态。
+// 调用方必须已持有 p.mu；Add 与 SyncToDir 共用此 upsert 逻辑。
+func (p *Pool) upsertLocked(a *auth.Auth) {
+	p.upsertLockedFor(p.defaultProvider, a)
+}
+
+// upsertLockedFor 更新或插入指定上游的账号；**返回是否是新插入**。
+//
+// provider 标签只在**首次插入**时写入；账号已存在时不改标签 ——
+// 标签是账号的归属事实，不该被一次"顺手同步"改写。
+// （若真需要改归属，那是账号迁移，应当显式删了再加。）
+//
+// # 为什么返回 added
+//
+// 调用方据此决定要不要落盘。早先只有"剔除过账号"才落盘，
+// 于是**新账号的归属标签不会被写入 state.json** ——
+// 单上游时代这无害（账号身份就是文件本身），多上游之后它是致命的：
+// 重启后 codearts 的账号会因为状态文件里没有标签而被当成默认上游的号，
+// 凭空多出一批必然失败的账号（且它们还会参与选号）。
+//
+// 落盘走 saveLocked 而不是置 dirty 标志：调用方已经持锁，
+// 且对齐目录是启动/人工刷新时的低频动作，即时落盘比等 5s 定时更稳。
+func (p *Pool) upsertLockedFor(provider string, a *auth.Auth) (added bool) {
+	if e, ok := p.byUID[a.UID]; ok {
+		// 重复导入保护（用户报 bug：重新导入重复凭证后账号池该号失效）：
+		// 管理台 reload 传进来的是**投影**（只有 UID/Nickname，见 admin 的
+		// accountsReload），而池里已装载的 workbuddy 凭证（token）在旧 e.a 上。
+		// 无条件 `e.a = a` 会把 token 清空 → has_token=False → 401。
+		// 规则：新 a 无凭证且旧 e.a 有凭证 → **保留旧凭证**（只同步昵称）。
+		//   有凭证的 a 正常覆盖（启动 LoadDir / 凭证刷新都会带 token）。
+		//   双方都无凭证（codearts 等投影形账号）→ 正常覆盖（凭证走 secret 通道）。
+		if !authHasCreds(a) && authHasCreds(e.a) {
+			if a.Nickname != "" {
+				e.a.Nickname = a.Nickname
+			}
+			return false
+		}
+		e.a = a // 保留 credits/cooling 状态
+		return false
+	}
+	p.byUID[a.UID] = &entry{a: a, provider: provider}
+	return true
+}
+
+// authHasCreds 该 auth 是否携带真实凭证（token 类字段任一非空）。
+// 投影（管理台 reload / /admin/accounts 的纯身份视图）恒为 false。
+func authHasCreds(a *auth.Auth) bool {
+	return a != nil && (a.AccessToken != "" || a.RefreshToken != "")
+}
+
+// AddFor 加入一个**指定上游**的账号（含上游私有凭证 secret）。
+//
+// # 为什么需要带 secret 的版本
+//
+// 默认上游（workbuddy）的凭证就是 *auth.Auth 本身，池子能直接持有。
+// 但别的上游（codearts）的凭证是各不相同的结构，而池子不得 import 它们
+// （判据 3）。于是由装配层把上游凭证作为**不透明的 any** 一起交进来，
+// 取号方用 SecretOf 取回后还给对应的 Provider。
+//
+// secret 为 nil 时账号照常可用，只是取号方拿不到上游私有凭证。
+func (p *Pool) AddFor(provider string, a *auth.Auth, secret any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.upsertSecretLocked(p.normalizeProvider(provider), a, secret)
+}
+
+// upsertSecretLocked 与 upsertLockedFor 同理，但同时装载/更新上游私有凭证。
+//
+// 与凭证标签不同，secret **每次同步都刷新**：它是会过期的运行态
+// （codearts 的 STS 只有约 2 小时寿命，刷新后要立刻让池子看到新值），
+// 不刷新会让取号方一直拿着过期凭证。
+// 调用方必须已持有 p.mu。
+func (p *Pool) upsertSecretLocked(provider string, a *auth.Auth, secret any) (added bool) {
+	if e, ok := p.byUID[a.UID]; ok {
+		// 与 upsertLockedFor 同一条重复导入保护：新 a 若是无凭证投影，
+		// 不清掉旧 e.a 上已装载的凭证（workbuddy 取号读 e.a）。
+		if !authHasCreds(a) && authHasCreds(e.a) {
+			if a.Nickname != "" {
+				e.a.Nickname = a.Nickname
+			}
+		} else {
+			e.a = a
+		}
+		if secret != nil {
+			e.secret = secret
+		}
+		// 兜底：e.a 仍无凭证、而 secret 本身就是带凭证的 *auth.Auth 时采用它。
+		//
+		// # 守的是用户实测报的 bug（同一形态已复发两次）
+		//
+		// 两条入池路径（reload / oauth）都曾把扫描结果**投影成 uid+nickname**
+		// 再交给池，而真凭证在 secret 通道里。结果 e.a 是空投影，而所有取号点
+		// 读的都是 e.a：
+		//
+		//	AuthByUID / creds() / authOf() → e.a      ← 空 → 「无可用凭证」
+		//	SecretOf                      → e.secret  ← 有凭证（这几处不读它）
+		//
+		// 用户表现：号在池里可见、大模型请求也通，但额度探测恒 401、
+		// 猫猫旅行/成长计划报「无可用凭证」，**重启网关即恢复**
+		//（启动时 LoadDir 从磁盘读回了真凭证）。
+		//
+		// 上面的 `!authHasCreds(a) && authHasCreds(e.a)` 保护覆盖不到本场景：
+		// 新号首次入池时池里那份本来就是空投影（两边都无凭证）→ 保护不生效。
+		//
+		// 主修法在**入池前**（admin.poolAuthsFromCreds：secret 是 *auth.Auth 时
+		// 直接采用它），这里补的是**兜底** —— 让"忘了这件事的第三条第入池路径"
+		// 也不会静默丢凭证。两处判据一致，且都只认带凭证的 *auth.Auth：
+		// 对 codearts 这类凭证不在 *auth.Auth 里的上游，类型断言不成立 → 行为不变。
+		if !authHasCreds(e.a) {
+			if sa := authFromSecret(secret); sa != nil {
+				e.a = sa
+			}
+		}
+		return false
+	}
+	// 新增路径同样兜底，否则"新号入池即空投影"，旅行/成长从那一刻起就报无凭证。
+	if !authHasCreds(a) {
+		if sa := authFromSecret(secret); sa != nil {
+			a = sa
+		}
+	}
+	p.byUID[a.UID] = &entry{a: a, provider: provider, secret: secret}
+	return true
+}
+
+// authFromSecret 若 secret 本身就是**带凭证的 `*auth.Auth`**，返回它；否则 nil。
+//
+// 这是 workbuddy 这类"凭证即 *auth.Auth"上游的形态
+// （见 workbuddy.LoadCredentialsWithSecrets：Secret 就是同源的 *auth.Auth）。
+//
+// 对 codearts 这类凭证不在 *auth.Auth 里、走各自结构体的上游，
+// secret 不是 *auth.Auth → 返回 nil → 调用方行为与改动前逐字相同。
+func authFromSecret(secret any) *auth.Auth {
+	sa, ok := secret.(*auth.Auth)
+	if !ok || sa == nil || !authHasCreds(sa) {
+		return nil
+	}
+	return sa
+}
+
+// SyncToDirWithSecrets 按上游维度对齐账号，并为每个账号绑定上游私有凭证。
+//
+// 与 SyncToDirFor 的差别只有"顺带装载 secret"（见 AddFor 的理由）。
+// secrets 为 nil 表示该上游的凭证就是 *auth.Auth 本身（默认上游的形态）。
+//
+// 剔除范围与 SyncToDirFor 完全一致：只删本次同步的上游。
+// 新增账号同样即时落盘（理由见 upsertLockedFor 的注释）。
+func (p *Pool) SyncToDirWithSecrets(provider string, auths []*auth.Auth, secrets map[string]any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	want := p.normalizeProvider(provider)
+	seen := make(map[string]bool, len(auths))
+	added := false
+	for _, a := range auths {
+		seen[a.UID] = true
+		var secret any
+		if secrets != nil {
+			secret = secrets[a.UID]
+		}
+		if p.upsertSecretLocked(want, a, secret) {
+			added = true
+		}
+	}
+	changed := added
+	for uid, e := range p.byUID {
+		if p.providerOf(e) != want {
+			continue // 别的上游的账号：不碰
+		}
+		if !seen[uid] {
+			delete(p.byUID, uid)
+			changed = true
+		}
+	}
+	if changed {
+		p.saveLocked()
+	}
+}
+
+// SecretOf 返回账号的上游私有凭证（AddFor/SyncToDirWithSecrets 装载的那个）。
+//
+// 取到的是**不透明值**：调用方（装配层的适配器）知道它是哪个上游的类型，
+// 自行断言。池子只负责保管，不解释它。
+//
+// 第二个返回值报告账号是否存在；凭证未装载时返回 (nil, true) ——
+// "账号在但没私有凭证"与"账号不存在"是两件事，调用方需要能区分。
+func (p *Pool) SecretOf(uid string) (any, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return nil, false
+	}
+	return e.secret, true
+}
+
+// Pick 返回 healthy 中额度最高的账号；无可用返回 nil。
+//
+// 不区分模型 —— 保留给"没有具体模型上下文"的调用点（如探活、刷新额度）。
+// **发请求选号请用 PickForModel**，否则按模型额度的账号（codearts）
+// 会被按"所有模型的最大值"排序，可能选到对本次请求模型零额度的号。
+func (p *Pool) Pick() *auth.Auth {
+	return p.PickExcluding(nil)
+}
+
+// PickExcluding 同上，但跳过 tried 中的 uid（请求级轮换）。
+// 挑选策略：healthy 账号中按三因子权重取前 5 名，再在 Top5 内按同一权重加权随机抽签，
+// 意图是打散热点，避免永远打同一个账号。
+func (p *Pool) PickExcluding(tried map[string]bool) *auth.Auth {
+	return p.pick(tried, "")
+}
+
+// PickForModel 按**针对该模型**的可用额度选号。
+//
+// # 为什么需要它（这是 QuotaView 存在的理由）
+//
+// 按模型额度的上游（codearts）里，一个账号可能对 gpt-5.5 零额度、
+// 对别的模型额度很高。若按"所有模型的最大值"排序：
+//
+//	账号 X = {gpt-5.5: 1000}            → 标量 1000
+//	账号 Y = {other: 999999}            → 标量 999999  ← 被优先选中
+//
+// 请求 gpt-5.5 时就会选到 Y —— 一个**跑不了的账号**。
+// 用 model 取 EffectiveFor 才能排对。
+//
+// model 为空时退化为 PickExcluding（无模型上下文，无从按模型过滤）。
+func (p *Pool) PickForModel(model string, tried map[string]bool) *auth.Auth {
+	return p.pick(tried, model)
+}
+
+// PickFor 按上游 + 模型选号。provider 为空走默认上游（向后兼容）。
+//
+// # 为什么选号必须带上游维度
+//
+// 多上游共用一个池：账号池里同时躺着 workbuddy 与 codearts 的账号。
+// 若不按上游过滤，"codearts/GLM-5.2" 这个请求会被派到 workbuddy 账号上 ——
+// workbuddy 的 Provider 拿到的是它不认识的凭证，必然失败；
+// 更糟的是它会失败得很晚（一次完整的上游往返），把轮换额度白烧掉。
+//
+// 上游的账号是**凭证结构都不同**的两批：只有对应的 Provider 能用。
+// 所以"选号"这件事在池子里就必须按上游分域。
+func (p *Pool) PickFor(provider, model string, tried map[string]bool) *auth.Auth {
+	return p.pickFor(provider, tried, model)
+}
+
+// PickForExcluding 按上游选号（无模型上下文）。见 PickFor。
+func (p *Pool) PickForExcluding(provider string, tried map[string]bool) *auth.Auth {
+	return p.pickFor(provider, tried, "")
+}
+
+// pick 在 healthy 候选集中按三因子权重加权随机选出账号，并记录 lastUsed（防并发撞号）。
+// 候选集是 top5 近似：先按三因子权重（weightOf）降序取前 5（额度只是权重的一个因子，
+// 闲置补偿与成功率同样决定谁进短名单），再在 top5 内做防撞号过滤。
+// 并发防雪崩：跳过 lastUsed 距今 < minPickGap 的账号（除非 top5 全部刚被用过，
+// 此时退回最近最少使用 LRU 账号），迫使高并发请求发散，而不是全部撞同一高分账号。
+// minPickGap=0（测试用）时过滤恒通过，退化为纯加权随机。
+//
+// model 非空时，额度因子取该账号**针对该模型**的可用量（EffectiveFor）；
+// 为空时取标量 Effective()。见 PickForModel 的说明。
+func (p *Pool) pick(tried map[string]bool, model string) *auth.Auth {
+	return p.pickFor(DefaultProvider, tried, model)
+}
+
+// pickFor 是 pick 的上游维度版本：候选集先按上游过滤，其余逻辑完全一致。
+//
+// provider 为空 → 归一成默认上游。这样"未打标签的账号"与
+// "显式指定默认上游"落到同一个候选集，向后兼容由此成立。
+func (p *Pool) pickFor(provider string, tried map[string]bool, model string) *auth.Auth {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	want := p.normalizeProvider(provider)
+
+	var cands []*entry
+	for uid, e := range p.byUID {
+		if p.providerOf(e) != want {
+			continue // 别的上游的账号：本请求用不上
+		}
+		if tried != nil && tried[uid] {
+			continue
+		}
+		// 按**模型**判活：模型级软冷却（6004 带重置时间）只对该模型生效，
+		// 换模型时该账号仍应参与候选（见 entry.healthyForModel）。
+		if !e.healthyForModel(now, model) {
+			continue
+		}
+		if p.inFlightFull(e) {
+			continue // 在途占满：跳过（max=0 不限时不触发）
+		}
+		cands = append(cands, e)
+	}
+	if len(cands) == 0 {
+		// 全冷却兜底：无 healthy 候选时，从冷却账号里选 until 最早到期的一个
+		// （熔断/冷却共用 expiry 口径，取较早截止者）。禁用的账号永不参与兜底。
+		return p.pickEarliestExpiryLocked(want, tried, now)
+	}
+	// top5 短名单按三因子权重降序截断（而非额度单纯降序）：否则闲置补偿 + 成功率
+	// 根本进不了短名单决策，低额度但高成功率/久置的账号会永远排不进 top5。
+	//
+	// 额度口径随 model 变：有模型上下文时取该模型的可用量（EffectiveFor），
+	// 否则取标量 Effective()。见 PickForModel。
+	var maxCredits int64
+	for _, e := range cands {
+		if q := e.quotaFor(model); q > maxCredits {
+			maxCredits = q
+		}
+	}
+	// 权重只算一次：顶 5 截断要排序，若在 sort 比较器里现算 weightOf 会翻成 O(n log n) 次
+	// 冗余浮点计算（46 账号约 500 次）。先做 O(n) 预计算，再按 (权重, uid) 排序。
+	type weighted struct {
+		e *entry
+		w float64
+	}
+	ws := make([]weighted, len(cands))
+	for i, e := range cands {
+		ws[i] = weighted{e: e, w: p.weightOf(e, maxCredits, now, model)}
+	}
+	sort.Slice(ws, func(i, j int) bool {
+		// 第一优先级：**对该模型明确不可用**的账号排到最后。
+		//
+		// 这一条是"按模型选号"真正生效的地方 —— 只靠权重不够：
+		// 一个 gpt-5.5 额度为 0 的账号仍能靠闲置+成功率拿到约 4 分，
+		// 而可用账号若额度项优势不大时会被它抽中（实测约 18%）。
+		// 排序而非剔除：见 usableForModel 的注释（避免误杀"未探测"的账号）。
+		ui, uj := ws[i].e.usableForModel(model), ws[j].e.usableForModel(model)
+		if ui != uj {
+			return ui // 可用的排前面
+		}
+		if ws[i].w != ws[j].w {
+			return ws[i].w > ws[j].w
+		}
+		return ws[i].e.a.UID < ws[j].e.a.UID
+	})
+	cands = cands[:0]
+	for _, c := range ws {
+		cands = append(cands, c.e)
+	}
+	if len(cands) > 5 {
+		cands = cands[:5]
+	}
+
+	eligible := make([]*entry, 0, len(cands))
+	for _, e := range cands {
+		if now.Sub(e.lastUsed) >= minPickGap {
+			eligible = append(eligible, e)
+		}
+	}
+
+	// 抽签范围进一步收窄到"对该模型可用"的账号（若存在）。
+	//
+	// 为什么排序不够：top5 短名单通常装得下所有候选，所以"不可用"的账号
+	// 仍在加权抽签池里；它拿不到额度项（10 分）但能靠闲置+成功率拿到约 4 分，
+	// 实测仍会被抽中约 17%。把抽签池收窄到可用账号，才真正让按模型选号生效。
+	//
+	// 收窄**只在有可用账号时**发生：若全部不可用（例如请求了一个所有账号
+	// 都没探测过的模型），仍从完整候选里抽 —— 不能因为"不可用"就返回 nil。
+	if len(eligible) > 0 {
+		usable := make([]*entry, 0, len(eligible))
+		for _, e := range eligible {
+			if e.usableForModel(model) {
+				usable = append(usable, e)
+			}
+		}
+		if len(usable) > 0 {
+			eligible = usable
+		}
+	}
+
+	var e *entry
+	if len(eligible) == 0 {
+		// top5 全部刚被用过：LRU 兜底，维持发散且不 starve 任一候选。
+		// 主判据仍是 lastUsed；lastUsed 完全相等时（时钟粒度粗导致同 tick 撞平）
+		// 用单调序号 lastPickSeq 破平，否则会退化成每次都选 cands[0]。
+		e = cands[0]
+		for _, c := range cands[1:] {
+			if c.lastUsed.Before(e.lastUsed) {
+				e = c
+				continue
+			}
+			if c.lastUsed.Equal(e.lastUsed) && c.lastPickSeq < e.lastPickSeq {
+				e = c
+			}
+		}
+	} else {
+		e = p.pickWeighted(eligible, model) // eligible 保序 = top5 降序子集
+	}
+	e.lastUsed = time.Now()
+	p.pickSeq++
+	e.lastPickSeq = p.pickSeq
+	return e.a
+}
+
+// quotaFor 该账号在给定模型下的可用额度（选号权重用）。
+//
+// model 为空 → 标量 Effective()（无模型上下文，只能看整体）。
+// model 非空 → EffectiveFor(model)（按模型额度）。
+//
+// 为什么单独抽一个方法：选号路径上有**两处**必须用同一口径 ——
+// maxCredits 归一化基线与 weightOf 的额度项。口径不一致会让归一化失真
+// （除以"别的模型"的最大值，权重就失去意义）。
+func (e *entry) quotaFor(model string) int64 {
+	if model == "" {
+		return e.quota.Effective()
+	}
+	return e.quota.EffectiveFor(model)
+}
+
+// usableForModel 该账号对指定模型是否**明确不可用**（按模型额度为 0 且确实探测过）。
+//
+// # 为什么需要这个判据，而不是"额度 0 就从候选里剔除"
+//
+// `per_model` 形态下，账号表里没有某个模型的条目有两种含义：
+//  1. 该账号确实对这个模型没额度（codearts 的常见情况）
+//  2. 只是还没探测过那个模型（HasData 但该键缺失）
+//
+// 两者用 EffectiveFor 都得到 0，但语义不同。直接剔除会把第 2 种情况误杀
+// （多模型上游上，新账号会永远选不中）。
+//
+// 所以做法是：**不剔除，而是让它在 weighted 抽签里拿不到额度项的分**
+// （额度项占 10 分，是权重的主导项），于是它只是"很少被选中"而不是"永不"。
+// 这既避开了误杀，又让"确有别的账号可用"时不会白跑一次。
+//
+// credits / unlimited 形态不分模型，永远可用 → 返回 false。
+func (e *entry) usableForModel(model string) bool {
+	if model == "" || e.quota.Kind != QuotaKindPerModel {
+		return true
+	}
+	return e.quota.EffectiveFor(model) > 0
+}
+
+// pickEarliestExpiryLocked 全冷却兜底：在非禁用的软冷却/熔断账号中选截止最早的一个。
+// 分级：disabled 永不参与；CoolHard（余额耗尽，等签到的号）同样排除——调了必 402，浪费轮换并产生噪音日志；
+// CoolSoft 与熔断号允许参与（可能已恢复，失败成本仅一轮换）。
+// 被 tried 排除、在途占满的账号同样跳过（维持请求级轮换 + 租约语义）。无任何可用返回 nil。
+//
+// provider 是**已归一**的上游标识：兜底同样不得跨上游 ——
+// 拿一个别的上游的账号去兜底，除了必然失败之外没有任何意义。
+func (p *Pool) pickEarliestExpiryLocked(provider string, tried map[string]bool, now time.Time) *auth.Auth {
+	var best *entry
+	for uid, e := range p.byUID {
+		if p.providerOf(e) != provider {
+			continue // 别的上游的账号：不参与本次兜底
+		}
+		if tried != nil && tried[uid] {
+			continue
+		}
+		if e.disabled {
+			continue // 禁用的账号永不参与兜底
+		}
+		if e.coolKind == CoolHard && !e.until.IsZero() && now.Before(e.until) {
+			// 处于**有效期内的长冷却** → 不参与兜底。
+			//
+			// 这是通用判据：长冷却意味着"调用方明确知道这个号暂时不可用"，
+			// 拿它兜底只会再失败一次。至于"为什么不可用"
+			// （余额耗尽/配额用尽/账号被封）由上游自己定义，pool 不解释。
+			continue
+		}
+		if p.inFlightFull(e) {
+			continue
+		}
+		exp := e.expiry(now)
+		if exp.IsZero() {
+			continue
+		}
+		if best == nil || exp.Before(best.expiry(now)) {
+			best = e
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	log.Printf("pool: fallback_earliest_expiry uid=%s until=%s kind=%s", best.a.UID, best.expiry(now).Format(time.RFC3339), best.fallbackKind(now))
+	best.lastUsed = time.Now()
+	return best.a
+}
+
+// inFlightFull 报告账号是否已占满在途名额（max=0 不限 → 恒 false）。
+// 调用方需已持 p.mu（读锁或写锁均可，本方法只读 p.maxInFlight）。
+func (p *Pool) inFlightFull(e *entry) bool {
+	if p.maxInFlight <= 0 {
+		return false
+	}
+	return e.inFlight.Load() >= int64(p.maxInFlight)
+}
+
+// minPickGap 防并发撞号窗口：同一账号在该窗口内不重复被选中（除非 top5 全部刚被用过）。
+// 生产默认 100ms；纯加权分布测试可临时置 0 关闭防撞号。
+var minPickGap = 100 * time.Millisecond
+
+// pickWeighted 三因子加权随机（claude-api selectWeightedRandom 参考口径）：
+//
+//		weight = credits 比例 × 10 + idleWeight + successRate × 3
+//
+//	  - credits 比例 = 该号 credits / 候选集内最大 credits（避免量纲爆炸）
+//	  - idleWeight = min(距 lastUsed 小时数 × idleWeightPerHour, idleWeightMax)；从未使用给满分
+//	  - successRate = successCount/(successCount+errTotal)；无请求记录给 1.5（中性偏信任）
+//
+// credits 全 0 时仍按 idle+successRate 加权（不退化均匀随机）。
+// 权重为浮点，用 int64 定点（×1e6）抽签可保持确定性随机源注入（randInt64N 语义不变）。
+// 随机源优先用 p.randInt64N（仅供测试注入确定性），nil 时回退 math/rand/v2 全局源。
+func (p *Pool) pickWeighted(cands []*entry, model string) *entry {
+	now := time.Now()
+	var maxCredits int64
+	for _, e := range cands {
+		if q := e.quotaFor(model); q > maxCredits {
+			maxCredits = q
+		}
+	}
+
+	const scale = 1_000_000 // 定点放大：int64 累加权重大整数抽签
+	weights := make([]int64, len(cands))
+	var total int64
+	for i, e := range cands {
+		w := p.weightOf(e, maxCredits, now, model)
+		weights[i] = int64(w * scale)
+		total += weights[i]
+	}
+
+	rnd := rand.Int64N
+	if p.randInt64N != nil {
+		rnd = p.randInt64N
+	}
+	if total <= 0 {
+		return cands[int(rnd(int64(len(cands))))]
+	}
+	r := rnd(total)
+	var acc int64
+	for i, e := range cands {
+		acc += weights[i]
+		if r < acc {
+			return e
+		}
+	}
+	return cands[len(cands)-1]
+}
+
+// weightOf 计算单个账号的三因子权重。
+//
+// model 非空时额度项取该模型的可用量（EffectiveFor），与 maxCredits 的口径保持一致。
+func (p *Pool) weightOf(e *entry, maxCredits int64, now time.Time, model string) float64 {
+	w := 1.0
+
+	// 1. 额度比例 ×10（会计入 mid-credit 锚点，避免全员 0 时该项为 0）。
+	if maxCredits > 0 {
+		w += float64(e.quotaFor(model)) / float64(maxCredits) * 10
+	}
+
+	// 2. 闲置补偿。
+	if e.lastUsed.IsZero() {
+		w += p.idleWeightMax // 从未使用 → 满分
+	} else {
+		hours := now.Sub(e.lastUsed).Hours()
+		idleW := hours * p.idleWeightPerHour
+		if idleW > p.idleWeightMax {
+			idleW = p.idleWeightMax
+		}
+		if idleW < 0 {
+			idleW = 0 // lastUsed 在未来（时钟回拨）时钳 0
+		}
+		w += idleW
+	}
+
+	// 3. 成功率 ×3。
+	totalReq := e.successCount + e.errTotal
+	if totalReq > 0 {
+		w += float64(e.successCount) / float64(totalReq) * 3
+	} else {
+		w += 1.5 // 无请求记录 → 中性偏信任
+	}
+	return w
+}
+
+// SetQuota 更新账号额度视图（真相来源）。
+//
+// 同一条路径同时维护派生标量 credits，保证旧消费者（前端/统计/既有测试）继续工作。
+func (p *Pool) SetQuota(uid string, q QuotaView) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		e.quota = q
+		e.credits = q.Effective()
+		p.dirty.Store(true)
+	}
+}
+
+// SetCredits 更新账号余额（单值形态）。
+//
+// # ⚠ 它不会把已有的"按模型额度"降级成单值
+//
+// 早先的实现是 `SetQuota(FromCredits(v))` —— 那会让任何一次旧路径调用
+// （scheduler 的「刷新积分」、旅行领奖后同步）**冲掉** `per_model`/`unlimited`
+// 的额度形态，ByModel 被清空。两条都是常规生产路径，一跑就中。
+//
+// 现在的规则：
+//   - 账号本来是 credits / 未知形态 → 正常转成 credits 单值（原行为）
+//   - 账号本来是 per_model / unlimited → **只更新派生标量，不动额度视图**
+//
+// 理由：旧调用点想表达的是"刷新一下余额数字"，而不是"把额度模型改成单值"。
+// 它没有能力表达后者，所以不该有后者的副作用。
+func (p *Pool) SetCredits(uid string, credits int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return
+	}
+	switch e.quota.Kind {
+	case QuotaKindPerModel, QuotaKindUnlimited:
+		// 保留额度形态，只更新派生标量。
+		// 注意这里 credits 可能与该形态的 Effective() 不一致 ——
+		// 因为旧调用方给的是一个"总余额"含义的数，与按模型的语义不同量纲。
+		// 保持视觉一致：让 Status.Credits 反映 Effective()，避免两个数打架。
+		e.credits = e.quota.Effective()
+	default:
+		e.quota = FromCredits(credits)
+		e.credits = credits
+	}
+	p.dirty.Store(true)
+}
+
+// Cooldown 冷却账号至 now+d（即时冷却：CoolSoft 429 / CoolHard 余额耗尽）。
+// 冷却入口同时是熔断器的失败信号：喂入 fails，达到阈值按指数退避熔断（与 until 正交）。
+//
+// # CoolSoft 额外做「连续软限流指数退避」（借鉴 omni2api-panel）
+//
+// 同一账号**连续**触发软冷却时，实际时长按 `d << (softStreak-1)` 逐次翻倍，
+// 封顶 softRateMax。首 streak=1 → 实际时长 = d，**单次调用语义与改造前完全一致**。
+//
+// 为什么需要它：上游 429 常是"按分钟级窗口"的限流，第一次 60s 冷却到期后
+// 立刻再撞一次是很常见的形态。固定 60s 会让这个账号在限流窗口内
+// 反复被选中又反复失败 —— 每次都是一趟白跑的往返（还占轮换预算）。
+// 指数退避让"屡次被限流"的号自动退到后排，把机会让给健康的号。
+//
+// 与熔断器的分工（两条并行的升级线，计数器独立）：
+//
+//	softStreak 管"近期被限流"，分钟~小时级放大，成功或签到解冻时清零
+//	fails      管"病态反复失败"，30m→1h→2h→6h 长期封禁
+//
+// 非 CoolSoft 的冷却入口会**清空** softRateModel（见下），
+// 避免上一次模型级限流的豁免痕迹泄漏到账号级冷却上。
+//
+// ⚠ 这是**相对时长**入口。要"冷却到某个绝对时刻"请用 CooldownUntilNextReset ——
+// 不要自己算 `until.Sub(time.Now())` 再传进来：那会经过两次读钟，把调用方给的
+// 时刻改写掉几百纳秒（详见 cooldownUntil 的注释，那是本版修掉的一个真 bug）。
+func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason string) {
+	if d < 0 {
+		d = 0
+	}
+	p.cooldownUntil(uid, kind, time.Now().Add(d), reason)
+}
+
+// cooldownUntil 是全部冷却入口的**唯一**落点：把 until 当作**绝对时刻**存下来。
+//
+// # 为什么必须区分"绝对时刻"与"相对时长"（本版修的一个真 bug）
+//
+// 原实现是两段式：
+//
+//	CooldownUntilNextReset: now := time.Now(); d := until.Sub(now)   // 读钟 #1
+//	→ Cooldown:             e.until = time.Now().Add(d)              // 读钟 #2
+//
+// 两次读钟之间的差被**加进了**调用方给的时刻。后果不是"误差小可忽略"，
+// 而是**契约被悄悄改写** —— 上游给的重置时刻没有原样生效：
+//
+//	CI(Linux) 实测: 期望 …04:00:00        实得 …04:00:00.000000331
+//	CI(Linux) 实测: 期望 …13:11:33        实得 …13:11:33.00000019
+//
+// 更麻烦的是它**只在 Linux 上暴露**：Windows 时钟粒度粗（约 15ms），
+// 两次读钟通常返回同一个值，于是本机一直是绿的 —— 属于"平台相关且不报错"
+// 的最难查的一类。所以这里把两种语义分开：
+//
+//	绝对时刻入口（CooldownUntilNextReset）→ 原样存 until，不经过时长往返
+//	相对时长入口（Cooldown）            → 先换算成绝对时刻，再走本函数
+//
+// cloneExplain 深拷贝一份错误解读（nil 安全）。
+//
+// 为什么不让调用方直接读 *e.lastExplain：那是个指向池内结构的指针，
+// 而 statusOf 是在**持锁下**组装的 —— 调用方（HTTP 处理）会在释放锁之后
+// 读它，期间出站循环可能改写同一个结构（数据竞争）。
+func cloneExplain(v *ErrorExplainView) *ErrorExplainView {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	return &out
+}
+
+// NoteErrorExplain 记录上游对一次错误的解读（供 account 状态列与提示显示）。
+//
+// # 与 NoteError 的分工
+//
+//	NoteError        只记账（errTotal +1、lastErr 时刻）—— 每次失败都调
+//	NoteErrorExplain 记录**为什么**（上游写的中文）—— 只在有解读时调
+//
+// # 为什么成功时**不**清掉它
+//
+// 这是刻意的：用户看账号池的时机，往往是"这个号好像有问题"的时候。
+// 若成功一次就把上次的解读擦掉，那么"偶发失败"的号在列表里看起来
+// 永远一切正常 —— 而那正是最难排查的形态（错误在日志里，界面上没有痕迹）。
+//
+// 所以解读是**最近一次**错误的快照，带 `at` 时刻；前端据此显示
+// "3 分钟前：余额不足"，用户自己判断这是不是当前状态。
+func (p *Pool) NoteErrorExplain(uid string, v ErrorExplainView) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return
+	}
+	if v.At.IsZero() {
+		v.At = time.Now()
+	}
+	e.lastExplain = &v
+	// 刻意不置 dirty：解读是**运行态**缓存，不是需要落盘的权威状态。
+	// 落盘它会让 state.json 每次失败都写一次，而重启后它本来就会过期
+	//（"最近一次错误"的含义跨重启已经变了）。
+}
+
+// ExplainOf 取某账号最近一次错误的解读（没有则 ok=false）。
+func (p *Pool) ExplainOf(uid string) (ErrorExplainView, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok || e.lastExplain == nil {
+		return ErrorExplainView{}, false
+	}
+	return *cloneExplain(e.lastExplain), true
+}
+
+func (p *Pool) cooldownUntil(uid string, kind CoolKind, until time.Time, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return
+	}
+	if kind == CoolSoft {
+		// 软限流仍是**时长**语义（要按 streak 指数放大），
+		// 因此换算回时长、放大后再落回绝对时刻。
+		now := time.Now()
+		d := until.Sub(now)
+		if d < 0 {
+			d = 0
+		}
+		e.softStreak++
+		until = now.Add(p.softDurationLocked(d, e.softStreak))
+	}
+	e.until = until
+	e.coolKind = kind
+	e.reason = reason
+	// 非模型级冷却入口：清空 6004 模型豁免痕迹。
+	//
+	// 不清的话会出现这一串：账号因 gpt-5.5 被模型级限流（softRateModel=gpt-5.5）
+	// → 随后因别的原因进入**账号级**冷却 → 但 exempt 判定仍看到
+	// softRateModel 非空 → 请求别的模型时被错误豁免，继续撞账号级故障。
+	e.softRateModel = ""
+	p.recordBreakerFailureLocked(e) // 冷却入口也是熔断器的失败信号
+	p.dirty.Store(true)
+}
+
+// softRateMaxOr 返回生效的 softRateMax（未注入时按默认值），供封顶计算。
+// 调用方必须已持有 p.mu。
+func (p *Pool) softRateMaxOr() time.Duration {
+	if p.softRateMax > 0 {
+		return p.softRateMax
+	}
+	return defaultSoftRateMax
+}
+
+// softDurationLocked 按连续软冷却次数把基数 d 指数放大：`d << (streak-1)`，封顶 softRateMax。
+//
+// streak<=1 时原样返回 d —— 这一条保证了"单次 429"的行为与改造前逐字节一致。
+//
+// 左移位数受 softStreakShiftMax 限制：streak 极大时（例如一个号被限流几十次）
+// 无上限的左移会让 time.Duration 溢出成负数，冷却变成一个**过去的时刻**
+// —— 表现为"这个号突然又能用了"，而且看不出原因。
+//
+// 溢出兜底：左移后 d <= 0 说明已经溢出，按封顶处理。
+// 调用方必须已持有 p.mu。
+func (p *Pool) softDurationLocked(d time.Duration, streak int) time.Duration {
+	if streak <= 1 {
+		return d
+	}
+	shift := streak - 1
+	if shift > softStreakShiftMax {
+		shift = softStreakShiftMax
+	}
+	d <<= shift
+	if max := p.softRateMaxOr(); d > max || d <= 0 {
+		d = max
+	}
+	return d
+}
+
+// CooldownSoftForModel 429 的**模型级**软冷却入口。
+//
+// 与 Cooldown 的区别：当上游明说"将在 … 重置"时（429 code=6004），
+// 把冷却截止精确设为 resetAt，而不是靠"基数 × 指数退避"去猜。
+//
+// # 收窄规则
+//
+//	resetAt 非零（上游给了权威时刻）→ until = min(resetAt, now+softRateMax)，
+//	                                    softRateModel = model（该模型被豁免）
+//	resetAt 零值（无时间文案 / 非 6004）→ 完全退回 Cooldown 的现状
+//	                                    （softStreak 指数退避 + 封顶），softRateModel 保持空
+//
+// # 为什么带 resetAt 时**不做**指数放大
+//
+// 重置时间已经是上游的权威答案。再指数放大等于无视它明说的恢复时刻 ——
+// 那正是本入口要解决的问题（改造前的形态就是"猜一个越来越长的冷却"）。
+//
+// ⚠ softStreak 仍然递增：解析时间的这次冷却不参与退避，但计数照常累加，
+// 后续**无时间**的 6004 会从当前 streak 继续退避。两个口径各自成立。
+//
+// 熔断信号照旧喂入（冷却与熔断正交，行为与 Cooldown 一致）。
+func (p *Pool) CooldownSoftForModel(uid string, base time.Duration, resetAt time.Time, model, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return
+	}
+	e.softStreak++
+	hasReset := !resetAt.IsZero()
+	now := time.Now()
+	var d time.Duration
+	if hasReset {
+		// 上游给了权威时刻：取 min(resetAt, now+softRateMax)。
+		cap := now.Add(p.softRateMaxOr())
+		switch {
+		case resetAt.After(cap):
+			d = cap.Sub(now)
+		case resetAt.After(now):
+			d = resetAt.Sub(now)
+		default:
+			// 重置时刻已过（时钟偏移 / 文案过期）→ 冷却极短，立即恢复。
+			// 用 1ms 而不是 0：0 会让 until = now，"是否在冷却中"的判定
+			// 变成与调用时刻的纳秒级竞态。
+			d = time.Millisecond
+		}
+		e.softRateModel = model // 仅带解析时间的 6004 才记模型（豁免画界）
+	} else {
+		d = p.softDurationLocked(base, e.softStreak)
+		e.softRateModel = ""
+	}
+	e.until = now.Add(d)
+	e.coolKind = CoolSoft
+	e.reason = reason
+	p.recordBreakerFailureLocked(e)
+	p.dirty.Store(true)
+}
+
+// recordBreakerFailureLocked 累计一次熔断失败；达到阈值则按指数退避熔断。
+// 熔断与冷却（until）解耦：冷却按错误类别给固定时长，熔断则对"反复失败"逐次加长封禁。
+// 调用方必须已持有 p.mu。时间窗衰减已在 NoteError 里做（见其注释）。
+func (p *Pool) recordBreakerFailureLocked(e *entry) {
+	e.fails++
+	if e.fails < p.breakerThreshold {
+		return
+	}
+	d := p.breakerCooldown
+	for i := 0; i < e.retryCount; i++ {
+		d *= 2
+		if d >= p.breakerCooldownMax {
+			d = p.breakerCooldownMax
+			break
+		}
+	}
+	// 触发熔断：重置失败计数供下一轮重新累计；retryCount 递增放大退避指数。
+	e.fails = 0
+	e.retryCount++
+	e.breakerUntil = time.Now().Add(d)
+}
+
+// CooldownUntilNextReset 冷却到调用方给出的"下次重置时刻"。
+//
+// # 为什么改成通用形式（Task 3c 的解耦收尾）
+//
+// 早先这里叫 `CooldownUntilTomorrow4AM`，内部写死次日 04:00 ——
+// 而 **04:00 是 workbuddy 的签到恢复时刻**（它自己的签到时点是 09:00/21:00，
+// 硬冷却等到次日 04:00 才解除）。codearts 没有签到，次日 4 点对它毫无意义。
+//
+// 现在由**调用方（上游）**算好目标时刻传进来：
+//
+//	workbuddy  → cmd/server 注入 NextResetAt = workbuddy.NextResetAt
+//	codearts   → 自己算一个（如 now.Add(90*time.Minute)）
+//
+// pool 只负责"冷却到某个时刻"，不再知道那个时刻是怎么来的。
+// 原先那个 Deprecated 的 4 点薄封装与 nextDay4AM 已随 Task 3c 迁入
+// internal/workbuddy（见 reset.go 的 NextCheckinReset）。
+//
+// ⚠ 存下来的必须是**调用方给的那个时刻本身**，不能经过 `until.Sub(now)` 再
+// `now.Add(d)` 的往返 —— 那会引入几百纳秒的平台相关偏差（见 cooldownUntil）。
+// 目标时刻已过时退化为"立即结束冷却"，与原先 d=0 的行为一致。
+func (p *Pool) CooldownUntilNextReset(uid string, until time.Time, reason string) {
+	if now := time.Now(); until.Before(now) {
+		until = now
+	}
+	p.cooldownUntil(uid, CoolHard, until, reason)
+}
+
+// Disable 永久禁用（session 死亡），需人工重登后手工恢复或文件替换。
+func (p *Pool) Disable(uid, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		e.disabled = true
+		e.reason = reason
+		p.dirty.Store(true)
+	}
+}
+
+// NoteSessionDead 记录一次 session 失效（12153），返回是否**因此被禁用**。
+//
+// # 为什么改成计数门控（借鉴 omni2api-panel）
+//
+// 改造前 handler 对 ErrKindSessionDead 直接调 `Pool.Disable` —— 一次 12153
+// 就永久禁用。而 12153 的成因里有一大类是**瞬时抖动**（网络闪断、
+// 上游瞬时故障、token 刷新竞态）：账号完全健康，却因为一次抖动
+// 掉出池子，且界面上只显示"已禁用"，没有线索指向真因。
+//
+// 现在只有**连续**达到 sessionDeadThreshold 次才禁用。任何一次成功
+// （NoteSuccess）都会清零，所以：
+//
+//	真抖动      → 下一次请求成功 → 计数归零 → 账号毫发无伤
+//	session 真死 → 每次请求都 12153 → 三次后禁用（行为与改造前一致）
+//
+// 未达阈值的每一次仍然记错误并喂熔断计数：它们确实是失败，
+// 不该被当成"无事发生"（否则一个持续抖动的号会被无限使用）。
+func (p *Pool) NoteSessionDead(uid string) (disabled bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	e.sessionDeadStreak++
+	e.errTotal++
+	e.lastErr = time.Now()
+	if e.sessionDeadStreak >= sessionDeadThreshold {
+		e.disabled = true
+		e.reason = "12153 session dead（连续 " + itoa(e.sessionDeadStreak) + " 次）"
+		p.dirty.Store(true)
+		return true
+	}
+	p.recordBreakerFailureLocked(e)
+	p.dirty.Store(true)
+	return false
+}
+
+// SessionDeadStreak 返回账号当前连续 session 失效次数（管理台展示用）。
+func (p *Pool) SessionDeadStreak(uid string) int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if e, ok := p.byUID[uid]; ok {
+		return e.sessionDeadStreak
+	}
+	return 0
+}
+
+// itoa 极简整数转字符串（避免为一个日志字符串引入 strconv 到本文件顶部）。
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	neg := i < 0
+	if neg {
+		i = -i
+	}
+	var b [20]byte
+	p := len(b)
+	for i > 0 {
+		p--
+		b[p] = byte('0' + i%10)
+		i /= 10
+	}
+	if neg {
+		p--
+		b[p] = '-'
+	}
+	return string(b[p:])
+}
+
+// reviveCoolingLocked 只清冷却（until/coolKind/reason）并更新 credits，不动熔断器
+// （fails/retryCount/breakerUntil）。签到解冻走这里：签到成功只证明余额恢复与
+// billing 通道健康，不证明 chat 通道健康，熔断（连续 5xx 信号）不应被签到覆盖。
+// 调用方必须已持有 p.mu。
+func (p *Pool) reviveCoolingLocked(e *entry, q QuotaView) {
+	e.quota = q
+	e.credits = q.Effective()
+	e.until = time.Time{}
+	e.coolKind = 0
+	e.reason = ""
+	// 签到解冻同时清软限流退避计数：余额恢复说明上游侧状态已刷新，
+	// 保留旧的连续限流次数会让解冻后的第一次 429 直接吃一个放大过的冷却。
+	e.softStreak = 0
+	e.softRateModel = "" // 冷却域清零时一并清模型豁免痕迹
+	// session 失效计数也清零：签到成功本身就是一次"会话可用"的证明
+	// （它走的正是同一条凭证路径）。不清会让签到解冻后的号继续攒旧的计数。
+	e.sessionDeadStreak = 0
+}
+
+// ReenableIfUsable 签到后解冻：由**调用方（上游）**判断这个账号是否已可用。
+//
+// 为什么要传入 usable 而不是让 pool 判断"余额 > 0"：
+// 改造前是 ReenableIfCredits(uid, remain)，里面写着 if remain > 0 ——
+// 那是**上游专属规则**（workbuddy 的"有积分就能用"）。
+// codearts 的账号可能某个模型配额用尽但整体仍可用，
+// 也可能有余额却因凭证过期而不可用 —— pool 无从判断。
+//
+// 所以把判断权交给上游，pool 只执行"解冻或不解冻"。
+// 注意：不碰熔断器 —— 熔断到期或下次 chat 成功（NoteSuccess）才恢复。
+func (p *Pool) ReenableIfUsable(uid string, usable bool, q QuotaView) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		if usable && !e.disabled {
+			p.reviveCoolingLocked(e, q)
+		} else {
+			e.quota = q
+			e.credits = q.Effective()
+		}
+		p.dirty.Store(true)
+	}
+}
+
+// ReenableIfCredits 旧 API 的薄封装：把"remain > 0 即可用"这条上游规则
+// 留在**调用方**语义里，pool 不再内置它。
+//
+// 保留是为了 55 处既有调用点零改动（见 SetCredits 的注释）。
+func (p *Pool) ReenableIfCredits(uid string, remain int64) {
+	p.ReenableIfUsable(uid, remain > 0, FromCredits(remain))
+}
+
+// NoteError 记录一次错误：喂入唯一的连续失败计数器 fails + 累计错误 errTotal。
+// 达到 breakerThreshold 触发熔断（指数退避），连续失败语义整体并入熔断器（不再有独立的 err 冷却）。
+func (p *Pool) NoteError(uid string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		e.errTotal++
+		// A2 移植：错误计数按时间窗衰减 —— 用**上一次**错误时间判断
+		//（刚设的 lastErr 不能拿来自己跟自己比）。窗口外的失败先把计数清零，
+		// 只有窗口内的**突发**失败才累计到熔断阈值。
+		if breakerFailureWindow > 0 && time.Since(e.lastErr) > breakerFailureWindow {
+			e.fails = 0
+		}
+		e.lastErr = time.Now()
+		p.recordBreakerFailureLocked(e)
+		p.dirty.Store(true)
+	}
+}
+
+// NoteSuccess 成功请求累加成功计数、刷新 lastSuccess，并清空连续失败与熔断运行态。
+// 二进制模型：清 fails + retryCount + breakerUntil；不碰 until/coolKind（那些是即时冷却，各自到期）。
+func (p *Pool) NoteSuccess(uid string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		e.successCount++
+		e.lastSuccess = time.Now()
+		e.fails = 0
+		e.retryCount = 0
+		e.breakerUntil = time.Time{}
+		// 软限流退避线同样清零：一次成功证明"这个号现在没被限流"，
+		// 继续按历史连续次数放大下一次冷却会让已恢复的号被过度惩罚。
+		e.softStreak = 0
+		e.softRateModel = ""
+		// session 失效计数同样清零：一次成功证明会话是活的。
+		// 这是"瞬时抖动"能自愈的关键 —— 不清的话它会把抖动一路攒到阈值，
+		// 三次跨天的无关抖动叠加起来就误禁了一个健康的号。
+		e.sessionDeadStreak = 0
+		// 凭证续期失败计数同样清零（A2 移植，见 health.go）：一次成功说明 token 又活了。
+		e.refreshFails = 0
+		p.dirty.Store(true)
+	}
+}
+
+// Status 查询单账号状态。
+func (p *Pool) Status(uid string) (Status, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return Status{}, false
+	}
+	return p.statusOf(uid, e), true
+}
+
+// ProviderOf 返回账号**生效的**上游标识（只读访问器）。
+//
+// # 为什么需要这个只读出口
+//
+// providerOf(e) 是池子内部唯一的"这个号属于哪个上游"的判据，但它收 *entry
+// 且要求调用方持锁，池外拿不到。装配层（cmd/server）在组装出站凭证时必须
+// 回答同一个问题 —— 「调用方说的这个 id，真的是这个号的归属吗」——
+// 若不许它问，它就只能像改造前那样**默认 uid 的来源可信**，于是跨上游串号。
+//
+// ok=false 表示 uid 不在池里（与 AuthByUID 返回 nil 同源，但这里用显式的
+// 布尔而不是空串："" 是一个**合法**的上游标识 —— 它是 DefaultProvider）。
+//
+// 判据与 AvailableUIDsFor / PickByUIDFor / PickFor 用的是**同一个**
+// providerOf + normalizeProvider 组合，所以四处的"归属"口径不可能分叉。
+func (p *Pool) ProviderOf(uid string) (string, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return "", false
+	}
+	return p.providerOf(e), true
+}
+
+// ProviderOf 的只读出口已被上面那条路径使用；出口层的**错误策略**同样需要它：
+// applyErrorPolicy 只拿到出错的 uid，却必须按**该账号所属的上游**去问
+// "你什么时候能恢复"。早先没有这个访问器，核心只能用无参回调替所有上游
+// 回答同一个时刻，于是 codearts 的号被冷到 workbuddy 的次日 04:00
+// （P2：无参回调 = 默认上游的隐式硬编码）。
+
+// AuthByUID 返回账号的完整凭证（给调度器/运维接口用）。
+func (p *Pool) AuthByUID(uid string) *auth.Auth {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if e, ok := p.byUID[uid]; ok {
+		return e.a
+	}
+	return nil
+}
+
+// AvailableUIDs 返回当前 healthy 且未占满在途名额的账号 UID 列表（按 UID 排序，稳定输出）。
+// 供会话粘性路由（internal/session）做快路径命中校验 + 双段分配；无可用返回空切片。
+//
+// 范围是**默认上游**：粘性路由是单上游时代的机制，调用方（session.Router）
+// 拿到的 Available 回调没有上游上下文，按默认上游给是唯一向后兼容的选择。
+// 需要按上游列可用号请用 AvailableUIDsFor。
+func (p *Pool) AvailableUIDs() []string {
+	return p.AvailableUIDsFor(DefaultProvider)
+}
+
+// AvailableUIDsFor 返回指定上游里 healthy 且未占满在途名额的账号 UID 列表（按 UID 排序）。
+func (p *Pool) AvailableUIDsFor(provider string) []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	want := p.normalizeProvider(provider)
+	uids := make([]string, 0, len(p.byUID))
+	for uid, e := range p.byUID {
+		if p.providerOf(e) != want {
+			continue
+		}
+		if !e.healthy(now) {
+			continue
+		}
+		if p.inFlightFull(e) {
+			continue
+		}
+		uids = append(uids, uid)
+	}
+	sort.Strings(uids)
+	return uids
+}
+
+// PickByUID 若 uid 当前 healthy 且未占满在途名额，返回其凭证（记录 lastUsed 防撞号）；
+// 否则返回 nil。供会话粘性路由命中校验与直取使用。
+//
+// ⚠ **不校验 provider** —— 这是有意的历史签名，不是可供路由使用的判据。
+// 直接用它在多上游部署里会跨上游串号：会话先绑到 codearts 的号，
+// 之后同一个 key 的请求换成 workbuddy 前缀时，粘性命中会把 **codearts 的号**
+// 塞进 workbuddy 的出站循环。改造后出站按"账号自己的上游"分派，于是它**不报错**，
+// 只是静默用错上游的账号 —— 比失败更难发现。
+//
+// 路由选号请一律用 PickByUIDFor（带本次请求的 provider）。
+// 保留本方法是因为"取一个已知 uid 的凭证"在没有上游上下文时（运维/诊断/单上游）
+// 仍是合法需求；它等价于 PickByUIDFor(DefaultProvider, uid) 之外的
+// "不带上游过滤"语义，调用方必须自己保证 uid 的来源可信。
+func (p *Pool) PickByUID(uid string) *auth.Auth {
+	return p.pickByUIDLocked(uid, "", false)
+}
+
+// PickByUIDFor 在**指定上游内**按 uid 取号：uid 不存在、不属于该上游、
+// 不 healthy、或已占满在途名额，一律返回 nil（记录 lastUsed 防撞号）。
+//
+// provider 为空走默认上游（与 PickFor/AvailableUIDsFor 的归一语义一致）。
+//
+// # 为什么粘性校验必须带上游
+//
+// 会话粘性是**池子内**的概念，而池子是多上游共用的：同一个会话 key 绑定的 uid
+// 是上一次请求的产物，下一次请求的 model 前缀却可能变（客户端换模型 = 换上游）。
+// 只按"healthy + 未满载"放行，等于承认粘性可以跨上游 —— 而跨上游的号
+// 对本次请求是**没有意义**的账号（凭证结构都不同）。
+//
+// 返回 nil 让调用方走"解绑 + 正常轮换"：这是正确的降级 ——
+// 会话粘性是优化，不是契约；跨上游时放弃粘性、按本次请求的上游重新选号，
+// 比坚持一个用不了的绑定正确得多。
+func (p *Pool) PickByUIDFor(provider, uid string) *auth.Auth {
+	return p.pickByUIDLocked(uid, provider, true)
+}
+
+// pickByUIDLocked 是 PickByUID/PickByUIDFor 的共用实现。
+// checkProvider=false 时跳过上游过滤（PickByUID 的向后兼容语义）。
+func (p *Pool) pickByUIDLocked(uid, provider string, checkProvider bool) *auth.Auth {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return nil
+	}
+	if checkProvider && p.providerOf(e) != p.normalizeProvider(provider) {
+		return nil // 别的上游的号：本次请求用不上（与 pickFor 的候选集过滤同源）
+	}
+	now := time.Now()
+	if !e.healthy(now) {
+		return nil
+	}
+	if p.inFlightFull(e) {
+		return nil
+	}
+	e.lastUsed = now
+	return e.a
+}
+
+// CountsDetailed 返回 total/healthy/cooling/disabled/inFlightFull 五类计数。
+// cooling 含常规冷却（until）与熔断期（breakerUntil）。
+// 注意：healthy 口径不含 inFlight 维度（是状态机权威判定，只看 disabled/until/breakerUntil）；
+// inFlightFull 是 healthy 的子集——healthy 里已达在途上限的账号数，供 /status 透出满载度。
+// 与 ServableNow 的区别见该函数注释。
+func (p *Pool) CountsDetailed() (total, healthy, cooling, disabled, inFlightFull int) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	for _, e := range p.byUID {
+		total++
+		switch {
+		case e.disabled:
+			disabled++
+		case !e.healthy(now):
+			cooling++
+		default:
+			healthy++
+			if p.inFlightFull(e) {
+				inFlightFull++
+			}
+		}
+	}
+	return total, healthy, cooling, disabled, inFlightFull
+}
+
+// ServableNow 报告池当前是否可服务：存在至少一个 healthy 且未占满在途名额的账号。
+// 与 CountsDetailed 的 healthy 口径不同：healthy 只看 disabled/until/breakerUntil（状态机权威判定），
+// 不看 inFlight；ServableNow 额外叠加在途维度，与 chat 的真实可达性（Pick 会跳过 inFlightFull 账号）对齐。
+// 专供 /healthz 用，避免"全账号 healthy 但都占满"时探活误报 200 而 chat 返回 503 的口径裂缝。
+func (p *Pool) ServableNow() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	for _, e := range p.byUID {
+		if e.healthy(now) && !p.inFlightFull(e) {
+			return true
+		}
+	}
+	return false
+}
+
+// List 返回所有账号状态（按 UID 排序，稳定输出）。
+func (p *Pool) List() []Status {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	uids := make([]string, 0, len(p.byUID))
+	for uid := range p.byUID {
+		uids = append(uids, uid)
+	}
+	sort.Strings(uids)
+	out := make([]Status, 0, len(uids))
+	for _, uid := range uids {
+		out = append(out, p.statusOf(uid, p.byUID[uid]))
+	}
+	return out
+}
+
+// ListFor 返回指定上游的账号状态（按 UID 排序，稳定输出）。
+// provider 为空时归一成默认上游 —— 与 List 的区别仅在于是否按上游过滤。
+func (p *Pool) ListFor(provider string) []Status {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	want := p.normalizeProvider(provider)
+	uids := make([]string, 0, len(p.byUID))
+	for uid, e := range p.byUID {
+		if p.providerOf(e) != want {
+			continue
+		}
+		uids = append(uids, uid)
+	}
+	sort.Strings(uids)
+	out := make([]Status, 0, len(uids))
+	for _, uid := range uids {
+		out = append(out, p.statusOf(uid, p.byUID[uid]))
+	}
+	return out
+}
+
+// Providers 返回池中实际存在账号的上游标识（按字典序，稳定输出）。
+//
+// 用途：管理台据此做分组展示，不必事先知道有哪些上游 ——
+// 加第 N 个上游时核心仍然零改动（判据 1）。
+func (p *Pool) Providers() []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	set := map[string]bool{}
+	for _, e := range p.byUID {
+		set[p.providerOf(e)] = true
+	}
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// statusOf 组装单账号对外状态。调用方必须已持有 p.mu（读锁即可）。
+func (p *Pool) statusOf(uid string, e *entry) Status {
+	now := time.Now()
+	st := Status{
+		UID:      uid,
+		Nickname: e.a.Nickname,
+		// Provider 是**生效**的上游标识（未打标签的账号回落成默认上游），
+		// 而不是 entry.provider 的原始值 —— 管理台要看到"这个号实际上归谁"。
+		Provider: p.providerOf(e),
+		// Clone 深拷贝：否则调用方改 Status 返回值会改到池内状态（绕过锁）。
+		Quota: e.quota.Clone(),
+		// Credits 是真正的**派生值**：从额度视图现算，不再读缓存的 e.credits。
+		//
+		// 评审指出早先的写法（直接返回 e.credits）只是"靠成对写入维持一致"，
+		// 属于约定而非构造。现算之后，任何漏改一处的路径都不会造成两个数打架。
+		Credits:         e.quota.Effective(),
+		Cooling:         now.Before(e.until) || now.Before(e.breakerUntil),
+		Reason:          e.reason,
+		Disabled:        e.disabled,
+		SuccessCount:    e.successCount,
+		ErrTotal:        e.errTotal,
+		LastSuccessTime: e.lastSuccess,
+		LastErrTime:     e.lastErr,
+		// 深拷贝一份解读：与 Quota 同一条理由 —— 调用方改了 Status 不该改到池内状态。
+		LastError:    cloneExplain(e.lastExplain),
+		Until:        e.until,
+		InFlight:     int(e.inFlight.Load()),
+		BreakerFails: e.fails,
+		BreakerUntil: e.breakerUntil,
+	}
+	if st.Cooling {
+		// 冷却剩余秒数（向上取整，避免 0 显示为已到期）。
+		st.CoolRemaining = int64(time.Until(e.until).Seconds() + 0.999)
+		if st.CoolRemaining < 0 {
+			st.CoolRemaining = 0
+		}
+		st.CoolKind = e.coolKind.String()
+	}
+	return st
+}
+
+// ---------------------------------------------------------------------------
+// 持久化
+// ---------------------------------------------------------------------------
+
+func (p *Pool) load() {
+	raw, err := os.ReadFile(p.stateFp)
+	if err != nil {
+		return
+	}
+	var sf stateFile
+	if json.Unmarshal(raw, &sf) != nil {
+		return
+	}
+	p.applyAccountsLocked(sf.Accounts)
+}
+
+// applyAccountsLocked 用持久化账号状态覆盖/插入 byUID（placeholder 凭证，Add 时换全）。
+// 本地 load() 与 Redis 快照恢复共用；调用方必须已持有 p.mu。
+func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
+	for uid, s := range accounts {
+		// err_total 优先；旧文件的 err_count（连续错误）作一次性迁移源映射进来（二者取较大者，
+		// 尽最大可能保留历史观测信号——旧语义下 err_count 也真实发生过错误，不应丢）。
+		errTotal := s.ErrTotal
+		if int64(s.ErrCount) > errTotal {
+			errTotal = int64(s.ErrCount)
+		}
+		p.byUID[uid] = &entry{
+			a: &auth.Auth{UID: uid}, // placeholder，Add 时会换成完整凭证
+			// 归属标签从落盘状态恢复（旧文件无此字段 → 空串 → 默认上游）。
+			provider: s.Provider,
+			// 从落盘状态恢复额度。旧状态文件没有 quota 字段（零值），
+			// 此时回落到 Credits 以保持向后兼容。
+			quota:        restoreQuota(s.Quota, s.Credits),
+			credits:      s.Credits,
+			disabled:     s.Disabled,
+			reason:       s.Reason,
+			until:        s.Until,
+			coolKind:     s.CoolKind,
+			successCount: s.SuccessCount,
+			errTotal:     errTotal,
+			lastErr:      s.LastErr,
+			lastSuccess:  s.LastSuccess,
+			// 软限流退避状态（旧文件无此字段 → 零值 = 无连续限流记录，
+			// 与改造前行为一致，无需迁移脚本）。
+			softStreak:    s.SoftStreak,
+			softRateModel: s.SoftRateModel,
+			// session 失效连续计数（旧文件无此字段 → 0 = 全新计数）。
+			sessionDeadStreak: s.SessionDeadStreak,
+		}
+	}
+}
+
+// applySnapshotLocked 用 Redis 快照覆盖内存状态（已在择新判定后采用）。调用方必须已持有 p.mu。
+func (p *Pool) applySnapshotLocked(s snapshot) {
+	p.byUID = map[string]*entry{}
+	p.applyAccountsLocked(s.Accounts)
+}
+
+func (p *Pool) saveLocked() {
+	if p.stateFp == "" {
+		return
+	}
+	sf := p.stateOverviewLocked()
+	raw, err := json.MarshalIndent(sf, "", "  ")
+	if err != nil {
+		p.notePersistFail(err)
+		return
+	}
+	if dir := filepath.Dir(p.stateFp); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	tmp := p.stateFp + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		p.notePersistFail(err)
+		return
+	}
+	if err := os.Rename(tmp, p.stateFp); err != nil {
+		p.notePersistFail(err)
+		return
+	}
+	if p.persistFails > 0 {
+		// 从连续失败中恢复：打一条恢复日志，避免"错误打完却无人知道已恢复"。
+		log.Printf("pool: state.json 落盘恢复（此前连续失败 %d 次）", p.persistFails)
+		p.persistFails = 0
+	}
+
+	// 同步镜像一份快照到 Redis（fire-and-forget），与本地 state.json 并存作恢复备份。
+	if p.store != nil {
+		snapRaw, err := json.Marshal(snapshot{stateFile: sf, SavedAt: time.Now()})
+		if err == nil {
+			p.store.SaveState(snapRaw)
+		}
+	}
+}
+
+// notePersistFail 记录一次本地 state.json 落盘失败，并按节流规则决定是否打日志：
+// 首败（状态成功→失败）打完整错误、每 persistLogEvery 次连续失败打一条提醒、
+// 其余连续失败静默（flusher 5s 一把，磁盘持续满时不刷屏）。
+// 恢复成功的日志由 saveLocked 在成功路径统一打。与 redisstore 三处异步写的
+// "失败仅打日志、不向上抛"范式对齐，但落盘失败对运维是盲区，故多一层节流（notification）。
+func (p *Pool) notePersistFail(err error) {
+	if p.persistFails == 0 {
+		log.Printf("pool: state.json 落盘失败: %v", err)
+	} else if p.persistFails%persistLogEvery == 0 {
+		log.Printf("pool: state.json 连续落盘失败 %d 次: %v", p.persistFails, err)
+	}
+	p.persistFails++
+}
+
+// stateOverviewLocked 收集当前内存状态为 stateFile（供落盘 + 快照镜像复用）。调用方必须已持 p.mu。
+func (p *Pool) stateOverviewLocked() stateFile {
+	sf := stateFile{Accounts: map[string]stateAccount{}}
+	for uid, e := range p.byUID {
+		sf.Accounts[uid] = stateAccount{
+			// ⚠ Quota 是真相来源，**必须落盘**。
+			// 早先漏了这一行：每次 flush 都会把按模型额度写成空对象，
+			// 重载后退化成 credits —— 正是 QuotaView 要防止的 int64 坍缩。
+			// 有回归测试守着（TestReviewerF1_PerModelQuotaSurvivesFlush）。
+			Quota:   e.quota,
+			Credits: e.credits,
+			// 归属标签必须落盘（理由见 stateAccount.Provider）。
+			Provider:     e.provider,
+			Disabled:     e.disabled,
+			Reason:       e.reason,
+			Until:        e.until,
+			CoolKind:     e.coolKind,
+			SuccessCount: e.successCount,
+			ErrTotal:     e.errTotal,
+			LastSuccess:  e.lastSuccess,
+			LastErr:      e.lastErr,
+			// 软限流退避状态必须落盘（理由见 stateAccount.SoftStreak）：
+			// 不落盘的话一次重启就把退避指数清零，而上游的限流并未随我们重启消失。
+			SoftStreak:    e.softStreak,
+			SoftRateModel: e.softRateModel,
+			// session 失效连续计数必须落盘（理由见 stateAccount.SessionDeadStreak）。
+			SessionDeadStreak: e.sessionDeadStreak,
+		}
+	}
+	return sf
+}
+
+// ---------------------------------------------------------------------------
+// 人工干预（管理台用）：以下方法都只动池内运行态，不碰磁盘凭证文件；
+// 凭证文件的增删由调用方（admin handler）负责，避免 pool 反向依赖 auths 目录布局。
+// ---------------------------------------------------------------------------
+
+// Enable 解除 Disable 造成的永久禁用，并清掉禁用原因；返回账号是否存在。
+// 刻意不清冷却/熔断：禁用期间累积的冷却语义与「人工放行」是两件事，
+// 想一并清掉请再调 ClearCooldown。
+func (p *Pool) Enable(uid string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	e.disabled = false
+	e.reason = ""
+	p.dirty.Store(true)
+	return true
+}
+
+// ClearCooldown 人工重置：清软/硬冷却与熔断运行态（fails/retryCount/breakerUntil），
+// 让账号立刻重新参与选号。credits 不动——积分只能由上游查询结果覆盖。
+//
+// 同时清空 softStreak/softRateModel：这是"人工宣布这个号没问题"，
+// 留着退避指数会让解冻后的第一次 429 立刻吃一个被放大过的冷却 ——
+// 用户点了"清冷却"却发现它一分钟后又冷了两小时，那是个说不通的行为。
+func (p *Pool) ClearCooldown(uid string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	e.until = time.Time{}
+	e.coolKind = 0
+	e.reason = ""
+	e.fails = 0
+	e.retryCount = 0
+	e.breakerUntil = time.Time{}
+	e.softStreak = 0
+	e.softRateModel = ""
+	// session 失效计数一并清空：这是人工宣布"这个号没问题"，
+	// 留着旧计数会让它带着 2/3 的进度重新上阵，下次抖动就被误禁。
+	e.sessionDeadStreak = 0
+	p.dirty.Store(true)
+	return true
+}
+
+// Remove 把账号移出池并立即落盘（避免 state.json 里的残留让它在重启后复活）。
+// 返回账号是否存在。调用方若要同时删凭证文件，请自行删除后再调用本方法。
+func (p *Pool) Remove(uid string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, ok := p.byUID[uid]; !ok {
+		return false
+	}
+	delete(p.byUID, uid)
+	p.dirty.Store(true)
+	p.saveLocked() // 立即落盘：删除是低频人工操作，不能等 5s 定时 flush
+	return true
+}

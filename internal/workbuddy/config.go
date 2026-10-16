@@ -1,0 +1,175 @@
+// config.go workbuddy 上游自己的业务配置。
+//
+// # 为什么配置跟着上游走
+//
+// 改造前这些字段长在 scheduler.Config 上，于是核心调度器的配置结构里
+// 出现了「猫猫旅行自动领奖」「成长中心六个开关」这类 CodeArts 永远不存在的项。
+// 加第二个上游就得往同一结构里继续塞它专属的字段。
+//
+// 现在它们属于 workbuddy：核心只认识 gateway.Job，不关心某个上游有几个开关。
+package workbuddy
+
+import (
+	"time"
+
+	"github.com/NaiZi899/omni2api/internal/checkinlog"
+	"github.com/NaiZi899/omni2api/internal/upstream"
+)
+
+// Config workbuddy 上游的业务依赖与开关。
+//
+// 命名沿用改造前的 scheduler.Config：任务开关用「禁用」而非「启用」，
+// 于是零值 Config 即「成长/旅行守卫都开启」，与引入开关前的行为逐字一致。
+type Config struct {
+	// Pool 账号池的消费方视图（见 accounts.go）。
+	//
+	// 刻意不是 *pool.Pool：上游包不得依赖 pool（架构约束），
+	// 且本包对池的全部需求就是 AccountPool 里那几个方法。
+	// nil 时所有需要账号的操作都不做任何事（构造期可选）。
+	Pool AccountPool
+
+	// Provider 本上游在账号池里的归属标识（= ID()，装配层填 workbuddy.ProviderID）。
+	//
+	// # 为什么要有它，而不是直接用包内的 providerID 常量
+	//
+	// 因为"本包注册成哪个 ID"是**装配层的事实**：账号池按这个标签分域，
+	// 装配层也可能用别的标识注册同一个实现（多实例场景）。
+	// 本包读自己的常量就等于假定两者永远一致 —— 一旦不一致，
+	// 按上游取号会取到空集，界面整片空白，且不会有任何报错。
+	//
+	// # 零值 = "" 时的行为
+	//
+	// 空串交给池子（ListFor("")）按"未打标签 = 默认上游"解释，
+	// 与改造前"只有一个上游"的行为逐字一致 —— 既有测试与
+	// NewWithConfig(Config{...}) 的手工构造都不需要改。
+	Provider string
+
+	// ID 本实例在 registry 里注册的唯一标识。
+	//
+	// # 为什么需要它（海外版渠道支持）
+	//
+	// 海外版 WorkBuddy AI 与国内版是同一个上游实现、同一个凭证格式，
+	// 只是端点域不同。按"加一个目录 + 实现接口 + 配置加一段"的判据，
+	// 装配层用**同一个 Provider 实现**注册第二个实例（如 workbuddy-intl）。
+	// registry 要求每个 Provider 的 ID() 全局唯一 —— 包级常量 providerID
+	// 满足不了两个实例，所以 ID() 落到配置上。
+	//
+	// 零值 = "" 时用包级常量 providerID（"workbuddy"），向后兼容。
+	// 渠道（cn/intl）不在这里表达：路由由**凭证**的 channel 字段决定
+	// （见 auth.DeriveChannel / upstream 的 base 选择），本实例只管
+	// 自己在 registry 与账号池里的标签。
+	ID string
+
+	// AuthDir 本上游凭证的落盘目录（供 `gateway.LoginFlow.AuthDir` 用）。
+	//
+	// # 为什么不直接用核心的 AuthDir
+	//
+	// 实测踩过：codearts 授权成功后，凭证被写进了**workbuddy 的目录**
+	//（核心的 `h.cfg.AuthDir` 是默认上游的目录）。
+	// 按上游分子目录之后（`auths/workbuddy/`、`auths/codearts/`），
+	// 每个上游必须自报自己的目录 —— 核心不该猜。
+	//
+	// 空串表示"用核心的默认目录"（单上游部署的旧形态，行为不变）。
+	AuthDir string
+	// Client 上游 HTTP 客户端。nil 时退回 upstream.New()。
+	Client *upstream.Client
+	// Log 任务结果历史（可选；nil = 不记录）。管理台的「今日签到了吗」也读它。
+	Log *checkinlog.Log
+
+	// Login 本上游的登录流程（可选；nil = 不支持页内添加账号）。
+	//
+	// # 为什么是接口而不是具体的 *oauth.Client
+	//
+	// 与 Pool 同一个理由：本包不该依赖"登录是怎么实现的"。
+	// 接口只声明本包真正要用的两个动作（申请授权链接、轮询取凭证），
+	// 装配层把具体的 oauth 客户端适配进来。
+	//
+	// 这样做的直接收益：本包不需要 import internal/oauth ——
+	// 而 oauth.Client 的授权站点是构造时绑定的（指向本上游的站点），
+	// 那种"我知道自己是哪个上游"的知识不该散进上游包的逻辑里。
+	//
+	// nil 时 LoginFlow() 返回 false，管理台据此在 manifest 里
+	// 把 login 置空 → 前端不渲染「＋ 添加账号」按钮。**那是正确降级**：
+	// 部署方没配登录流程，就不该给一个点了会失败的按钮。
+	Login OAuthFlow
+
+	// ---- 以下供管理端点使用（Task 3c）----
+
+	// Core 核心服务（历史落库）。nil 时退回本包自己的 record。
+	//
+	// 签到/保活的历史由核心统一落库（跨上游同一格式），本包把
+	// "这一条是什么"交给它，Nickname 由核心补（它在账号池里）。
+	Core coreService
+	// Admin 管理端点宿主的依赖（调度器视图 + 共享任务槽）。
+	//
+	// 与 Core 分开：Core 是"业务动作的结果往哪写"，Admin 是"展示与任务槽"，
+	// 两者的接线时机不同（后者要等调度器建好）。
+	Admin AdminEnv
+	// ClientLogin 本机客户端登录态管理（可选；nil = 关闭「本地登录」面板，
+	// 相关端点降级为 503，与改造前一致）。
+	ClientLogin ClientLoginManager
+
+	// TravelAutoClaimDisabled 显式关闭「猫到站自动领奖」。零值 = 自动领奖开启。
+	TravelAutoClaimDisabled bool
+	// TravelWatchInterval 守卫轮间隔（同时是上游未给 arrive_at 时的兜底轮询周期）。
+	// <=0 回落 1 分钟。
+	TravelWatchInterval time.Duration
+
+	// CheckinEnabled 是否注册「每日签到」后台扫描任务（统一 30 分钟粒度）。
+	// false = 不自动签到（仅手动按钮）。
+	CheckinEnabled bool
+	// CheckinInterval 签到扫描周期（统一 30 分钟）。<=0 不注册任务。
+	// 幂等：本地历史里今天已签到的账号跳过，不重复打上游。
+	CheckinInterval time.Duration
+	// RefreshInterval token 保活（被动）扫描周期（统一 30 分钟）。
+	// <=0 不注册任务（仅请求路径惰性续期 + 手动按钮）。
+	RefreshInterval time.Duration
+
+	// OnRefreshFailure / OnRefreshSuccess 后台凭证续期结果通知（装配层注入，
+	// 通常接 pool.NoteRefreshFailure / NoteSuccess：连续失败自动禁用，让死
+	// token 账号在账号池里可见「需重新登录」）。nil = 不通知。
+	OnRefreshFailure func(uid string)
+	OnRefreshSuccess func(uid string)
+
+	// GrowthWatchInterval 成长中心扫描间隔。<=0 回落 10 分钟。
+	GrowthWatchInterval time.Duration
+
+	// DisableGrowthTravel 关闭本实例的「签到 / 成长中心 / 猫猫旅行 / 活跃上报」
+	// 全部玩法类能力，仅保留对话、模型目录与额度探测。
+	//
+	// # 为什么需要它（海外版渠道支持）
+	//
+	// 海外版 WorkBuddy AI（www.workbuddy.ai）的产品配置**显式禁用**了这些玩法
+	//（逆向 product.json：DisableCheckin=true、UserGrowth=false、
+	// DisableActivityBanner=true）—— 它的客户端里根本没有签到/成长/旅行入口。
+	// 若把国内版的能力声明原样套给 workbuddy-intl 实例：
+	//
+	//	· Caps() 会声明 CapCheckin/CapGrowth/CapTravel → 前端显示不存在的面板；
+	//	· Jobs() 会注册成长/旅行守卫 → 后台任务对着不存在的接口空打；
+	//	· AdminRoutes 会挂 22 条玩法端点 → 可调用但上游恒失败。
+	//
+	// 本开关让装配层（cmd/server 配海外版实例时置 true）按实例裁剪这三块，
+	// 默认 false —— 国内版实例行为逐字节不变。
+	DisableGrowthTravel bool
+	// 六个自动动作的初始开关。用 *bool 区分「未设置」与「显式 false」，
+	// 默认值在 New 里给出：领奖 true、补签 true、接单 true，其余三个 false。
+	// 这里刻意不用 Disabled/Enabled 命名：各开关默认值不一致，
+	// 「零值即某一边」的约定必然让其中几个名字读起来是反的。
+	//
+	// GrowthAutoClaim 默认开：completed 只代表任务条件达成，不调 claim 奖励永远不到账
+	// （实测对 completed 的 chat_5 调 claim 后积分 +100 且状态变 claimed）。
+	GrowthAutoClaim  *bool
+	GrowthAutoAccept *bool
+	GrowthAutoMakeup *bool
+	GrowthAutoRedeem *bool
+	GrowthAutoOpen   *bool
+	GrowthAutoDraw   *bool
+}
+
+// boolOrPtr 取 *bool 的值，nil（未设置）时返回默认值。
+func boolOrPtr(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
+}

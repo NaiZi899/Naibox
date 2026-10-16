@@ -1,0 +1,486 @@
+// provider.go 把 CodeArts（华为云 CodeArts / InferHub）上游适配为 gateway.Provider。
+//
+// # 这个包在整条解耦链里的位置
+//
+// 它是**第二个 Adapter**，也是判据 1 的实测对象：
+//
+//	如果加第二个上游需要改核心（pool/logbuf/admin/server/scheduler），
+//	说明 gateway 那条接缝漏了；如果一行都不用改，判据 1 成立。
+//
+// 结论（实测）：核心零改动。本包的存在本身不改变任何核心包。
+//
+// # 与 internal/upstream 的关系
+//
+// 本包复用 upstream 的**上游无关**部分：
+//
+//	upstream.ModelInfo / ModelCatalog / ErrKind   —— "对外词汇表"（跨上游共识）
+//	upstream.PrepareBodyOptWithLimits             —— 出站请求体统一改写
+//
+// 而 CodeArts 自己的东西全部关在本包内：SDK-HMAC-SHA256 签名、DPoP 续期、
+// /api/v2 前缀、maas_type 通道头、按模型配额探测、福利领取、订阅。
+//
+// # 为什么 Chat 必须自己做签名
+//
+// CodeArts 的鉴权不是 Bearer，而是每次请求现算的 SDK-HMAC-SHA256
+// （见 sign.go）+ DPoP 续期（见 dpop.go），且 STS 凭证只有约 2 小时寿命。
+// 把这一整套关进 Provider.Chat 里，正是 Provider 接口存在的理由 ——
+// 出口层只调一个 Chat，不需要知道签名是怎么回事。
+package codearts
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/NaiZi899/omni2api/internal/gateway"
+)
+
+// providerID 上游标识。
+//
+// 会被用作：
+//   - 模型名前缀（"codearts/GLM-5.2"）
+//   - 配置里的 provider key
+//   - 统计维度（by_provider）
+//
+// 格式受 gateway 约束（^[a-z][a-z0-9-]*$），有契约测试守着。
+const providerID = "codearts"
+
+// ProviderID 导出上游标识，供**装配层**（cmd/server）使用。
+//
+// 装配层要在把 codearts 账号并入核心账号池时给出这个标识
+// （pool.SyncToDirWithSecrets 的 provider 参数）。与 workbuddy 的同名常量
+// 同一理由：标识的唯一权威仍是 providerID（ID() 返回它），导出面越小越好。
+const ProviderID = providerID
+
+// refreshSkew 提前续期窗口。
+//
+// 为什么是 3 分钟：CodeArts 的 STS 凭证寿命只有约 2 小时，
+// 窗口必须显著小于它，否则会出现"刚判定为新鲜、发出去已过期"的窗口。
+// 但也不能太大 —— 窗口越大，续期触发越频繁，而 refresh_token 是**消费型**的
+// （用一次即作废），没必要白白消耗。
+const refreshSkew = 3 * time.Minute
+
+// Provider 实现 gateway.Provider（以及 AdminExt 扩展点）。
+//
+// # 与改造前那层 Backend 投影的关系
+//
+// 改造前有一层"适配到旧 server.Backend 接口"的产物（凭证双向投影那套），
+// 服务于单上游世界。Provider 是新的、更窄的契约。
+//
+// 阶段 1 评审发现那层**完全无引用**，已连同它的续期调度器一起删除
+// （backend.go + scheduler.go，共 490 行；删除前用"删掉后 go build + go test
+// 仍通过"证明是死代码）。保留它是有害的：一个后来者会把它接上，
+// 从而绕过 Provider 契约。
+type Provider struct {
+	client *Client
+
+	// authDir 凭证目录。LoadDir 按 codearts*.json 通配，
+	// 与 workbuddy 的 auths/ 目录**可以并存**（文件名前缀不同，互不干扰）。
+	authDir string
+
+	// accounts 凭证访问器（由 cmd/server 注入）。
+	//
+	// 为什么用函数注入而不是直接持有 Backend：
+	// 账号池在核心（internal/pool），而上游包**不得**依赖 internal/pool
+	// （架构约束 arch_test.go 强制）。所以核心把"按 uid 取凭证"这个动作
+	// 以函数形式交给上游，方向是"核心给上游喂数据"，不是"上游去读核心"。
+	accounts func() []*Auth
+
+	// adminAdminEnv 管理端点需要的核心只读依赖（账号 uid 列表等）。
+	// adminEnv 管理端点宿主依赖。
+	adminEnv AdminEnv
+
+	// login 页面内添加账号用的 OAuth 授权管理器（nil = 不支持页内添加）。
+	//
+	// 与 Config.Login 是同一个值的两种存放形态：Config 是**构造期入参**，
+	// 本字段是**运行期状态**。Provider 的字段一律小写（不导出），
+	// 外部只能通过 NewWithConfig 或 SetLogin 注入。
+	login *Manager
+
+	// loginFlowCached / loginFlowOnce 缓存 LoginFlow() 的返回值。
+	//
+	// # 为什么必须缓存（这是端到端实测抓到的真 bug）
+	//
+	// 第一版 `LoginFlow()` 每次调用都新建一个 `loginFlow`，
+	// 于是 `sessions` map 每次都是空的：
+	//
+	//	/admin/login/start → 实例 A 存下会话
+	//	/admin/login/poll  → 实例 B（空 map）→ "授权会话不存在或已结束"
+	//
+	// **后果：页内添加账号永远不可能成功，而且不报错，只是永远 pending/失败。**
+	//
+	// 单元测试抓不到它 —— 它们直接构造一个 loginFlow 再连续调方法，
+	// 全程同一个实例，"每次调用换实例"这件事根本不会发生。
+	// 只有**跨调用**的端到端测试能暴露。
+	loginFlowCached *loginFlow
+	loginFlowOnce   sync.Once
+
+	// refreshInterval 后台主动续期的扫描周期。<=0 表示不注册该任务
+	// （只走请求路径的惰性续期）。
+	refreshInterval time.Duration
+	// welfareEnabled / welfareInterval 每日福利自动领取（签到语义）。
+	// welfareEnabled=false 或 interval<=0 时不注册该任务（仅手动按钮）。
+	welfareEnabled  bool
+	welfareInterval time.Duration
+
+	// refreshHold 后台续期失败后的重试退避：uid → 该时刻之前不再自动续期。
+	//
+	// 为什么需要（用户报 bug：codearts 死 token 每 60s 打一次上游失败请求）：
+	// refresh_token 是**消费型**的，一旦被服务端消费（STS5.1806 'has been used'），
+	// 每次刷新都注定失败。没有退避的话 runRefresh 每轮都命中
+	// NeedsRefresh（token 一直没更新 → 一直临近过期）→ 每分钟一次失败请求，
+	// 永不停歇。这里对失败账号挂退避：永久性凭证错误停 24h 等重新登录，
+	// 其余错误指数退避（2m→4m→…封顶 30m，带 ±20% 抖动，借鉴 LiteLLM）；
+	// 凭证文件被外部更新（重新登录写盘）时提前解除。
+	refreshHold   map[string]refreshHoldEntry
+	refreshHoldMu sync.Mutex
+
+	// onRefreshFailure / onRefreshSuccess 装配层注入的续期结果通知
+	//（Config.OnRefreshFailure / OnRefreshSuccess，通常接 pool 的失败计数/成功清零）。
+	onRefreshFailure func(uid string)
+	onRefreshSuccess func(uid string)
+}
+
+// refreshHoldEntry 一条续期退避记录。
+type refreshHoldEntry struct {
+	// until 该时刻之后允许重试。
+	until time.Time
+	// holdAt 进入退避的时刻 —— onRefreshHold 用它判断凭证文件是否"更新过"
+	//（文件 mtime 晚于 holdAt = 用户重新登录写入了新凭证 → 提前解除）。
+	holdAt time.Time
+	// fails 连续失败次数（指数退避的底数）。
+	fails int
+}
+
+// NewProvider 建一个 CodeArts Provider（契约测试用的无依赖构造）。
+//
+// 只构造，不做网络请求 —— 契约测试会多次调用 factory，不能有副作用。
+//
+// ⚠ 名字不能叫 New：本包的 client.go 已经有 `New() *Client`（上游 HTTP 客户端），
+// 两者是不同的东西，同名会编译冲突。契约测试里传的是**这个**函数。
+func NewProvider() gateway.Provider { return NewWithConfig(Config{}) }
+
+// Config Provider 的可选依赖。
+//
+// 全部可缺省：零值 Config 得到一个"能跑契约测试的最小实例"，
+// 这也是 New() 的形态。任何字段缺失都**降级**而不是 panic。
+type Config struct {
+	// Client 上游 HTTP 客户端。nil 时用 Client 的默认构造。
+	Client *Client
+	// AuthDir 凭证目录。
+	AuthDir string
+	// Accounts 凭证访问器（nil 时按 AuthDir 现场扫描）。
+	Accounts func() []*Auth
+	// Admin 管理端点宿主依赖。
+	Admin AdminEnv
+
+	// Login 页面内添加账号用的 OAuth 授权管理器（nil = 不支持页内添加）。
+	//
+	// # 为什么是 *Manager 而不是接口
+	//
+	// 与 workbuddy 那边的 `OAuthFlow` 不同：`oauth.Manager` 是**本包内**的类型
+	//（移植进来后同属 package codearts），所以不需要为了解耦而抽接口 ——
+	// 抽接口只会多一层什么都不做的转发。
+	//
+	// workbuddy 需要接口是因为它**不能 import internal/oauth**；
+	// codearts 这边没有这个约束（它自己就是授权流程的实现方）。
+	//
+	// # nil 时的行为
+	//
+	// `Configured()` 返回 false → manifest 的 login 为 null →
+	// 前端不渲染「＋ 添加账号」。**没配就不给按钮**，
+	// 与 workbuddy 保持同一条判据（见 gateway.LoginFlow.Configured）。
+	Login *Manager
+
+	// WelfareEnabled 是否注册「每日福利自动领取」后台任务（默认建议 true）。
+	// codearts 没有独立签到端点，它的「签到」= 福利领取（/v1/ops/claim，
+	// 幂等：claimable=false 的跳过）。开启后与 workbuddy/trae 一样
+	// **自动**执行每日签到语义，用户无需手动点「签到」。
+	WelfareEnabled bool
+	// WelfareInterval 福利领取任务的扫描周期。<=0 不注册任务。
+	// 幂等（领过就 claimable=false），30 分钟粒度足够。
+	WelfareInterval time.Duration
+
+	// OnRefreshFailure / OnRefreshSuccess 后台凭证续期结果通知（装配层注入，
+	// 通常接 pool.NoteRefreshFailure / NoteSuccess：连续失败自动禁用，让死
+	// token 账号在账号池里可见「需重新登录」，而不是后台静默跳过 ——
+	// 借鉴 one-api/LiteLLM 的渠道禁用可见性）。nil = 不通知。
+	OnRefreshFailure func(uid string)
+	OnRefreshSuccess func(uid string)
+}
+
+// NewWithConfig 按配置建一个 CodeArts Provider。
+func NewWithConfig(cfg Config) *Provider {
+	if cfg.Client == nil {
+		cfg.Client = New()
+	}
+	return &Provider{
+		client:           cfg.Client,
+		authDir:          cfg.AuthDir,
+		accounts:         cfg.Accounts,
+		adminEnv:         cfg.Admin,
+		login:            cfg.Login,
+		welfareEnabled:   cfg.WelfareEnabled,
+		welfareInterval:  cfg.WelfareInterval,
+		refreshHold:      make(map[string]refreshHoldEntry),
+		onRefreshFailure: cfg.OnRefreshFailure,
+		onRefreshSuccess: cfg.OnRefreshSuccess,
+	}
+}
+
+// SetAccounts 注入凭证访问器（启动期一次性）。
+//
+// 与 New 一样是延迟注入：账号池在 Provider 之后构造。
+func (p *Provider) SetAccounts(fn func() []*Auth) {
+	if fn != nil {
+		p.accounts = fn
+	}
+}
+
+// SetAdminEnv 注入管理端点需要的核心依赖（启动期一次性）。
+func (p *Provider) SetAdminEnv(env AdminEnv) { p.adminEnv = env }
+
+// SetClient 替换上游 HTTP 客户端（启动期一次性）。
+func (p *Provider) SetClient(c *Client) {
+	if c != nil {
+		p.client = c
+	}
+}
+
+// SetRefreshInterval 设置后台主动续期的扫描周期（<=0 表示关闭）。
+//
+// 启动期一次性调用。关闭时 Jobs() 不返回续期任务，
+// 续期退化为纯请求路径的惰性行为（功能不受影响，只是空闲后首个请求会慢一点）。
+func (p *Provider) SetRefreshInterval(d time.Duration) { p.refreshInterval = d }
+
+// Client 暴露底层客户端（供 cmd/server 装配后台续期调度器等使用）。
+func (p *Provider) Client() *Client { return p.client }
+
+// ID 上游标识。
+func (p *Provider) ID() string { return providerID }
+
+// Caps 能力声明。
+//
+// ⚠ **声明了就必须实现**（契约测试会查：声明了这些能力就必须有非空的 AdminRoutes）。
+//
+// CodeArts 实际具备：
+//
+//	CapChat        对话（/api/v2/chat/completions）
+//	CapModels      模型目录（静态表，但确实是"目录"，见 models.go 的实测依据）
+//	CapWelfare     福利领取（/v1/ops/claim 系列）
+//	CapQuotaProbe  按模型配额探测（ProbeQuota / ProbeAllQuota）
+//
+// CodeArts **不具备**（因此**不声明**）：
+//
+//	CapCheckin     没有每日签到端点
+//	CapGrowth      没有成长中心
+//	CapTravel      没有猫猫旅行
+//
+// # 为什么 CapModels 算数
+//
+// CodeArts 没有公开的模型列表端点（实测多个候选路径全 404），
+// 目录来自客户端本地配置的实测快照（见 models.go 的长注释）。
+// 但它**是**一份非空、带上下文窗口的目录，/v1/models 拿它是有效的 ——
+// 而"有没有独立端点"不是 CapModels 的判据（判据是"Models() 能不能给出目录"）。
+//
+// # 为什么不声明 CapQuotaProbe 之外的额度能力
+//
+// 契约把 CapQuotaProbe 归入"无法自动行为验证"的能力位，
+// 声明它就必须同时实现 AdminExt 并提供非空路由 —— 本包满足（见 admin.go）。
+func (p *Provider) Caps() gateway.Capability {
+	return gateway.CapChat |
+		gateway.CapModels |
+		gateway.CapWelfare |
+		gateway.CapQuotaProbe |
+		gateway.CapImport
+}
+
+// Chat 转发一次对话请求。
+//
+// # 这里做的事（全部是 CodeArts 专属，核心一概不参与）
+//
+//  1. 凭证类型断言（不匹配返回明确错误，**不 panic**）
+//  2. 提前续期：STS 只剩不到 refreshSkew 就先刷，避免等到 401 再浪费一次往返
+//  3. 出站请求体统一改写（强制 stream + 裁剪超限的 max_tokens + 字段白名单）
+//  4. 按模型选服务通道（默认 / benefit，见 models.go 的 Channel）
+//     并分配独立会话 id 做心跳（并发会话上限 3，不释放会恒 400 TM.00001041）
+//  5. SDK-HMAC-SHA256 签名 —— 在 Client.ChatStream 内部完成
+//
+// status 的语义与 workbuddy 对齐：非 2xx **不返回 error**，
+// 而是把状态码与上游错误体一起返回，让调用方统一处理"业务错误码"（429 → 冷却）
+// 与"传输错误"。
+func (p *Provider) Chat(ctx context.Context, cred gateway.Credential, body []byte) (gateway.ChatStream, error) {
+	a, err := authOf(cred)
+	if err != nil {
+		return gateway.ChatStream{}, err
+	}
+	// Client.ChatStream 不接受 ctx（内部用 chatHTTP 的超时控制）。
+	// 这里先检查一次，保证调用方传已取消的 ctx 时能**立刻**返回 ——
+	// 契约要求"ctx 取消时 Chat 必须尽快返回"，否则前端断开后上游调用仍在跑，
+	// 并发会话槽被白占（CodeArts 每账号只有 3 个）。
+	if err := ctx.Err(); err != nil {
+		return gateway.ChatStream{}, err
+	}
+
+	// 提前续期。失败不阻断 —— 继续用原凭证试一次，
+	// 真实失效会在 ChatStream 内部的重试续期里再处理一遍。
+	if a.NeedsRefresh(refreshSkew) && a.RefreshToken != "" {
+		if rerr := p.client.RefreshToken(a); rerr != nil {
+			log.Printf("codearts: 预续期失败（继续尝试原凭证）: %v", rerr)
+		}
+	}
+
+	rc, status, respBody, err := p.client.ChatStream(a, body)
+	if err != nil {
+		// respBody 非空时说明"上游返回了错误体"，属于业务错误，仍按流返回。
+		if len(respBody) > 0 {
+			return gateway.ChatStream{
+				Status: status,
+				Body:   io.NopCloser(bytes.NewReader(respBody)),
+			}, nil
+		}
+		return gateway.ChatStream{}, err
+	}
+
+	// 就地在真实流量上维护额度状态。
+	//
+	// 为什么要包这一层：额度耗尽藏在 **200 的流里**（不是 HTTP 错误码），
+	// 只有读过流才知道。而"就地在请求路径上标记"是 quota.go 注释里
+	// 明确设计、但改造前从未接线的能力 —— 缺了它，额度耗尽只能靠
+	// 人工点管理台探测才能发现（见 quotaTrackingBody 的注释）。
+	//
+	// modelOf 从请求体取模型名（与挑通道、裁剪 max_tokens 用的是同一个）。
+	return gateway.ChatStream{
+		Status: status,
+		Body:   &quotaTrackingBody{ReadCloser: rc, model: modelOf(body)},
+	}, nil
+}
+
+// Models 返回上游模型目录。
+//
+// CodeArts 的目录是**静态**的（见 models.go 的实测依据），因此这里不发网络请求，
+// 只做凭证校验 —— 凭证不对时返回明确错误而不是"假装有目录"，
+// 这样调用方能区分"上游不可用"与"目录为空"。
+//
+// # 为什么在这里过滤"额度暂时耗尽"的模型
+//
+// 这是 quota.go 包注释里写明的设计目的："让 /v1/models 直接告诉客户端
+// 这个模型当前不可用，一眼就能换模型"。benefit 通道的免费额度是**每日**
+// 配额，用完后当天不可用、次日自动恢复 —— 把它当成"模型不存在"
+// （Verified=false）是错的，那会让它永久消失且不再被探测。
+//
+// 过滤是**可逆**的，两条恢复路径都成立：
+//
+//	日切       → IsQuotaExhausted 因 ExhaustedUntil 到期自动返回 false
+//	成功调用   → quotaTrackingBody 在见到正常数据帧时 ClearQuota
+//
+// 所以一个模型不会因为"今天额度用完"而长期从目录里消失。
+func (p *Provider) Models(ctx context.Context, cred gateway.Credential) ([]gateway.ModelInfo, error) {
+	if _, err := authOf(cred); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ms := KnownModels()
+	out := make([]gateway.ModelInfo, 0, len(ms))
+	for _, m := range ms {
+		// 额度暂时耗尽的模型当天不对外暴露：客户端选中它必然失败，
+		// 而目录是客户端唯一的"选型依据"。
+		if IsQuotaExhausted(m.ID) {
+			continue
+		}
+		out = append(out, gateway.ModelInfo{
+			ID:              m.ID,
+			ContextWindow:   clampInt64(m.ContextWindow),
+			MaxOutputTokens: clampInt64(m.MaxTokens),
+		})
+	}
+	return out, nil
+}
+
+// clampInt64 把上游给的 int64 收进 int（契约里是 int）。
+//
+// 上游字段是 int64、gateway.ModelInfo 用 int 是为了跨平台一致。
+// 极端值（上游返回超大数据）会溢出成负数 —— 那会让下游算出负的窗口大小，
+// 比"截断到上限"更糟。所以显式收窄。
+func clampInt64(v int64) int {
+	const maxInt = int64(^uint(0) >> 1)
+	if v < 0 {
+		return 0
+	}
+	if v > maxInt {
+		return int(maxInt)
+	}
+	return int(v)
+}
+
+// authOf 从 Credential 里取出 CodeArts 的凭证结构。
+//
+// Secret 是 any（各上游凭证结构不同），所以必须类型断言。
+// **断言失败要返回明确错误，不能 panic** —— 这是契约要求，也有测试守着。
+//
+// ⚠ 只接受 `*codearts.Auth`，**不接受** `*auth.Auth`。
+//
+// # 这条注释曾经是错的，而错的方向很危险
+//
+// 它原先写着"刻意**同时支持** *Auth 与 *auth.Auth"，第二条还给了理由
+// （"投影后足以重建一个可用的 CodeArts 凭证"）。但下面的 switch 从来就只认
+// `*Auth` —— 注释描述的是一个**不存在的**行为。
+//
+// 危险的地方在于：它恰好掩盖了唯一真会落到 `*auth.Auth` 的那条路径。
+// 核心在拿不到不透明 secret 时会回落成 `cred.Secret = e.a`（就是 `*auth.Auth`），
+// 于是这里报"凭证类型不对"。那句话读起来像"已支持"，实际是"必失败"。
+//
+// 那条回落路径现在是**可达但没有产出的**：
+//
+//	· 正常装配下，池里每个 codearts 账号的 secret 都是 store 里的 `*Auth`
+//	  （启动由 syncCodeartsAccounts 装、"重载 auths"由 CredentialSecretLoader 装）
+//	· 只有"池里有一个没有 secret 的 codearts 号"时才会走到这里 ——
+//	  那正是评审 R2 修的缺口（重载路径原先不交 secret），
+//	  修完之后这条回落只剩"防静默失败"的意义，不再是正常路径。
+//
+// 不接受其它类型：返回错误而不是"尽力而为"，避免出现签名材料为空的静默失败。
+func authOf(cred gateway.Credential) (*Auth, error) {
+	if cred.Secret == nil {
+		return nil, errors.New("codearts: 凭证为空（Credential.Secret 未设置）")
+	}
+	switch v := cred.Secret.(type) {
+	case *Auth:
+		if v == nil {
+			return nil, errors.New("codearts: 凭证是 nil 指针")
+		}
+		return v, nil
+	default:
+		return nil, fmt.Errorf("codearts: 凭证类型不对，期望 *codearts.Auth，实际 %T", cred.Secret)
+	}
+}
+
+// ProbeHealth 探测一份凭证是否健康可用（gateway.HealthProbeExt，A2 移植）。
+//
+// 用现成的 Client.Verify（CallerIdentity 校验）—— 最便宜且真实校验 STS 凭证。
+func (p *Provider) ProbeHealth(ctx context.Context, cred gateway.Credential) error {
+	a, err := authOf(cred)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return p.client.Verify(a)
+}
+
+// 编译期断言：Provider 实现核心契约与 AdminExt 扩展点。
+//
+// 不实现会在这里编译失败，而不是等到运行时"路由神秘地没挂上"。
+// 注意 `gateway.Provider =` 这个标记同时被 arch_test.go 用来**自动发现上游包**
+// —— 有了它，本包一落地就被纳入架构约束，不需要在任何白名单里登记。
+var (
+	_ gateway.Provider = (*Provider)(nil)
+	_ gateway.AdminExt = (*Provider)(nil)
+)

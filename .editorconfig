@@ -1,0 +1,40 @@
+# 编辑器约定 —— 与 .gitattributes / .gitignore 配套，只写本仓库确有约束的部分。
+#
+# 换行的分工：
+#   .gitattributes + core.autocrlf 负责「工作树 CRLF / 仓库 LF」；
+#   本文件负责告诉编辑器「提交进仓库的应该是 LF」。
+#   例外见文件末尾的内嵌资源段。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.go]
+indent_style = tab
+
+[*.{md,json,yml,yaml,js,mjs,cjs,html,css,svg}]
+indent_style = space
+indent_size = 2
+
+[*.{sh}]
+indent_style = space
+indent_size = 2
+
+# cmd.exe 按 OEM 代码页（中文 Windows 上是 936/GBK）解析 .bat：
+# UTF-8 + 非 ASCII 会被误解码并打断解析 —— 见 start.bat 顶部注释。
+[*.{bat,cmd}]
+charset = ascii
+end_of_line = crlf
+
+[Makefile]
+indent_style = tab
+
+# 逐字节内嵌资源（//go:embed）：任何换行转换都会让不同平台产出不同的二进制。
+# 新增此类文件时同步加进 .gitattributes。
+[internal/prompt/defaultprompt.md]
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

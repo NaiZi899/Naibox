@@ -1,0 +1,30 @@
+{
+  "_note": "签名测试向量。开源发布的副本已脱敏：accessKey 换成占位值，wantAuth 里的 Signature 换成占位串。要用真实向量做完整比对，请用自己的 AK/SK 重新生成本文件（生成脚本见 internal/codearts/README 或 gen-vector.js）；未脱敏时 sign_test.go 会自动跳过完整比对。",
+  "accessKey": "AKIAIOSFODNN7EXAMPLE",
+  "cases": [
+    {
+      "name": "POST 带 body",
+      "method": "POST",
+      "url": "https://snap-access.cn-north-4.myhuaweicloud.com/api/v2/chat/completions",
+      "body": "{\"model\":\"GLM-5.2\"}",
+      "date": "20260101T000000Z",
+      "wantAuth": "SDK-HMAC-SHA256 Access=AKIAIOSFODNN7EXAMPLE, SignedHeaders=content-type;x-sdk-date;x-security-token, Signature=REPLACED_IN_OPEN_SOURCE_BUILD"
+    },
+    {
+      "name": "GET 无 body 带 query",
+      "method": "GET",
+      "url": "https://snap-access.cn-north-4.myhuaweicloud.com/v1/agent-center/agents/useragents?offset=0&limit=100",
+      "body": "",
+      "date": "20260101T000000Z",
+      "wantAuth": "SDK-HMAC-SHA256 Access=AKIAIOSFODNN7EXAMPLE, SignedHeaders=x-sdk-date;x-security-token, Signature=REPLACED_IN_OPEN_SOURCE_BUILD"
+    },
+    {
+      "name": "POST 表单",
+      "method": "POST",
+      "url": "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens",
+      "body": "grant_type=refresh_token&client_id=vscode-codebot",
+      "date": "20260101T000000Z",
+      "wantAuth": "SDK-HMAC-SHA256 Access=AKIAIOSFODNN7EXAMPLE, SignedHeaders=content-type;x-sdk-date;x-security-token, Signature=REPLACED_IN_OPEN_SOURCE_BUILD"
+    }
+  ]
+}

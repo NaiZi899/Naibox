@@ -1,0 +1,88 @@
+name: Bug 报告
+description: 报告一个可复现的问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > ⚠️ 提交前请先脱敏：**不要粘贴真实的 token、API Key、手机号、uid，也不要贴
+        > `auths/` 目录内容**。安全漏洞请走 [SECURITY.md](../blob/master/SECURITY.md)
+        > 里的私密通道，不要开公开 Issue。
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: Release tag 或 commit hash（`git rev-parse --short HEAD`）
+      placeholder: v1.8.0 / 3f2a1b9
+    validations:
+      required: true
+
+  - type: dropdown
+    id: upstream
+    attributes:
+      label: 涉及的上游
+      options:
+        - WorkBuddy / CodeBuddy
+        - WorkBuddy AI（海外版）
+        - CodeArts
+        - Loomy
+        - Cline
+        - TRAE
+        - Raccoon Work
+        - LobsterAI
+        - Qoder / Qoder 中国版
+        - InkStone（书生·端砚）
+        - Jiyuan（基元律动）
+        - 与具体上游无关（核心 / 控制台 / 部署）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: env
+    attributes:
+      label: 运行环境
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - Docker
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 你期望发生什么、实际发生了什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 最小可复现步骤，含命令与配置片段（脱敏后）
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: 相关日志（脱敏后）。控制台「请求日志」页能直接看到状态、TTFB 与上游错误码，通常比截图更有用
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 自查
+      options:
+        - label: 内容里不含真实凭据（token / API Key / 手机号 / uid）
+          required: true
+        - label: 已在最新版本上复现（或说明了为什么无法升级）
+          required: true
