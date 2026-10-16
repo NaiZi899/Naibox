@@ -1,0 +1,50 @@
+name: 功能建议
+description: 提议一个新上游、新能力或行为改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 建议类型
+      options:
+        - 新增上游
+        - 核心能力（账号池 / 调度 / 错误治理 / 生图 / 工具注入）
+        - 管理控制台
+        - 部署与运维（Docker / systemd / 配置项）
+        - 文档
+        - 其它
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的问题
+      description: 描述场景与现状，而不是直接给方案 —— 问题描述清楚后，方案往往不止一种
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你期望的方案
+      description: 可选。若建议新增上游，请附上游的公开端点与鉴权形态（**不要附真实凭据**）
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你考虑过的替代方案
+      description: 可选。包括「现在是怎么绕过去的」
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: arch
+    attributes:
+      label: 架构自查（新增上游时必勾）
+      options:
+        - label: 我理解新上游应只加 `internal/<name>/` + 配置段 + `main.go` 一行注册，核心包不做改动（见 CONTRIBUTING.md）
+          required: false

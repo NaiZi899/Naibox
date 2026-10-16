@@ -1,0 +1,26 @@
+version: 2
+
+updates:
+  # Go 依赖：go.mod 里目前只有 go-redis 与 wazero 两个直接依赖，
+  # 但间接依赖（xxhash / rendezvous / atomic）也会被这条覆盖到。
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+
+  # CI 里的 actions/checkout、actions/setup-go 等
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+      - ci
