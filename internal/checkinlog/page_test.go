@@ -21,7 +21,10 @@ import (
 func newPagedLog(t *testing.T, n int) *Log {
 	t.Helper()
 	l := New(filepath.Join(t.TempDir(), "h.json"), 30)
-	base := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	// 基准取「相对当前」而不是写死日期：Log 按 keepDays 剪枝，
+	// 写死的日期一旦超过保留期，记录会在 Append 时被剪掉，
+	// 测试就会随时间自己变红（total 恒为 0）。分页契约与具体日期无关。
+	base := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Minute)
 	for i := 0; i < n; i++ {
 		kind := KindCheckin
 		if i%3 == 0 {
