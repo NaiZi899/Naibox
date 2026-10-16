@@ -50,7 +50,8 @@ func newAdminTestServer(t *testing.T, p *Provider) *httptest.Server {
 func newHistoryProvider(t *testing.T, n int) *Provider {
 	t.Helper()
 	lg := checkinlog.New(filepath.Join(t.TempDir(), "h.json"), 30)
-	base := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	// 相对当前时间：checkinlog 按 keepDays 剪枝，写死日期会随时间被剪光。
+	base := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Minute)
 	for i := 0; i < n; i++ {
 		kind := checkinlog.KindCheckin
 		if i%2 == 0 {

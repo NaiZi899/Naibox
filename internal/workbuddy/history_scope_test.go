@@ -40,7 +40,8 @@ func seedHistoryWithForeign(t *testing.T, ownN, foreignN int) (*Provider, string
 		t.Fatal("装置失效：Provider 未接历史日志")
 	}
 
-	base := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	// 相对当前时间：checkinlog 按 keepDays 剪枝，写死日期会随时间被剪光。
+	base := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Minute)
 	n := ownN
 	if foreignN > n {
 		n = foreignN
@@ -198,7 +199,8 @@ func TestHistoryKindFilterStillWorks(t *testing.T) {
 	p, _ := seedMultiProviderPool(t, testAuthNamed("wb1", "甲"))
 	prov := newIsolationProvider(t, p)
 	lg := prov.cfg.Log
-	base := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	// 相对当前时间：checkinlog 按 keepDays 剪枝，写死日期会随时间被剪光。
+	base := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Minute)
 	for i := 0; i < 10; i++ {
 		k := checkinlog.KindCheckin
 		if i%2 == 0 {
