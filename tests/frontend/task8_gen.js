@@ -12,6 +12,11 @@ function applyManifest(m) {
     const objs = (v) => (Array.isArray(v) ? v : []).filter(x => x && typeof x === 'object');
     MANIFEST = {
       service: typeof m.service === 'string' && m.service ? m.service : 'gateway',
+      // brand 是产品显示名（如 NaiBox），与协议字段 service 分开。
+      // ⚠ 必须在这里**显式拷贝**：本函数是按白名单重建 MANIFEST 的，
+      // 漏一个键就等于前端永远拿不到它（表现为"后端明明下发了，界面却没变"）。
+      // 空串而不是 undefined：让 serviceName() 的 `||` 回落链保持可预测。
+      brand: typeof m.brand === 'string' ? m.brand : '',
       providers: objs(m.providers),
       capabilities: objs(m.capabilities),
       admin_routes: objs(m.admin_routes),
@@ -38,7 +43,13 @@ function providerRegistryIds() {
     for (const p of (PROVIDERS || [])) {
       if (p && typeof p === 'object' && p.id) ids.push(String(p.id));
     }
-    ids.sort();
+    // 保持 manifest 下发顺序，**不再字典序重排**。
+    //
+    // 旧实现 `ids.sort()` 把所有上游拉回字典序（codearts < loomy < trae <
+    // workbuddy < workbuddy-intl），把服务端显式排好的展示顺序覆盖掉 ——
+    // 账号池分组、模型分组、导航分组全部失效（海外版永远排不到最前）。
+    // 顺序的单一来源是服务端（admin/uimanifest.go 的 prioritizeProviders），
+    // 这里原样透传；顺序稳定性由服务端的 stable 排序保证。
     return ids;
   }
 
@@ -90,22 +101,36 @@ function upstreamGroups() {
     //
     // 2 行的成本换掉一类"不可达但真发生时极难查"的故障，值得。
     const out = (PROVIDERS || []).filter(p => p && typeof p === 'object');
-    out.sort((x, y) => {
-      const xd = !!x.default, yd = !!y.default;
-      if (xd !== yd) return xd ? -1 : 1;
-      return x.id < y.id ? -1 : x.id > y.id ? 1 : 0;
-    });
     // 没有任何能力面板且账号数为 0 的上游不占导航位置（见计划的"显示门槛"决策）。
-    return out.filter(p => p.account_count > 0 || hasAnyPanel(p.id));
+    //
+    // `p.entry` 是后端下发的「这个上游有没有**任何上号入口**」——
+    // 页内登录 / 批量导入 / 凭证重载，三者任一（判据在 admin.hasEntryPoint）。
+    //
+    // # 它补的是旧门槛探不到的那类上游
+    //
+    // 旧判据只能看到"有账号"与"有自注册管理端点"。可是**只有批量导入或
+    // 凭证重载的上游两者都不成立**：jiyuan（基元律动）的批量导入走通用端点
+    // /admin/accounts/import、inkstone（书生·端砚）只有 CredentialLoader。
+    // 它们 0 账号时整组从账号池消失 —— 用户看不到分组，也就不知道该往哪放号，
+    // 而它们**恰恰是能上号的**。不该从导航消失。
+    //
+    // 判据仍在后端算：前端不认识任何上游名（判据 1），这里只读那个布尔值。
+    // 显示过滤（设置页「账号池显示过滤」）：被勾选隐藏的上游整组不出现。
+    //
+    // 放在**最后**一步：前面的 hasAnyPanel/entry 判据回答"这个上游值不值得占位置"，
+    // 这一层回答"用户明确说不想看到它"。两者的失败方向不同 ——
+    // 前者判错会少显示一个能用的上游（本次事故），后者判错是多/少一行界面。
+    return out.filter(p => (p.account_count > 0 || hasAnyPanel(p.id) || p.entry)
+      && !hiddenProviders.includes(p.id));
   }
 
 let fail = 0;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fail++; };
 
-const M = new Function('esc',
-  "function applyManifest(m) {\r\n    m = m && typeof m === 'object' ? m : {};\r\n    // 只保留「非 null 的对象」。数字/字符串/true 都当无效元素丢掉 ——\r\n    // 它们同样会让下游的属性访问出问题，且没有任何合理语义。\r\n    const objs = (v) => (Array.isArray(v) ? v : []).filter(x => x && typeof x === 'object');\r\n    MANIFEST = {\r\n      service: typeof m.service === 'string' && m.service ? m.service : 'gateway',\r\n      providers: objs(m.providers),\r\n      capabilities: objs(m.capabilities),\r\n      admin_routes: objs(m.admin_routes),\r\n      jobs: objs(m.jobs),\r\n      daily_actions: objs(m.daily_actions),\r\n      loaded: true,\r\n    };\r\n    PROVIDERS = MANIFEST.providers;\r\n    // 默认上游从 providers 里找（manifest 顶层没有单独的 default 字段，\r\n    // 上游的 providerInfo.default 才是权威）。找不到就回落第一个。\r\n    const def = PROVIDERS.find(p => p && p.default) || PROVIDERS[0];\r\n    DEFAULT_PROVIDER = def ? def.id : '';\r\n    manifestError = '';\r\n    return MANIFEST;\r\n  }\n\nfunction providerOf(a) {\r\n    if (!a || typeof a !== 'object') return '';\r\n    return a.provider || DEFAULT_PROVIDER;\r\n  }\n\nfunction providerRegistryIds() {\r\n    const ids = [];\r\n    for (const p of (PROVIDERS || [])) {\r\n      if (p && typeof p === 'object' && p.id) ids.push(String(p.id));\r\n    }\r\n    ids.sort();\r\n    return ids;\r\n  }\n\nfunction providersWithCap(cap) {\r\n    const out = [];\r\n    for (const id of providerRegistryIds()) {\r\n      const p = providerInfo(id);\r\n      if (p && Array.isArray(p.capabilities) && p.capabilities.indexOf(cap) >= 0) {\r\n        out.push(id);\r\n      }\r\n    }\r\n    return out;\r\n  }\n\nfunction capTitle(cap) {\r\n    for (const c of (MANIFEST.capabilities || [])) {\r\n      if (c && c.id === cap) return c.title || c.id;\r\n    }\r\n    return cap; // 未登记的退回 id 本身，至少还能看出是什么\r\n  }\n\nfunction providerInfo(id) {\r\n    return (PROVIDERS || []).find(p => p && p.id === id) || null;\r\n  }\n\nfunction routesFor(providerId, cap) {\r\n    return (MANIFEST.admin_routes || []).filter(r =>\r\n      r && r.provider === providerId &&\r\n      (cap === undefined || r.capability === cap) &&\r\n      String(r.method || '').toUpperCase() === 'GET');\r\n  }\n\nfunction hasAnyPanel(providerId) {\r\n    const p = providerInfo(providerId);\r\n    if (!p || !Array.isArray(p.capabilities)) return false;\r\n    return p.capabilities.some(c => routesFor(providerId, c).length > 0);\r\n  }\n\nfunction upstreamGroups() {\r\n    // 过滤掉 null / 非对象元素（CP3 评审 F1）。\r\n    //\r\n    // # 为什么值得加（当前后端确实产不出 null）\r\n    //\r\n    // applyManifest 对四个数组做了 Array.isArray 归一，但**只到数组层、\r\n    // 不到元素层**：providers:[null] 会一路流到这里，让下面\r\n    // `!!x.default` 抛 TypeError。而同一份代码里 applyManifest 的\r\n    // `p && p.default` 是有守卫的 —— 防御不一致本身就是缺陷：\r\n    // 一旦触发，表现为\"页面莫名停止刷新\"，且 window.__errs 也抓不到。\r\n    //\r\n    // 2 行的成本换掉一类\"不可达但真发生时极难查\"的故障，值得。\r\n    const out = (PROVIDERS || []).filter(p => p && typeof p === 'object');\r\n    out.sort((x, y) => {\r\n      const xd = !!x.default, yd = !!y.default;\r\n      if (xd !== yd) return xd ? -1 : 1;\r\n      return x.id < y.id ? -1 : x.id > y.id ? 1 : 0;\r\n    });\r\n    // 没有任何能力面板且账号数为 0 的上游不占导航位置（见计划的\"显示门槛\"决策）。\r\n    return out.filter(p => p.account_count > 0 || hasAnyPanel(p.id));\r\n  }" + '\nreturn { applyManifest, providerOf, providersWithCap, capTitle, providerInfo, routesFor, hasAnyPanel, upstreamGroups,' +
+const M = new Function('esc', 'hiddenProviders',
+  "function applyManifest(m) {\n    m = m && typeof m === 'object' ? m : {};\n    // 只保留「非 null 的对象」。数字/字符串/true 都当无效元素丢掉 ——\n    // 它们同样会让下游的属性访问出问题，且没有任何合理语义。\n    const objs = (v) => (Array.isArray(v) ? v : []).filter(x => x && typeof x === 'object');\n    MANIFEST = {\n      service: typeof m.service === 'string' && m.service ? m.service : 'gateway',\n      // brand 是产品显示名（如 NaiBox），与协议字段 service 分开。\n      // ⚠ 必须在这里**显式拷贝**：本函数是按白名单重建 MANIFEST 的，\n      // 漏一个键就等于前端永远拿不到它（表现为\"后端明明下发了，界面却没变\"）。\n      // 空串而不是 undefined：让 serviceName() 的 `||` 回落链保持可预测。\n      brand: typeof m.brand === 'string' ? m.brand : '',\n      providers: objs(m.providers),\n      capabilities: objs(m.capabilities),\n      admin_routes: objs(m.admin_routes),\n      jobs: objs(m.jobs),\n      daily_actions: objs(m.daily_actions),\n      loaded: true,\n    };\n    PROVIDERS = MANIFEST.providers;\n    // 默认上游从 providers 里找（manifest 顶层没有单独的 default 字段，\n    // 上游的 providerInfo.default 才是权威）。找不到就回落第一个。\n    const def = PROVIDERS.find(p => p && p.default) || PROVIDERS[0];\n    DEFAULT_PROVIDER = def ? def.id : '';\n    manifestError = '';\n    return MANIFEST;\n  }\n\nfunction providerOf(a) {\n    if (!a || typeof a !== 'object') return '';\n    return a.provider || DEFAULT_PROVIDER;\n  }\n\nfunction providerRegistryIds() {\n    const ids = [];\n    for (const p of (PROVIDERS || [])) {\n      if (p && typeof p === 'object' && p.id) ids.push(String(p.id));\n    }\n    // 保持 manifest 下发顺序，**不再字典序重排**。\n    //\n    // 旧实现 `ids.sort()` 把所有上游拉回字典序（codearts < loomy < trae <\n    // workbuddy < workbuddy-intl），把服务端显式排好的展示顺序覆盖掉 ——\n    // 账号池分组、模型分组、导航分组全部失效（海外版永远排不到最前）。\n    // 顺序的单一来源是服务端（admin/uimanifest.go 的 prioritizeProviders），\n    // 这里原样透传；顺序稳定性由服务端的 stable 排序保证。\n    return ids;\n  }\n\nfunction providersWithCap(cap) {\n    const out = [];\n    for (const id of providerRegistryIds()) {\n      const p = providerInfo(id);\n      if (p && Array.isArray(p.capabilities) && p.capabilities.indexOf(cap) >= 0) {\n        out.push(id);\n      }\n    }\n    return out;\n  }\n\nfunction capTitle(cap) {\n    for (const c of (MANIFEST.capabilities || [])) {\n      if (c && c.id === cap) return c.title || c.id;\n    }\n    return cap; // 未登记的退回 id 本身，至少还能看出是什么\n  }\n\nfunction providerInfo(id) {\n    return (PROVIDERS || []).find(p => p && p.id === id) || null;\n  }\n\nfunction routesFor(providerId, cap) {\n    return (MANIFEST.admin_routes || []).filter(r =>\n      r && r.provider === providerId &&\n      (cap === undefined || r.capability === cap) &&\n      String(r.method || '').toUpperCase() === 'GET');\n  }\n\nfunction hasAnyPanel(providerId) {\n    const p = providerInfo(providerId);\n    if (!p || !Array.isArray(p.capabilities)) return false;\n    return p.capabilities.some(c => routesFor(providerId, c).length > 0);\n  }\n\nfunction upstreamGroups() {\n    // 过滤掉 null / 非对象元素（CP3 评审 F1）。\n    //\n    // # 为什么值得加（当前后端确实产不出 null）\n    //\n    // applyManifest 对四个数组做了 Array.isArray 归一，但**只到数组层、\n    // 不到元素层**：providers:[null] 会一路流到这里，让下面\n    // `!!x.default` 抛 TypeError。而同一份代码里 applyManifest 的\n    // `p && p.default` 是有守卫的 —— 防御不一致本身就是缺陷：\n    // 一旦触发，表现为\"页面莫名停止刷新\"，且 window.__errs 也抓不到。\n    //\n    // 2 行的成本换掉一类\"不可达但真发生时极难查\"的故障，值得。\n    const out = (PROVIDERS || []).filter(p => p && typeof p === 'object');\n    // 没有任何能力面板且账号数为 0 的上游不占导航位置（见计划的\"显示门槛\"决策）。\n    //\n    // `p.entry` 是后端下发的「这个上游有没有**任何上号入口**」——\n    // 页内登录 / 批量导入 / 凭证重载，三者任一（判据在 admin.hasEntryPoint）。\n    //\n    // # 它补的是旧门槛探不到的那类上游\n    //\n    // 旧判据只能看到\"有账号\"与\"有自注册管理端点\"。可是**只有批量导入或\n    // 凭证重载的上游两者都不成立**：jiyuan（基元律动）的批量导入走通用端点\n    // /admin/accounts/import、inkstone（书生·端砚）只有 CredentialLoader。\n    // 它们 0 账号时整组从账号池消失 —— 用户看不到分组，也就不知道该往哪放号，\n    // 而它们**恰恰是能上号的**。不该从导航消失。\n    //\n    // 判据仍在后端算：前端不认识任何上游名（判据 1），这里只读那个布尔值。\n    // 显示过滤（设置页「账号池显示过滤」）：被勾选隐藏的上游整组不出现。\n    //\n    // 放在**最后**一步：前面的 hasAnyPanel/entry 判据回答\"这个上游值不值得占位置\"，\n    // 这一层回答\"用户明确说不想看到它\"。两者的失败方向不同 ——\n    // 前者判错会少显示一个能用的上游（本次事故），后者判错是多/少一行界面。\n    return out.filter(p => (p.account_count > 0 || hasAnyPanel(p.id) || p.entry)\n      && !hiddenProviders.includes(p.id));\n  }" + '\nreturn { applyManifest, providerOf, providersWithCap, capTitle, providerInfo, routesFor, hasAnyPanel, upstreamGroups,' +
   ' get MANIFEST(){return MANIFEST}, get DEFAULT(){return DEFAULT_PROVIDER} };'
-)(esc);
+)(esc, []);
 
 // ---------------------------------------------------------------- applyManifest
 console.log('\n[1] applyManifest 的形状归一与降级');

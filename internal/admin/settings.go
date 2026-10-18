@@ -73,6 +73,14 @@ type Settings struct {
 	SessionStickyEnabled bool   `json:"session_sticky_enabled"`
 	SessionStickyTTL     string `json:"session_sticky_ttl"`
 
+	// ---- 控制台展示（运行时生效，纯展示语义）----
+
+	// HiddenProviders 账号池与左侧导航里不显示的上游 id。
+	//
+	// 与 enabled 的区别是硬边界：隐藏只影响界面，账号仍在池里参与调度。
+	// 之所以做成配置项而不是浏览器本地存储，见 config.go 里 UI 段的说明。
+	HiddenProviders []string `json:"hidden_providers"`
+
 	// ---- 只读展示 ----
 	Listen     string `json:"listen"`
 	AuthDir    string `json:"auth_dir"`

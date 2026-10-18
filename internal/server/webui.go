@@ -131,6 +131,13 @@ func (h *Handler) ui(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) favicon(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, ".svg") {
 		w.Header().Set("Content-Type", "image/svg+xml")
+		// 缓存一天是对的（图标几乎不变），但**换图标时浏览器不会知道** ——
+		// 实测踩过：svg 换成新标之后，本地 headless（新 profile）看到的是新的，
+		// 用户浏览器里还是旧的那个气泡，而且会持续 24 小时。
+		//
+		// 所以页面里的引用都带版本串（`?v=nb2`）。⚠ 改图标时要同步改那个值，
+		// 否则用户看到的仍是缓存里的旧图 —— 这类"改了没生效"极难自查，
+		// 因为 curl 拿到的一定是新内容。
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		_, _ = w.Write(faviconSVG)
 		return

@@ -31,7 +31,7 @@ function renderLogs(items) {
         <td class="mono">${esc(e.model)}</td>
         <td>${esc(e.mode)}</td>
         <td><span class="pill ${st}">${e.status}</span></td>
-        <td class="mono dim">${esc((e.uid || '').slice(0, 8) || '-')}</td>
+        <td class="mono dim" title="${esc(e.uid || '')}"><span class="uidell">${esc((e.uid || '').slice(0, 8) || '-')}</span></td>
         <td class="mono">${e.ttfb_ms ? e.ttfb_ms + 'ms' : '-'}</td>
         <td class="mono">${e.tokens >= 0 ? e.tokens : '-'}</td>
         <td class="mono">${tokPerSec(e.tokens, e.total_ms)}</td>

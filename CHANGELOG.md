@@ -20,6 +20,402 @@
 > 也就是说：历史条目描述的事都发生过，但里面的路径/产物名要按上表换算，
 > 不要当成"现在仓库里还有这些文件"。
 
+## 未发布 — Windows 桌面版 + 控制台现代化
+
+> 本版主题有两块，互不耦合：**把"能跑的 exe"变成"像应用的 exe"**（桌面壳 /
+> 装配层抽取 / 图标纯代码生成），以及**把控制台的"轮询"换成"推送"**（SSE 日志流 /
+> 统计轮询 gating / 视觉令牌层）。
+>
+> **核心包与 HTTP 契约零改动**：`/v1/*`、`/admin/*` 的既有响应逐字节不变
+>（只新增了一条 SSE 端点），`webui.html` 的 DOM id / class / 文案 / `data-act` 一个没动 ——
+> 它们是与后端和 46 个前端脚本的字面契约。
+
+### 新增 — Windows 桌面版（`omni2api-desktop.exe`）
+
+双击即用，无控制台黑框（`-H windowsgui`），托盘常驻。菜单：打开控制台 /
+在浏览器中打开 / 打开数据目录 / 查看今日日志 / 备份数据（zip，留 10 份）/
+开机自启（`HKCU\...\Run`）/ 重启服务 / 退出。
+
+**数据与程序分离（本版最重要的行为变化）**：数据根从"当前工作目录"改为
+`%APPDATA%\omni2api\`。改这一条的原因是实测后果：旧布局下"删目录重装"
+= `auths/` 与 `data/` 一起消失 = **每个账号都要重新登录授权**。改造后
+程序目录可以随便删、随便换版本，数据零迁移。
+
+**旧布局自动迁移**：首次启动按 `-config` 显式指定 → exe 同级 `config.json`
+→ cwd `config.json` → 无（生成默认）的顺序探测。命中旧布局时**复制不移动**，
+源目录保留并写 `.migrated.bak`（含 from / to / copied / note），日志记明
+来源与去向。重复启动幂等；目标已有同名文件时**跳过而不覆盖**
+（新登录的凭证不能被过期文件顶掉）。
+
+**端口**：7863 起顺延到 7873，全占则请系统分配；实际地址写
+`runtime.json`（`{pid, addr, mode, version, started_at}`），退出时删除。
+第二实例启动时读它 → 过三道门（pid 存活 → `/healthz` 的 `service` 字段
+是自家 → 才发唤醒事件）→ 唤醒已有窗口后退出。
+**只凭"端口上有人"就发请求是危险的** —— 那可能连到别人的程序。
+
+**安全默认**：桌面形态下 `listen` 的空 host 一律收敛到 `127.0.0.1`。
+`":7863"` 在 Go 里等于"监听所有网卡"，而 `/ui` 对**回环来源**会自动注入
+api_key（`server.webui` 的 `isLoopback` 分支）——绑通配等于同网段任何人
+打开 `http://<内网IP>:7863/ui` 就能进控制台。用户**显式**写 `0.0.0.0`
+或具体网卡地址时原样尊重（那是明确意图），只在日志里提示风险。
+**服务形态（`cmd/server`）不受影响**，仍按配置原样绑定 —— Docker 的端口
+映射依赖通配。
+
+**兜底路径**：`-mode=browser` = 常驻托盘 + 系统浏览器，零 WebView 依赖。
+WebView2 Runtime 缺失、无可见桌面会话、窗口异常时都回落到它。
+
+**Windows 特有的两个坑（实测踩到并修掉）**：
+
+1. 托盘 map 未初始化导致 `assignment to entry in nil map`，**把整个进程
+   带走**（浏览器模式也死）。托盘 goroutine 与所有回调现在带 `recover`：
+   界面坏了不能杀服务。
+2. 端口探测在 Windows 上会误判空闲：一个进程已占通配 `:7863` 时，
+   `bind 127.0.0.1:7863` **仍然成功**（Windows 按元组判冲突，不像 Unix）。
+   于是第二个实例选中 7863，装配层绑通配时才失败退出。
+   修法：探测必须同时能绑 `:p` 与 `127.0.0.1:p`。
+
+### 重构 — 装配体迁入 `internal/boot`
+
+`cmd/server/main.go` 原来是 1428 行 `package main`，装配逻辑无法被第二个
+入口复用（`package main` 不能被 import），而复制一份等于两个装配源 ——
+"加一个上游要改两处"正是判据 1 要避免的。
+
+现在装配体在 `internal/boot`（`Run` / `Runtime.Shutdown` / `Runtime.Wait`），
+`cmd/server/main.go` 37 行，`cmd/desktop` 共用同一套装配。
+
+- 退出顺序**逐字保持**：先 `p.Flush()` 落盘，再 `srv.Shutdown(5s)`，最后
+  按注册逆序跑清理链（等价于原来的 `defer` 链）。**先停机再落盘**会留下
+  "已经不再接受请求、状态还是旧的"进程，表现就是删掉的账号重启后复活。
+- 启动期致命错误仍是 `log.Fatalf` 的语义，只是改成**注入式**
+  （`Options.Fatalf`）：桌面版可以接管成"写日志 + 弹框说明"，而不是
+  双击后窗口一闪什么都没留下。
+- 架构约束测试新增第三类 `assemblyPackages`（`boot` / `desktop`）：装配层
+  **允许**依赖上游，但**不得被上游依赖**（新断言
+  `TestUpstreamsDoNotDependOnAssembly`）。同时保留"登记必须真实存在"与
+  "不得与 core / exempt 表语义串台"的守卫 —— 后两条防的是"分类表本身
+  写错导致判据失效"。
+- 已知行为差异：`-config ""` 现在按"未指定"回落 `config.json`
+  （改造前是"不读文件、纯默认 + env"）。只影响显式传空串这种病态用法。
+
+### 变更 — 图标改为纯 Go 代码生成
+
+仓库不再保留任何二进制媒体文件。`assets/icon/` 只剩三件文本：`app.svg`
+（矢量规格）、`app.manifest`（PerMonitorV2 / longPathAware / Win10-11 兼容）、
+`README.md`。
+
+- `internal/icon`（纯标准库）：`Draw(size)` / `PNG(size)` / `ICO(sizes...)`。
+  形状用代码画（圆角渐变底板 + 对话气泡 + 四角星），构建期与运行时**共用
+  同一份图形代码**，不会分叉成两套标。
+- `tools/genicon`：`go run ./tools/genicon -out .build/icon/app.ico` 生成
+  16/32/48（BMP 帧）+ 64/128/256（PNG 帧）六帧 ICO；`-verify` 直接读 PE 头
+  断言 GUI 子系统与资源目录非空。
+- **托盘图标必须给 ICO 内容，不能给 PNG**：`energye/systray` 的 Windows 分支
+  把字节写到无扩展名临时文件后调 `LoadImageW(..., IMAGE_ICON, ...)`，而它只
+  按 ICO/CUR 内容解析。喂 PNG 的结果是内部打一行
+  `systray error: unable to set icon` 就返回 —— **不 panic、不报错、托盘直接
+  没有图标**。所以单尺寸调用一律输出 DIB 帧（`icon.ICO(32)`），多尺寸才用
+  PNG 帧；两条测试钉住这个形状。
+- 构建期派生物（`.build/`、`cmd/desktop/rsrc.syso`、`dist/`）全部 gitignore，
+  `go build` 与 `go test` 在干净 clone 上仍然只需 Go 一条命令。
+
+### 修复 — 示例配置缺两个上游段，导致成品少两个上游
+
+**现象**：下载 Release 包解开就是一整套现成配置，双击启动后顶栏显示「上游 10」，
+而 README 承诺 12 个。用户的第一反应是"基元（jiyuan）被打包丢了"，
+并且因为 `workbuddy_intl` 在示例里是 `enabled: true`，现象看起来更像
+"基元被 workbuddy 国际版顶替了"。
+
+**实际根因**：`internal/jiyuan` 与 `internal/inkstone` 的代码、`config.go` 的段定义、
+`boot.go` 的 `registry.Register` 三者都齐全，**但两份示例配置里从来没有这两个段**。
+而本项目的配置语义是「段缺席 = 不加载」：
+
+```go
+c.JiyuanEnabled = c.Jiyuan.Enabled   // 缺省 false
+```
+
+所以这不是打包丢了模块，是**示例配置从来没告诉用户有这两个上游**。
+`workbuddy_intl` 一直存在（它本来就是 12 个之一），两个现象同时出现只是巧合。
+
+**这类缺口是最难发现的一种**：编译不报错、测试不报错、启动不报错，
+只在用户拿到成品后以"少一个功能"的形态暴露，而且看起来像构建问题。
+
+**修复**：`config.example.json` 与 `internal/desktop/defaultconfig.example.json`
+都补上 `inkstone` 与 `jiyuan` 段（`enabled: true`、`auth_dir` 指向
+`./auths/<name>`、`pool_accounts: true`），与其余上游同律。
+
+**守卫**（新增 `internal/desktop/config_drift_test.go`）：
+
+- `TestExampleConfigsListEveryUpstream`：两份示例都必须列出全部上游段且默认启用。
+  判据取"README 承诺给用户的清单"，不是"代码里注册了几个" —— 后者会把这个测试
+  变成实现的镜像，实现漏了它就跟着漏。
+- `TestExampleConfigsStayInSync`：桌面版那份是根示例的**副本**（`//go:embed`
+  不能跨目录），复制就会漂移。只比顶层键集合、不比内容（`api_key` 刻意不同）。
+
+两条都做了变异验证：把 `jiyuan` 段从根示例删掉 → 两条同时红
+（"缺少 jiyuan 段"+"两份不同步"），恢复后绿。守卫不是永远绿灯的摆设。
+
+### 修复 — 前端把「只有批量导入/凭证重载」的上游整组隐藏
+
+**现象**：账号池只显示 10 个分组，缺 jiyuan（基元律动）与 inkstone（书生·端砚），
+而后端 `/admin/providers` 返回 12 个。看起来像"基元被打包丢了"。
+
+**根因在前端的显示门槛**（`upstreamGroups()`）：
+
+```js
+p.account_count > 0 || hasAnyPanel(p.id)
+```
+
+`hasAnyPanel` 判的是"有没有**自注册**管理端点"。而 jiyuan 的批量导入走的是
+**通用**端点 `/admin/accounts/import`、inkstone 只有 `CredentialLoader`（放凭证文件 +
+重载 auths）—— 两者都没有 `AdminExt` 路由，0 账号时整组从导航消失。
+
+**修复**：manifest 每个 provider 增加 `entry` 字段，语义是"网关这边能不能收号"
+（与 `capabilities` 的"上游能做什么"是两个轴）：
+
+    LoginFlow 且 Configured()  ∨  import_kinds 非空  ∨  实现 CredentialLoader
+
+前端门槛改为 `account_count > 0 || hasAnyPanel(id) || entry`。
+`/admin/providers` 与 `/admin/ui/manifest` 两个构造点共用同一个 `hasEntryPoint`，
+避免两套判据漂移（这个仓库已经栽过四次同类坑）。
+
+**守卫**：`TestUIManifestEntryPoint` 不只断言两个 true，还带两类反例
+（三入口全无必须 false、实现了 LoginFlow 但 `Configured()=false` 必须 false），
+并自检两个测试桩各自只命中一条判据 —— 否则"任一成立即 true"会退化成同义反复。
+
+用**真实 manifest** 回放新旧门槛：旧门槛 4 组 → 新门槛 12 组，
+且 jiyuan/inkstone 都是 `acct=0 hasAnyPanel=false entry=true`，与事故现场完全一致。
+
+### 新增 — 桌面版关窗行为（询问 / 最小化到托盘 / 退出）
+
+`window.json` 增加 `close_behavior`（`ask`|`minimize`|`quit`，默认 `ask`）与
+`tray_hint_shown`。入口在托盘菜单的三个单选勾选项（不占 webui.html）。
+
+`minimize` 是**隐藏 HWND**，进程与 WebView2 继续跑 —— 这就是"后台保活"。
+
+实现要点，每条都是踩出来的：
+
+- **子类化必须保存原过程**（`SetWindowLongPtr` 的返回值）并在未处理消息上
+  `CallWindowProc`，否则窗口的拖动 / 缩放 / DPI 变更全坏；`WM_NCDESTROY` 里还原。
+  回调用全局单例（`syscall.NewCallback` 只有 2000 个槽）。
+- **`WM_QUERYENDSESSION` 恒返回 TRUE**。拦截关机会让用户关机被卡住，Windows 随即
+  强杀进程，`state.json` 来不及落盘 —— 这是本功能最容易犯的错。
+  `WM_ENDSESSION(wParam=1)` 才抢时间落盘。
+- **隐藏窗口不 Destroy WebView**：WebView2 进程与窗口生命周期解耦
+  （MicrosoftEdge/WebView2Feedback#1424），隐藏正好利用它保活；
+  真退出时才走 `Terminate`/`Destroy`。
+- **实测：WebView2 的 `SW_HIDE` 不会让 `document.visibilityState` 变成 hidden**
+  （探针连跑 3 次，全部仍报 visible）。所以"后台"必须由 desktop 侧主动补：
+  隐藏时遮蔽 `document.hidden`/`visibilityState` 两个 getter 再派发
+  `visibilitychange`，恢复时 `delete` 掉（可逆，未改 webui.html 任何函数）。
+- 首次隐藏弹**一次性**托盘气泡（`NIF_INFO`）。不提示的话用户会以为程序被关了、
+  再也找不回来。
+- 连带修掉两个既有缺陷：几何每 5 秒落盘时会把 `close_behavior` 清空；
+  `LazyProc.Call` 在 errno=0 时也返回非 nil error，导致 `ShowWindow`
+  成功却被报成失败。
+
+`quit` 与询问选「否」都**交回原过程**（DestroyWindow → PostQuitMessage →
+`app.shutdown()`），不绕过 `boot.Runtime.Shutdown` 的「先落盘再停机」。
+
+### 新增 — 仪表盘用量统计支持自定义时间区间
+
+`/admin/stats/series` 增加 `from`/`to`（Unix 秒，与 `range` 互斥，from/to 优先）。
+桶宽自动选档（≤2h → 5m，≤48h → 1h，其余 1d），目标是把桶数控制在几十个。
+
+三条保护：跨度 ≥ 1 分钟、≤ 90 天、桶数 ≤ 2000。参数不成立时**回落 24h 而不是报错**
+—— 这个端点的调用方是前端图表，它更需要"一张默认图"而不是 400 加空白面板。
+
+两种模式**裁尾行为刻意不同**：`range` 裁掉尾部空桶（"最后一小时还没数据"是常态，
+留着折线会莫名掉 0）；自定义区间**不裁**（用户指定的范围就是他要看的，
+裁掉会把"这段确实没请求"表现成"这段不存在"）。
+
+前端在「调用统计」标题旁加下拉（近 24 小时 / 近 7 天 / 自定义…）+ 两个
+`datetime-local`。自定义区间看的是历史，30s 轮询与窗口隐藏时都不再重复拉取。
+
+顺带修掉一个静默忽略：`range` 模式的 `bucket` 只认 `day`，传 `hour` 会被无声吃掉。
+
+### 变更 — 应用改名 NaiBox，图标改为浅蓝底 + 字母 N
+
+- 产物：`dist/NaiBox.exe`、发布包 `NaiBox-windows-amd64.zip`；
+  窗口标题「NaiBox 控制台」，托盘 tooltip、单实例互斥体（`NaiBox-<hash>`）、
+  开机自启注册表值名、错误框标题一并改。
+- **向后兼容**：托盘图标外部覆盖认 `NaiBox.ico` 与 `omni2api.ico`（老用户的文件仍生效）；
+  开机自启认新旧两个注册表值名，关闭时两个都删（否则老用户会显示"没开"、
+  再点一次就多一条启动项）。
+- **刻意不改**：`service_name`（`/healthz` 的协议字段，外部监控依赖它）、
+  module path、数据根 `%APPDATA%\omni2api`（改了等于丢账号）、
+  备份文件名前缀（清理逻辑按前缀匹配，改了会让老备份永不清理）。
+- 图标：浅蓝渐变圆角底板（`#a8dcf7 → #6fbfef`）+ 深蓝字母 N（`#0d4a75`）。
+  **N 不能用白色**：白字压在浅蓝底上对比度只有约 1.3:1（两者亮度太接近），
+  16px 的托盘图标里会糊成一片白斑；深蓝约 6.5:1，小尺寸仍一眼可辨。
+  `internal/icon` 与 `assets/icon/app.svg` 同步（Go 绘制是唯一实现，SVG 是规格），
+  构建期由 `tools/genicon` 生成 6 帧 ICO，运行时托盘仍走 `icon.ICO(32)`
+  （单尺寸 DIB 帧的契约不变 —— `LoadImageW` 只认 ICO 内容）。
+
+### 修复 — 控制台顶栏仍是旧品牌与旧图标；基元/端砚在存量配置上不注册
+
+用户报的两张图，是两个不同的漏项。
+
+**① 顶栏品牌（`favicon.svg` + 页面文字）**
+
+上一轮把应用改名只做到了**桌面壳那一层**（exe 名、窗口标题、托盘、互斥体），
+控制台页面内部没动：标签页与顶栏用的是 `internal/server/favicon.svg`
+（旧的紫蓝渐变气泡），h1 的文本来自 `MANIFEST.service`，而它在
+`config.json` 里是 `"omni2api"`。
+
+修法是把**品牌与协议标识分开**：
+
+- `uiManifest` 新增 `brand` 字段（固定 `NaiBox`），前端 `serviceName()` 改为
+  `brand || service || 'gateway'`。
+- `service_name` **不改**：它同时出现在 `/healthz` 与 `/status` 的 `service` 里，
+  桌面版的单实例校验靠它判断"端口上那个是不是自己"，外部监控也可能按它筛选。
+  品牌随产品走，协议标识保持稳定。
+- `favicon.svg` 换成与 `internal/icon` 同几何的 N 图标（浅蓝底 + 深蓝 N）。
+
+⚠ 踩到一个容易复发的坑：`applyManifest()` 是**按白名单重建** MANIFEST 对象的，
+新加的后端字段不显式拷贝就永远到不了前端——表现为"接口明明返回了 brand，
+界面却没变"。已在拷贝处注明。
+
+**② 基元/端砚在存量部署上根本不注册**
+
+上一轮修的是"已注册但被前端过滤"（`entry` 门槛）。但用户的实际
+`%APPDATA%\omni2api\config.json` 是升级前生成的，里面**从来没有这两段**，
+而配置语义是"段缺席 = 不加载" —— 所以上游压根没注册，前端无从显示。
+
+修法：`inkstone` 与 `jiyuan` 的 `enabled` 改成 `*bool` 三态，
+**没写 = 启用，写 `false` = 关闭**。
+
+这与其它上游的 opt-in 语义**刻意相反**，理由写在
+`config_provider_sections_test.go` 的 `defaultEnabledSections` 里：
+
+- 其余上游保持 opt-in 是对的（避免升级后凭空多出上游、自动向新平台发请求）；
+- 但这两个上游的 Caps 只有 `chat|models|import`，**没有签到/保活**，
+  "默认启用但没凭证"不产生任何周期出站请求，只是界面多一个空分组；
+- 而"少两个上游"是用户实报的 bug，README 还承诺 12 个。
+
+原测试 `TestAbsentProviderSectionResolvesDisabled` 的注释**精确预言**了
+这个改动（"若写成默认 true，段缺席会凭空多出一个上游"），所以改测试时
+把那两个上游单独列为例外，并把新语义钉死；其余上游仍受"段缺席必须禁用"约束。
+
+### 修复 — 应用内图标与窗口图标都没有换新
+
+两处是**独立原因**，只修一处会以为"改了没用"。
+
+**① 应用内（标签页 / 顶栏 logo）**：`favicon.svg` 确实换了，但
+`webui.go` 给它设了 `Cache-Control: public, max-age=86400`。于是**只有
+浏览器里存着缓存的人看不到**——`curl` 与 headless（每次新 profile）拿到的
+一定是新图，用户浏览器里还是 24 小时前那个气泡。
+
+修法：页面三处引用（`link icon` / `apple-touch-icon` / 顶栏 `img`）都带版本串
+`?v=nb2`，并在 favicon handler 的注释里写明"改图标要同步改这个值"。
+这类"改了没生效"极难自查，因为**验证工具（新 profile）永远看不到缓存问题**。
+
+**② 窗口图标（标题栏 / 任务栏 / Alt-Tab）**：从来没设过。
+
+exe 的 PE 资源里有图标，但那是**文件图标**——资源管理器读它；
+标题栏 / 任务栏 / Alt-Tab 读的是**窗口图标**（`WM_SETICON`）。两套机制。
+go-webview2 建的是普通 Win32 窗口，不会自动设，Windows 于是给默认空白图标。
+
+修法：`LoadImage` 把资源读成 `HICON` 再 `SendMessage(WM_SETICON)`，
+并**分两个尺寸**（16 给标题栏、32 给任务栏）——用 `cx=cy=0` 取到的是第一帧
+（16×16），把它设给 `ICON_BIG` 会让任务栏里出现一张放糊的小图。
+
+⚠ 踩的坑：**`RT_GROUP_ICON` 的 ID 是 2，不是 1**。rsrc 把 manifest 放在 ID 1、
+图标组放在 ID 2。我按"常见约定 = 1"写，`LoadImage` 返回 0，窗口保持默认空白图标，
+**不报任何错**（只有日志里那句"没找到 RT_GROUP_ICON"能反推）。
+
+查证方式比猜快得多——直接用 Windows 自己的枚举：
+
+```powershell
+# EnumResourceNamesW(hModule, 14, ...)
+RT_GROUP_ICON(14): ID=2      RT_MANIFEST(24): ID=1      RT_ICON(3): 6 帧
+```
+
+现在代码里先按 ID=2 取，取不到再扫 1..16 兜底，并在启动日志里报实际用的 ID
+（换资源生成器时不会静默失效）。
+
+### 改进 — 控制台：实时日志推送 + 视觉令牌层
+
+先给基线（否则"更快了"只是体感）。`tests/frontend/perf_probe.js` 是本版新增的
+零依赖探针（Node 22 内置 WebSocket 走 CDP，不需要 `ws`/`npm install`），
+12 秒采样、Chrome 155：
+
+| 指标 | 改造前 | 改造后 |
+|---|---|---|
+| 停在请求日志面板 12s 发出的请求数 | **3** | **0** |
+| ↳ 那 3 个是什么 | `/admin/stats`、`/admin/stats/series?range=24h`、`/admin/logs/history` | 长连接已建立，无周期请求 |
+| 切到日志面板的渲染成本 | 0.069 s | 0.031 s |
+| 默认面板空闲 12s 的 CPU | 0.02% | 0.02% |
+| 首屏 taskSec | 0.106 s | 0.153 s（CSS 从 452 行增到约 1100 行） |
+
+**新增 `GET /admin/logs/stream`（SSE）**：只推**连上之后**的新行，历史仍由
+`/admin/logs/history` 分页提供（职责不重叠）。复用 `logbuf.Ring.Snapshot(sinceSeq)`
+的增量游标，服务端 300ms 一 tick、一 tick 攒一个 buffer 一次 Flush；
+心跳 `: keep-alive`；非 Flusher 回 501、未接线回 503、远端断开即 return。
+鉴权走 `/admin/*` 的统一入口 —— 这条端点会把完整请求日志（uid/model/消耗）
+持续推给客户端，单独开洞等于把账号池活动直播出去。
+
+**前端接线**：可见才连（`visibilityState` + 日志面板可见），切走就 close；
+收到新行走既有 `renderLogs` 路径（列定义与排序契约仍只有一处实现），
+80ms 合并批量重绘；不可插行时（第 2+ 页 / 已清屏）只累计「N 条新日志」按钮。
+断线**不用** `EventSource` 原生重连（它复用旧 URL，也就是旧 `since`），改成
+close + 1/2/4/8s 退避重开并带上最后收到的 seq；连败 5 次停手，切走再切回重置。
+`logStreamLive` 为真时跳过 10s 轮询，为假自动接回 —— 兜底路径始终在。
+
+**统计轮询加可见性 gating**：`/admin/stats` 与 `/admin/stats/series` 只在仪表盘
+可见时跑。原先用户停在日志面板看日志，界面每 10 秒还在拉统计，而那两块数据
+只有仪表盘用得上。这一条与 SSE 一起，才把「停日志面板 12s 的 3 个请求」降到 0。
+
+**视觉**：建立令牌层，但**既有 8 个语义色一个都没改名** —— `p4_badge_check.js`
+在运行期读 `--acc` 的实算值，十余条 CSS 规则引用 `--bg/--panel/--fg…`，
+改名不会让任何东西编译失败，只会让守卫**静默失去着力点**。新增的是别名
+（surface/border/text/accent/bad）、派生变体（`color-mix(… var(--fg))` 现算，
+两套主题共用同组令牌名、切主题自动跟随）、字号 6 档、间距 8 档（4px 基准）、
+圆角 5、阴影 3、动效 3 档。
+
+七态补齐，其中两条是真实可用性缺陷：
+- **`focus-visible` 原先被 `outline:none` 删掉了**，键盘操作基本看不见焦点在哪；
+  现在补 2px 焦点环，`.pager .pagesize` 单独做同权重覆盖（它是全页唯一会漏环的控件）。
+- **`disabled` 原先只降 opacity**，深色主题下几乎不可辨，用户会反复点。
+  现在除褪色外还压掉背景与边框。
+
+另有：斑马纹 + 整行 hover（用 `:not([colspan])` 排占位行、`:not(.grouprow):not(.errrow)`
+排自带底色行，否则会染分组标题）、按钮 loading 锁 min-width 不塌陷、
+`prefers-reduced-motion` 覆盖 transition/animation/scroll-behavior 三项、
+滚动条改标准 `scrollbar-color/width`、长 uid 省略 + title 全值。
+
+**本版明确不做**（有实测依据，不是偷懒）：
+- **虚拟滚动**：切日志面板只需 69ms、DOM 约 5600 节点、零 longTask。
+  虚拟滚动要引入窗口化、行高测量、滚动锚定，改错一处就是"翻页错位/空行"，
+  收益为零。
+- **渲染层重写**：默认面板空闲 CPU 已经是 0.02%，作者此前那轮"面板可见才拉"
+  的 gating 是有效的。动一个已经优化过的渲染层，风险远大于收益。
+
+**探针抓出并修掉的三个真实缺陷**：`.livebadge` 在浅色主题下实测 4.38:1
+（不达 AA，改 `color-mix(--ok 75%, --fg)` 后 5.83/7.62）；`onerror` 只置了
+连接标志却没重画角标（**掉线时角标仍写「实时」**，重连通常几百毫秒成功所以
+平时看不见，服务端长时间不在就是持续的谎）；重试计数只在 `open` 时清零
+（一次"服务端还没起来"会变成永久放弃，切走再切回也救不回来）。
+
+### 发布
+
+`release.yml` 新增 `desktop` job：生成图标 → 生成 `.syso` → 构建 →
+`-verify` 自检 → 打包 `omni2api-desktop-windows-amd64.zip`
+（exe + `config.example.json` + README），与 `omni2api-server-*` 并存。
+
+**`Prune stale assets` 的白名单同步加了新产物名** —— 不加的话 CI 会把自己
+刚上传的桌面包当"不符合命名规范的残留"删掉。该步骤注释里记着 v1.7.0 的
+七资产事故，属于同一类坑。
+
+### 文档
+
+- 新增 `docs/desktop.md`：13 条环境验收矩阵（Win10 / Win11、无 WebView2、
+  DPI 100/150/200%、中文路径、双开、休眠唤醒、旧目录升级……），每条给
+  「造条件 / 期望现象（含日志原文）/ 失败时看哪里」。
+- `README.md` / `CONTRIBUTING.md` / `docs/chat-tools.md` /
+  `docs/image-generation.md` 里指向 `cmd/server/*.go` 的路径全部更新为
+  `internal/boot/*.go`（搬迁后的真实位置）—— 否则"加新上游"的指引会指向
+  不存在的文件。
+
 ## v1.7.3 — 2026-10-05
 
 > 本版主题：**修两个用户报障**（TRAE 签到"假成功" / raccoon「添加账号」打不开可用页面）

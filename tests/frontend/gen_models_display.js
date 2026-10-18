@@ -102,6 +102,11 @@ const SRC_FUNCS = [
   'function modelProviderFilter(',
   'function setModelProviderFilter(',
   'function syncModelProviderOptions(',
+  // 对话测试的模型选择器（2026-10 从 renderModels 抽出：它必须先于
+  // "模型列表为空"的 early return 执行，否则没凭证时上游下拉是空的）。
+  'function fillChatModelSelect(',
+  // fillChatModelSelect 按上游排序时用它（manifest 顺序的索引）。
+  'function providerRank(',
   'function providerInfo(',
   'function providerRegistryIds(',
   'function emptyModelGroups(',
@@ -135,8 +140,8 @@ eval(SRC_FUNCS.map(grab).join('\n\n'));
 // 用 typeof（对未声明标识符也不抛）而不是 eval(n)，后者会抛 ReferenceError 盖掉原因。
 for (const n of ['multText', 'multKeyOf', 'multTableKey', 'multTag', 'multTagPlain', 'groupModelsByOwner',
   'renderModelGroup', 'modelGroupOpen', 'modelOwnerOf', 'modelProviderFilter',
-  'setModelProviderFilter', 'syncModelProviderOptions', 'providerInfo', 'providerRegistryIds',
-  'emptyModelGroups', 'renderModels']) {
+  'setModelProviderFilter', 'syncModelProviderOptions', 'fillChatModelSelect', 'providerInfo', 'providerRegistryIds', 'providerRank',
+  'emptyModelGroups', 'renderModels', 'fillChatModelSelect', 'providerRank']) {
   if (eval('typeof ' + n) !== 'function') {
     throw new Error('源码实读失败：' + n + ' 未生效（eval 没把声明泄漏出来？被包进严格模式了？）');
   }

@@ -41,8 +41,8 @@ go test ./... -count=1
 1. 新建 `internal/<name>/`，实现 `gateway.Provider`（`Chat` / `Models` / …），
    再按需要实现可选扩展点：登录流程 / 凭证加载 / 额度探测 / 每日动作 / 列集自报 /
    凭证寿命 / 后台任务 / 生图 / 对话工具 / 诊断端点。
-2. `cmd/server/config.go` 加一个配置段（`enabled` + `auth_dir` 起步）。
-3. `cmd/server/main.go` 加一行 `registry.Register(...)`。
+2. `internal/boot/config.go` 加一个配置段（`enabled` + `auth_dir` 起步）。
+3. `internal/boot/boot.go` 的装配段加一行 `registry.Register(...)`。
 4. **核心包一行都不要改。** 这是判据，不是口号 ——
    `internal/gateway/arch_test.go` 会检查包级依赖图：
    核心不得依赖具体上游，上游之间不得互相依赖。它红了就是设计被破坏了。

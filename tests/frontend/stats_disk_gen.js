@@ -112,6 +112,9 @@ function renderStatsModels(s) {
   }
 
 function renderStats(s) {
+    // 网关状态卡要读累计请求/成功率：存一份供 renderCards 使用
+    //（renderCards 在 refresh 里先于 renderStats 调用）。
+    window._statsCache = s;
     if (!s) return;
     // 窗口文案必须如实说明数据来源：统计改为聚合落盘历史后，
     // 不再是「进程内窗口」，而落盘不可用时会回落到内存 —— 两种情况不能混为一谈。
@@ -147,56 +150,25 @@ function renderStats(s) {
     const ok = num(s.ok);
     const rate = total && ok !== null ? Math.round((ok / total) * 100) : null;
 
-    // 新维度：累计消耗 / 缓存命中率 / 推理 token。
-    // 每个都先算出「字符串或 null」，再由 card() 统一决定颜色与占位符。
-    const credit = fmtCredit(s.credit_total);
-    const hitRate = fmtRate(s.cache_hit_rate);
-    const think = fmtTokens(s.think_tokens);
-    // 缓存 token 明细：命中 + 未命中都要有数才显示「x / y」，
-    // 只有一边有数时显示那一边（避免出现 "undefined / 120"）。
-    const ch = fmtTokens(s.cache_hit_tokens);
-    const cm = fmtTokens(s.cache_miss_tokens);
-    // 初值用 null 而不是 NODATA：card() 只在 `v === null` 时把值换成占位符
-    // **并加 dim 类**。直接赋字符串会让它走"有值"分支 —— 显示同样是「—」，
-    // 但少了 dim 样式，与其它"无数据"卡片看起来不一致。
-    let cacheDetail = null;
-    if (ch !== null && cm !== null) cacheDetail = ch + ' / ' + cm;
-    else if (ch !== null) cacheDetail = ch;
-    else if (cm !== null) cacheDetail = cm;
+    // 精简后的核心统计（用户要求"不用很复杂，就是简单的统计"，参考 new-api 那类
+    // 仪表盘的呈现：请求数 / 成功失败 / 成功率 / token / 耗时）。
+    // 砍掉：缓存命中率 / 缓存 token / 推理 token / 缓冲占用 —— 排障细节，
+    // 堆在这里只会让"一眼看网关用没用起来"这件事变难。
+    //
+    // 「累计消耗」改成 token（用户本轮要求）：不同上游的 credit 单位不同
+    //（积分/额度/点），加起来没有可比性；而 token 是跨上游统一的口径。
+    // 消耗 token = 输出 token + 推理 token（usage 里记录的只有这两个）。
+    //
+    // 计算抽成 statsCardsEntries：renderStats（整页渲染）与无感轮询
+    // pollStatsCards（只改数值）共用同一份判据，杜绝两处漂移。
+    const totalTokens = (num(s.tokens) || 0) + (num(s.think_tokens) || 0);
 
     // card 统一渲染：v 为 null 表示缺数据 → 显示占位符 + dim 色。
-    // 颜色判据也用数值（不是真值），否则「命中率 0%」会因为 0 是 falsy 而被涂成 dim。
+    // data-stat-key 供无感轮询定位（见 pollStatsCards）。
     const card = (k, v, cls) =>
-      `<div class="card"><div class="k">${esc(k)}</div><div class="v ${v === null ? 'dim' : (cls || '')}">${esc(v === null ? NODATA : v)}</div></div>`;
+      `<div class="card" data-stat-key="${esc(k)}"><div class="k">${esc(k)}</div><div class="v ${v === null ? 'dim' : (cls || '')}">${esc(v === null ? NODATA : v)}</div></div>`;
 
-    const hitRateNum = num(s.cache_hit_rate);
-    const hitRateCls = hitRateNum === null ? 'dim' : hitRateNum >= 0.5 ? 'ok' : hitRateNum >= 0.2 ? 'warn' : 'err';
-    const creditNum = num(s.credit_total);
-    const thinkNum = num(s.think_tokens);
-
-    $('statsCards').innerHTML = [
-      ['总请求', fmtCount(s.total), ''],
-      ['成功', fmtCount(s.ok), ok ? 'ok' : 'dim'],
-      ['失败', fmtCount(s.fail), num(s.fail) ? 'err' : 'dim'],
-      ['成功率', rate === null ? null : rate + '%', rate === null ? 'dim' : rate >= 95 ? 'ok' : rate >= 80 ? 'warn' : 'err'],
-      // 累计消耗：上游 usage 里的 credit 求和。旧格式日志行该字段恒为 0，
-      // 此时显示 0 是**正确**的（确实没有额度数据被记录），所以不特殊处理。
-      ['累计消耗', credit, creditNum ? '' : 'dim'],
-      ['缓存命中率', hitRate, hitRateCls],
-      ['缓存 token', cacheDetail, ch !== null || cm !== null ? '' : 'dim'],
-      ['推理 token', think, thinkNum ? '' : 'dim'],
-      ['平均 TTFB', fmtCount(s.avg_ttfb_ms) === null ? null : s.avg_ttfb_ms + 'ms', ''],
-      ['平均总耗时', fmtCount(s.avg_total_ms) === null ? null : s.avg_total_ms + 'ms', ''],
-      ['输出 token', fmtTokens(s.tokens), ''],
-      // 缓冲占用只在内存来源时才有意义；落盘来源改写为文件占用，避免两个概念混淆。
-      // 落盘只显示当前占用量：上限是配置里的固定值（默认 8 MiB），放在卡片里
-      // 既不随数据变化、又让人误以为是一根进度条，去掉更清楚。
-      [s.source === 'file' ? '落盘占用' : '缓冲占用',
-        s.source === 'file' && s.file
-          ? fmtBytes(s.file.size)
-          : ((s.held || 0) + '/' + (s.capacity || 0)),
-        'dim'],
-    ].map(([k, v, c]) => card(k, v, c)).join('');
+    $('statsCards').innerHTML = statsCardsEntries(s).map(([k, v, c]) => card(k, v, c)).join('');
 
     renderStatsModels(s);
   }

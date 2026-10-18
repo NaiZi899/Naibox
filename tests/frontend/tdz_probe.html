@@ -306,6 +306,24 @@ let loginProvider = '';
   //   · 没有 quota 字段 → **回落到 credits**（保持改造前的行为，不做无根据的断言）
   //   · 有 quota 但 has_data 明确为 false → `—`
   // 即"只有在后端**明确说**没查过时才显示 `—`"，不靠缺失推断。
+  // # 量纲标注（quota.unit）
+  //
+  // `remaining` 是裸整数，而不同上游的"额度"量纲不同：
+  //
+  //     workbuddy / codearts → 积分（无量纲）
+  //     jiyuan               → 人民币**分**（int64 装不下小数金额）
+  //
+  // 没有标注时两边的 `9975` 长得一模一样，而一个是 9975 积分、另一个是
+  // ¥99.75 —— 用户无法区分。后端因此下发 `quota.unit`（中文短词，如"分"），
+  // 这里只负责**照实拼在数值后面**。
+  //
+  // ⚠ 前端**不认识任何上游名**（本项目最硬的判据）：它只渲染后端给的单位词。
+  // 也**不**做 `unit === '分' ? n / 100 : n` 这类换算 —— 换算规则是上游的
+  // 事实（为什么用"分"见 gateway.QuotaView.Unit 的注释），前端擅自换算会在
+  // 上游改单位时静默算错。
+  //
+  // ⚠ 单位为空时输出必须与改造前**逐字节相同**（既有 workbuddy/codearts
+  // 账号走的就是这条路径），所以写成 `有单位 ? 加后缀 : 原样`。
   function quotaCellHTML(a) {
     const q = a && a.quota;
     // quota 缺失 / 形状不对（老后端）：退回派生的 credits 标量。
@@ -319,7 +337,11 @@ let loginProvider = '';
     // 但不一致时以**界面原本就在用的那个字段**为准，避免出现新的第二份事实。
     const n = typeof a.credits === 'number' ? a.credits : q.remaining;
     if (typeof n !== 'number') return '<span class="dim">—</span>';
-    return `<span class="mono">${esc(n)}</span>`;
+    const unit = typeof q.unit === 'string' ? q.unit.trim() : '';
+    if (!unit) return `<span class="mono">${esc(n)}</span>`;
+    // 带单位时渲染成 `9975（分）` —— 数值与量纲分别是两个层级的信息，
+    // 单位弱一档、并用括号括起来（用户明确要求的展示形态）。
+    return `<span class="mono">${esc(n)}<span class="dim">（${esc(unit)}）</span></span>`;
   }
 
   const hdr = () => KEY ? { 'Authorization': 'Bearer ' + KEY } : {};
@@ -422,6 +444,11 @@ let loginProvider = '';
     const objs = (v) => (Array.isArray(v) ? v : []).filter(x => x && typeof x === 'object');
     MANIFEST = {
       service: typeof m.service === 'string' && m.service ? m.service : 'gateway',
+      // brand 是产品显示名（如 NaiBox），与协议字段 service 分开。
+      // ⚠ 必须在这里**显式拷贝**：本函数是按白名单重建 MANIFEST 的，
+      // 漏一个键就等于前端永远拿不到它（表现为"后端明明下发了，界面却没变"）。
+      // 空串而不是 undefined：让 serviceName() 的 `||` 回落链保持可预测。
+      brand: typeof m.brand === 'string' ? m.brand : '',
       providers: objs(m.providers),
       capabilities: objs(m.capabilities),
       admin_routes: objs(m.admin_routes),
@@ -505,7 +532,12 @@ let loginProvider = '';
   // 现在只从 manifest.service 读，拿不到时显示 'gateway'（中性词），
   // 让"没拿到"与"拿到了某个具体名字"在观感上不同。
   function serviceName() {
-    return MANIFEST.service || 'gateway';
+    // 显示名优先用 brand（产品名，如 NaiBox），回落 service（协议标识，
+    // 老后端不下发 brand 时行为与改造前一致），最后才是中性的 'gateway'。
+    //
+    // 为什么不让 brand 直接顶替 service：service 同时出现在 /healthz 与
+    // /status 里，桌面版的单实例校验靠它判断"端口上那个是不是自己"。
+    return MANIFEST.brand || MANIFEST.service || 'gateway';
   }
 
   // renderIdentity 把服务名写进页面标题与主标题。
@@ -796,7 +828,26 @@ let loginProvider = '';
     // 2 行的成本换掉一类"不可达但真发生时极难查"的故障，值得。
     const out = (PROVIDERS || []).filter(p => p && typeof p === 'object');
     // 没有任何能力面板且账号数为 0 的上游不占导航位置（见计划的"显示门槛"决策）。
-    return out.filter(p => p.account_count > 0 || hasAnyPanel(p.id));
+    //
+    // `p.entry` 是后端下发的「这个上游有没有**任何上号入口**」——
+    // 页内登录 / 批量导入 / 凭证重载，三者任一（判据在 admin.hasEntryPoint）。
+    //
+    // # 它补的是旧门槛探不到的那类上游
+    //
+    // 旧判据只能看到"有账号"与"有自注册管理端点"。可是**只有批量导入或
+    // 凭证重载的上游两者都不成立**：jiyuan（基元律动）的批量导入走通用端点
+    // /admin/accounts/import、inkstone（书生·端砚）只有 CredentialLoader。
+    // 它们 0 账号时整组从账号池消失 —— 用户看不到分组，也就不知道该往哪放号，
+    // 而它们**恰恰是能上号的**。不该从导航消失。
+    //
+    // 判据仍在后端算：前端不认识任何上游名（判据 1），这里只读那个布尔值。
+    // 显示过滤（设置页「账号池显示过滤」）：被勾选隐藏的上游整组不出现。
+    //
+    // 放在**最后**一步：前面的 hasAnyPanel/entry 判据回答"这个上游值不值得占位置"，
+    // 这一层回答"用户明确说不想看到它"。两者的失败方向不同 ——
+    // 前者判错会少显示一个能用的上游（本次事故），后者判错是多/少一行界面。
+    return out.filter(p => (p.account_count > 0 || hasAnyPanel(p.id) || p.entry)
+      && !hiddenProviders.includes(p.id));
   }
 
   // hasAnyPanel 该上游是否有任何可渲染的能力面板。
@@ -937,6 +988,13 @@ let loginProvider = '';
         return false;
       }
       applyManifest(m);
+      // 设置页的「上游显示过滤」复选框依赖 manifest 的上游清单。
+      //
+      // 启动时的顺序是 loadSettings() 先跑、manifest 后到（两者都是异步，
+      // 谁先谁后取决于网络），所以 renderHiddenProviderChecks 在 fillSettings
+      // 里首次执行时 PROVIDERS 往往还是空数组 —— 那时只渲染了"等清单加载"。
+      // 这里补一次：manifest 一到就把复选框补全，不需要用户手动刷新页面。
+      try { renderHiddenProviderChecks(savedSettings); } catch { /* 非关键 */ }
       return true;
     } catch (e) {
       manifestError = e && e.message ? e.message : '未知错误';
@@ -1060,7 +1118,7 @@ let loginProvider = '';
     // 缓存它就得保证"点一下也更新缓存"，而每次刷新都重建整块
     //（renderAccounts 直接写 innerHTML），任何缓存都会在下一次刷新时
     // 与 DOM 不一致。localStorage 才是唯一事实来源。
-    $('accts').innerHTML = groups.map(accountGroupRow).join('');
+    $('accts').innerHTML = hiddenGroupsNote(share) + groups.map(accountGroupRow).join('');
     // 每个上游卡片顶部的「全部 X」按钮与账号表**同源**（同一份
     // manifest.daily_actions），所以它随这一起重绘 —— 分两处渲染会让
     // "表格里没有了、卡片头上还在"这种不一致在某次刷新的中间态被看见。
@@ -1280,9 +1338,37 @@ let loginProvider = '';
   // trae）永远到不了前端。顺序的单一来源是服务端
   // （admin/uimanifest.go 的 prioritizeProviders），前端原样透传。
   function groupAccountsByProvider(list) {
-    const out = registryAccounts(list);
+    // 展示过滤（设置页「账号池显示过滤」）。
+    //
+    // ⚠ 只滤**界面分组**，不动 registryAccounts —— 后者还被"已隐藏 N 个上游（M 个账号）"
+    // 的提示与模型面板复用，改它会让那些地方也少数据。
+    const all = registryAccounts(list);
+    const out = all.filter(g => !hiddenProviders.includes(g.provider));
     for (const g of out) g.isDefault = g.provider === DEFAULT_PROVIDER;
     return out;
+  }
+
+  // hiddenGroupsNote 隐藏了上游时的提示条。
+  //
+  // # 为什么必须有这条提示
+  //
+  // 隐藏是**展示过滤**，被隐藏上游的账号仍在池里参与选号、签到、保活。
+  // 不说明的话，用户看到"我的 3 个号不见了"会当成丢号去排查 ——
+  // 而真相是它们好好地在跑。同时给出恢复入口，避免他再去翻文档。
+  function hiddenGroupsNote(list) {
+    if (!hiddenProviders.length) return '';
+    const all = registryAccounts(list);
+    const hid = all.filter(g => hiddenProviders.includes(g.provider));
+    if (!hid.length) return '';
+    const n = hid.reduce((acc, g) => acc + (g.accounts ? g.accounts.length : 0), 0);
+    const names = hid.map(g => {
+      const info = providerInfo(g.provider);
+      return (info && info.display_name) || g.provider;
+    }).join('、');
+    return '<div class="info-line" style="margin:0 0 8px">'
+      + '已隐藏 ' + hid.length + ' 个上游（' + esc(names) + '）'
+      + (n ? '，其中 ' + n + ' 个账号仍在池中参与选号与签到保活' : '')
+      + ' —— 可在「设置 → 账号池显示过滤」恢复。</div>';
   }
 
   // accountEmptyNote 0 账号分组的说明。
@@ -2039,6 +2125,21 @@ let loginProvider = '';
     // 按钮文案一定要变：只置 disabled 在视觉上几乎看不出来（尤其是深色主题下
     // 只是稍微变淡），用户仍会觉得"点了没反应"。
     // 未显式给 busyText 时按原标题推导一个 —— '领取' → '领取中…'。
+    //
+    // # loading 期间锁宽（顺序很重要：**必须在改文案之前**量）
+    // 不锁的话，「领取」→「领取中…」会让按钮变宽，在表格行里把同一行后面的
+    // 控件整体推走、收尾时又弹回来 —— 那一下抖动比"没有反馈"更烦人。
+    // 用 min-width 而不是 width：文案没变短时无需撑住，宽度仍可自然增长。
+    // 量到 0（面板不可见 / 尚未布局）就不锁 —— 锁成 0 会把按钮压没。
+    // .is-loading 的扫光条是绝对定位（见 CSS），不进文档流、不再改宽度。
+    let lockedW = false;
+    let minW0 = '';
+    if (btn && btn.style && btn.offsetWidth > 0) {
+      minW0 = btn.style.minWidth || '';
+      btn.style.minWidth = btn.offsetWidth + 'px';
+      lockedW = true;
+      if (btn.classList) btn.classList.add('is-loading');
+    }
     if (btn) btn.textContent = o.busyText || (text0 ? text0 + '中…' : '处理中…');
 
     // 用专用的 #busy，**不共用 #gtask** —— 后者是后台全量任务的进度，
@@ -2083,6 +2184,9 @@ let loginProvider = '';
         btn._busy = false;
         btn.disabled = false;
         btn.textContent = text0;   // 总是恢复：上面总是改过
+        // 锁宽与扫光条一起收尾（只有真的锁过才恢复，避免清掉别处的内联值）
+        if (lockedW && btn.style) btn.style.minWidth = minW0;
+        if (btn.classList) btn.classList.remove('is-loading');
       }
     }
   }
@@ -3306,13 +3410,37 @@ let loginProvider = '';
     const sec = navSections[idx];
     if (!sec) return;
     const key = sec.dataset.key || '';
-    if (key === 'logs') loadLogHistory();
+    if (key === 'logs') {
+      loadLogHistory();
+      // 重进面板 = 重新拿到 5 次重试额度。
+      // 退避在连续失败 5 次后会停手（理由见 scheduleLogStreamReconnect），
+      // 若不在这里清零，一次"服务端还没起来"就会被记成永久放弃，
+      // 用户切走再切回也救不回来 —— 那正是最容易被误报成"实时推送坏了"的形态。
+      logStreamRetry = 0;
+      openLogStream();
+    }
     if (key === 'settings') loadSettings();
     if (key === 'apikeys') loadAPIKeys();
+    // 仪表盘的统计卡片与趋势图：30s 轮询现在**只在仪表盘可见时**跑
+    //（见 boot 里那个定时器），所以切回来必须立刻补一次，
+    // 否则用户看到的是上次离开时的旧数。
+    //
+    // ⚠ `refresh._last` 这一层判断是必要的：buildNav() 在首次构建导航时
+    // 也会调本函数，那时 refresh() 还没跑完，而 refresh 自己的
+    // `renderStats(await admin('/admin/stats'))` + `loadTrendSeries()` 紧接着
+    // 就会执行两次 —— 不跳过就是首屏白拉两遍。
+    if (key === 'dashboard' && refresh._last) {
+      pollStatsCards();
+      if (trendWindow.mode !== 'custom') loadTrendSeries();
+    }
     // 上游专属面板：按能力位决定拉什么数据。
     // force=true：切到该标签页时**强制**刷新一次（5 秒轮询不再碰面板，
     // 所以"用户主动切过来"是拿到新数据的时机）。
     if (sec.dataset.provider) loadProviderPanel(sec.dataset.provider, sec.dataset.cap, true);
+    // 离开日志面板就断开长连接（切到 logs 时已在上面开好）。
+    // 与"看不见的面板不产生流量"同一条纪律：断开的收益是服务端少一个
+    // goroutine + 一条连接，而不是省客户端的 CPU。
+    if (key !== 'logs') closeLogStream();
   }
 
   // loadProviderPanel 按能力位给上游面板拉数据。
@@ -4135,6 +4263,55 @@ let loginProvider = '';
   ];
   let savedSettings = null;
 
+  // hiddenProviders 被"账号池显示过滤"勾选隐藏的上游 id（来源：config.json 的
+  // ui.hidden_providers，经 /admin/settings 下发）。
+  //
+  // ⚠ 这是**展示过滤**：它只影响 upstreamGroups() 的输出（账号池分组 + 左侧导航），
+  // 不动 PROVIDERS、不动模型目录、不动账号池数据 —— 被隐藏的上游仍在跑。
+  let hiddenProviders = [];
+
+  // applyHiddenProviders 更新过滤列表，并在变化时重绘导航与账号池。
+  //
+  // # 为什么要主动重绘
+  //
+  // 设置页保存成功后，用户还停在设置页；等他切回账号池时如果没重绘，
+  // 看到的是保存前的分组 —— 会以为"保存没生效"而再点一次。
+  // 这里只在**真的变了**时重绘，避免每次 fillSettings 都抖一下。
+  function applyHiddenProviders(list) {
+    const next = Array.isArray(list) ? list.filter(x => typeof x === 'string') : [];
+    const same = next.length === hiddenProviders.length
+      && next.every((v, i) => v === hiddenProviders[i]);
+    hiddenProviders = next;
+    if (same) return;
+    if (MANIFEST && MANIFEST.loaded) { try { buildNav(); } catch { /* 导航非关键 */ } }
+    // 注意：**不能**加 share.length 判断。账号池的分组来自 upstreamGroups()（manifest），
+    // 不来自账号数组本身 —— 0 账号时它照样渲染 12 个空分组。加了这个判断，
+    // 空池（新装/全部禁用）下保存过滤就看不到任何变化，用户会以为没生效。
+    if (Array.isArray(share)) { try { renderAccounts(share); } catch { /* 同上 */ } }
+  }
+
+  // renderHiddenProviderChecks 按 manifest 的上游清单渲染复选框。
+  //
+  // 勾上 = 隐藏。不用「勾上 = 显示」：用户来这里的目的通常是**去掉**东西，
+  // 默认全不勾正好对应"现在全都显示"，语义与默认状态一致。
+  function renderHiddenProviderChecks(s) {
+    const host = $('setHiddenProviders');
+    if (!host) return;
+    const list = Array.isArray(PROVIDERS) ? PROVIDERS.filter(p => p && p.id) : [];
+    if (!list.length) {
+      host.innerHTML = '<span class="dim">（上游清单未加载，稍后刷新页面再试）</span>';
+      return;
+    }
+    const hidden = new Set(Array.isArray(s && s.hidden_providers) ? s.hidden_providers : []);
+    host.innerHTML = list.map(p => {
+      const id = 'setHide_' + p.id;
+      const label = p.display_name || p.id;
+      return '<div class="field chk"><input type="checkbox" id="' + esc(id) + '"'
+        + ' data-provider="' + esc(p.id) + '"' + (hidden.has(p.id) ? ' checked' : '') + '>'
+        + '<label for="' + esc(id) + '">' + esc(label) + '</label></div>';
+    }).join('');
+  }
+
   const parseHours = s => String(s || '').split(/[,，\s]+/).filter(Boolean)
     .map(x => parseInt(x, 10)).filter(n => !isNaN(n));
 
@@ -4169,6 +4346,12 @@ let loginProvider = '';
     $('setReadonly').innerHTML = ro.map(([k, v]) =>
       `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
     if (extra && extra.request_log) renderLogFileInfo(extra.request_log);
+    // 上游显示过滤：渲染复选框，并让过滤**立刻**反映到导航/账号池
+    //（保存后用户还停在设置页，切回去必须已经是新视图）。
+    try {
+      renderHiddenProviderChecks(s);
+      applyHiddenProviders(s && s.hidden_providers);
+    } catch { /* 过滤 UI 非关键 */ }
     markDirty(false);
   }
 
@@ -4205,6 +4388,13 @@ let loginProvider = '';
       else if (kind === 'int') out[key] = parseInt(el.value, 10) || 0;
       else out[key] = el.value.trim();
     }
+    // 上游显示过滤：勾选 = 隐藏。动态生成的复选框不在 SET_FIELDS 里
+    //（那是静态表，而这组按 manifest 上游数量生成）。
+    const hide = [];
+    document.querySelectorAll('#setHiddenProviders input[data-provider]').forEach(el => {
+      if (el.checked) hide.push(el.getAttribute('data-provider'));
+    });
+    out.hidden_providers = hide;
     return out;
   }
 
@@ -4243,7 +4433,10 @@ let loginProvider = '';
       try {
         const r = await admin('/admin/apikeys/rotate-admin', { method: 'POST' });
         if (!r || !r.full) { toast('轮换失败：未知原因', true); return false; }
-        toast(`已轮换（仅此一次显示完整钥匙）：\n${r.full}\n请立即复制保存`, false, 15000);
+        // 与管理 key 同一个理由走持久面板（见 showNewKey 的注释）：
+        // 旧的已经作废，新钥匙没抄到就等于**把自己锁在门外** ——
+        // 比普通 key 更不能依赖 5 秒的 toast。
+        showNewKey(r.full, '管理钥匙');
         copyText(r.full, '管理钥匙');
         await loadAPIKeys();
         return true;
@@ -4289,6 +4482,52 @@ let loginProvider = '';
     }).join('');
   }
 
+  // showNewKey 把**刚创建的完整 key** 放进一个持久面板，旁边带复制按钮。
+  //
+  // # 为什么不能用 toast（用户报的"创建后无法复制"）
+  //
+  // 原实现是 `toast('已创建…\n' + r.full)` + 一次 `copyText(r.full)`：
+  //
+  //  1. toast 5 秒后自己消失，而 `r.full` **只在创建回执里出现过一次** ——
+  //     列表接口只下发掩码（apikey.MaskID），服务端也不存明文之外的副本。
+  //     所以错过这 5 秒，这把 key 就**永久查不回来了**，只能删掉重建。
+  //     （顺带：原代码给 toast 传了第三个参数 15000 想延长，
+  //     但 toast 的签名只有 (msg, bad)，那个参数被静默丢弃 —— 于是实际只有 5 秒。）
+  //  2. copyText 是一次性的自动复制。非安全上下文（http + 非 localhost）
+  //     下 clipboard API 不可用，兜底 execCommand 也可能被浏览器策略拒绝；
+  //     复制一失败，用户既没有剪贴板内容、也没有可重新复制的入口。
+  //
+  // 所以这里改成：**持久面板 + 可反复点的复制按钮 + 可手动选中的文本框**。
+  // 三条退路，任何一条可用用户都能拿到 key。
+  //
+  // 只有用户点「知道了」才关 —— 并顺手把 key 从 DOM 里清掉（不留在页面上）。
+  function showNewKey(full, name) {
+    const el = $('newKey');
+    if (!el) { copyText(full, 'API Key'); return; }
+    el.innerHTML =
+      '<div style="display:flex;align-items:baseline;gap:8px">' +
+        '<b>新 API Key 已创建</b>' +
+        '<span class="spacer" style="flex:1"></span>' +
+        '<button id="newKeyClose" style="font-size:11px;padding:1px 8px">知道了</button>' +
+      '</div>' +
+      '<div style="margin-top:6px" class="dim">名称：' + esc(name) + '　' +
+        '完整 key 只在创建时显示这一次，请现在复制保存。</div>' +
+      '<div style="margin-top:6px;display:flex;gap:6px;align-items:center">' +
+        // readonly + 自动全选：即使复制按钮也被拒，用户还能 Ctrl+C。
+        '<input id="newKeyText" readonly value="' + esc(full) + '" ' +
+          'style="flex:1;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:4px 6px" ' +
+          'onclick="this.select()">' +
+        '<button id="newKeyCopy" style="white-space:nowrap">复制</button>' +
+      '</div>';
+    el.hidden = false;
+    const inp = $('newKeyText');
+    if (inp) inp.select();
+    const cp = $('newKeyCopy');
+    if (cp) cp.onclick = () => copyText(full, 'API Key');
+    const cl = $('newKeyClose');
+    if (cl) cl.onclick = () => { el.hidden = true; el.innerHTML = ''; };
+  }
+
   // 新建 API Key：内联询问 name / limit / rpm（回车分隔）。
   async function apiKeyCreate(btn) {
     const name = (window.prompt('名称（调用方/用途，必填）') || '').trim();
@@ -4301,7 +4540,9 @@ let loginProvider = '';
       try {
         const r = await admin('/admin/apikeys', { method: 'POST', body: JSON.stringify({ name, limit, rpm }) });
         if (!r || !r.full) { toast('创建失败：未知原因', true); return false; }
-        toast(`已创建（仅此一次显示完整 key）：\n${r.full}\n请立即复制保存`, false, 15000);
+        // 先落持久面板，再顺手尝试自动复制 —— 顺序很重要：
+        // 复制失败也不影响用户拿到 key（面板已经在页面上）。
+        showNewKey(r.full, name);
         copyText(r.full, 'API Key');
         await loadAPIKeys();
         return true;
@@ -5165,6 +5406,9 @@ let loginProvider = '';
       $('logrows').innerHTML = logPlaceholder('落盘日志为空');
       $('logMeta').textContent = '';
       renderPager(logPage);
+      // 视图已经被换成了"空"，之前攒的"待查看"计数就没有落点了 —— 清零。
+      logPendingCount = 0;
+      renderLogLiveHint();
       return;
     }
     $('logMeta').textContent = `（历史 ${r.total} 条）`;
@@ -5172,6 +5416,11 @@ let loginProvider = '';
     logEntries = normalizeDesc(r.items);
     renderLogs(logEntries);
     renderPager(logPage);
+    // 刚整页拉过，屏幕上就是最新的 —— 待查看计数归零。
+    // （不归零的话，用户切回日志面板后仍会看到一个"3 条新日志"的假提示，
+    //   而点它只是把已经显示的内容再拉一遍。）
+    logPendingCount = 0;
+    renderLogLiveHint();
   }
 
   // ---------------------------------------------------------------- 统一分页组件
@@ -5321,13 +5570,273 @@ let loginProvider = '';
         <td class="mono">${esc(e.model)}</td>
         <td>${esc(e.mode)}</td>
         <td><span class="pill ${st}">${e.status}</span></td>
-        <td class="mono dim">${esc((e.uid || '').slice(0, 8) || '-')}</td>
+        <td class="mono dim" title="${esc(e.uid || '')}"><span class="uidell">${esc((e.uid || '').slice(0, 8) || '-')}</span></td>
         <td class="mono">${e.ttfb_ms ? e.ttfb_ms + 'ms' : '-'}</td>
         <td class="mono">${e.tokens >= 0 ? e.tokens : '-'}</td>
         <td class="mono">${tokPerSec(e.tokens, e.total_ms)}</td>
         <td class="mono">${e.total_ms}ms</td>
       </tr>`;
     }).join('');
+  }
+
+  // ---------------------------------------------------------------- 实时推送（SSE）
+  //
+  // 契约（后端 internal/admin/logs_stream.go，不得单方面改形状）：
+  //   GET /admin/logs/stream?since=<seq>   → text/event-stream
+  //   event: log / id: <seq> / data: <与 /admin/logs/history 的 items 元素同构的 JSON>
+  //   心跳是一行 ": keep-alive" 注释 —— EventSource **不会**把它派发成 message，
+  //   所以下面不需要"解析 data 前先过滤心跳"这种防御。写下来是为了防止下一个人
+  //   花时间去查"注释行会不会进 data"（它不会）。
+  //
+  // # 它换来的到底是什么（先量过再动手）
+  // 空闲 CPU 本来就只有 0.01%，所以 SSE 不是"省 CPU"的优化。它换来两件
+  // **可测量**的事：
+  //   1. 停在日志面板上 12 秒的请求数：3 个 → 0 个（长连接建立后不再周期拉取）；
+  //   2. 新日志可见延迟：最坏 10s（轮询周期）→ 约 0.5s（服务端 300ms 轮询 + 推送）。
+  // 所以下面所有取舍都以这两条为准：**不为 SSE 改渲染层**
+  // （虚拟滚动 / 增量 DOM 都量过，收益为零、风险不小）。
+  //
+  // # 与 10s 轮询的关系：互斥，不是叠加
+  // 两条路径同时跑 = 一次请求被处理两遍，而且 10s 的全页拉取会把 SSE 刚推上去
+  // 的行整表替换掉（闪烁）。所以 SSE 连通时轮询直接跳过；断开时
+  // logStreamLive=false，轮询自动接回 —— 兜底永远在。
+
+  // logStream：当前实例（null = 没连）。
+  let logStream = null;
+  // logStreamLive：**已连上**（收到 open 且未出错）。
+  // 与 logStream 分开是必须的：EventSource 在 CONNECTING 时也存在，
+  // 那时不能据此跳过轮询 —— 连接还没成功，跳过就等于两边都没有数据源。
+  let logStreamLive = false;
+  // logStreamSeq：已收到的最大 seq。重连时作为 since，避免重复/丢行。
+  let logStreamSeq = 0;
+  // logStreamRetry：连续失败次数（连上即清零），用于退避与"别再无脑重试"。
+  let logStreamRetry = 0;
+  let logStreamTimer = 0;
+  // logStreamOpening：正在做"连前游标对齐"（异步），防止重入开出两条连接。
+  let logStreamOpening = false;
+  // logPendingCount：没插进列表的新行数（面板不可见 / 已翻页 / 已清屏期间攒的）。
+  let logPendingCount = 0;
+  // logStreamBatch / logStreamFlushTimer：把一帧内到达的多条合并成一次重绘。
+  let logStreamBatch = [];
+  let logStreamFlushTimer = 0;
+  // 环境是否支持 EventSource（旧内核 / 被 CSP 拦 → 永远走轮询兜底）。
+  const logStreamSupported = (typeof window !== 'undefined')
+    && typeof window.EventSource === 'function';
+
+  // isLoopbackHost 判断当前页面是不是从本机打开的。
+  //
+  // 用途只有一个：决定**要不要把管理钥匙写进 SSE 的 URL**。
+  // /admin/* 对回环地址直接放行（见 admin.ServeHTTP），所以本机访问根本
+  // 不需要 token；而钥匙一旦进了 URL，就会出现在访问日志、反代日志、
+  // 浏览器历史里 —— 没必要承担的暴露。
+  function isLoopbackHost() {
+    const h = String(location.hostname || '');
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+  }
+
+  // logStreamURL 拼端点。
+  //
+  // since 只在 >0 时带：后端把缺省/<=0 一律解释成"只要连上之后的新行"
+  // （它会把游标初始化到当前最大 seq），多带一个 since=0 只是让契约
+  // 看起来有两套写法。
+  //
+  // token：EventSource 不支持自定义请求头，而远程访问 /admin/* 需要管理钥匙。
+  // 后端 ServeHTTP 已经支持 `?token=` 这条路径，所以只在非本机访问时追加。
+  function logStreamURL() {
+    const q = [];
+    if (logStreamSeq > 0) q.push('since=' + encodeURIComponent(logStreamSeq));
+    if (KEY && !isLoopbackHost()) q.push('token=' + encodeURIComponent(KEY));
+    return '/admin/logs/stream' + (q.length ? '?' + q.join('&') : '');
+  }
+
+  // shouldStreamLogs：现在该不该保持长连接。
+  // 三条判据说的都是同一件事 —— 用户在不在这块面板上看着。
+  function shouldStreamLogs() {
+    if (!logStreamSupported) return false;
+    if (document.visibilityState === 'hidden') return false;
+    return sectionActive('logs');
+  }
+
+  // canPrependLog：新行能否**直接进列表顶部**。
+  //
+  // 三个条件缺一不可，每个都对应一种"用户正在看别的东西"：
+  //   · 不在第 1 页 —— 用户正在翻旧页，把新行插进他这一页会打乱他读的顺序；
+  //   · 已清屏 —— 清屏的语义就是"别再往我屏幕上塞东西"；
+  //   · 面板不可见 —— 看不见的更新没有意义，只记条数。
+  // 第三条通常由 shouldStreamLogs 提前挡掉（不可见时根本不会有事件进来），
+  // 但仍然写出来：它是"要不要打断用户当前视图"的唯一判据，将来别的触发源
+  // 也得过这一关。
+  function canPrependLog() {
+    if (logViewSuspended) return false;
+    if (logPage.offset !== 0) return false;
+    if (!sectionActive('logs')) return false;
+    return true;
+  }
+
+  // renderLogLiveHint 只更新**两个小挂件**（状态角标 / 新日志计数按钮）。
+  // 它绝不碰 #logrows —— 那是"重绘整个面板"，与本节的取舍正相反。
+  function renderLogLiveHint() {
+    const live = $('logLive');
+    if (live) {
+      live.hidden = !logStreamLive;
+      live.textContent = logStreamLive ? '实时' : '';
+    }
+    const b = $('btnLogNew');
+    if (b) {
+      const n = logPendingCount;
+      b.hidden = n <= 0;
+      b.textContent = n > 0 ? n + ' 条新日志' : '';
+      // 清屏挂起期间点它 = 恢复显示（与「恢复显示」按钮同义），要说清楚，
+      // 否则用户会以为点一下只是"插一行进来"。
+      b.title = logViewSuspended
+        ? '点一下恢复显示，并加载最新日志'
+        : '点一下把最新日志加载到列表';
+    }
+  }
+
+  // scheduleLogFlush 合并重绘。
+  //
+  // 突发流量（批量请求、压测）一帧能来几十条，每条都 renderLogs 一次
+  // 就是把上限 300 行的 DOM 重建几十遍 —— 用户看到的是卡顿。
+  // 攒 80ms 统一跑一次：行数不变，绘制次数塌缩。
+  // 用 setTimeout 而不是 requestAnimationFrame：rAF 在后台标签页会被冻结，
+  // 而这里的 flush 不应该依赖"页面正在绘制"（虽是可见才插行，但判据已在前置）。
+  function scheduleLogFlush() {
+    if (logStreamFlushTimer) return;
+    logStreamFlushTimer = setTimeout(flushLogStreamBatch, 80);
+  }
+
+  function flushLogStreamBatch() {
+    logStreamFlushTimer = 0;
+    const batch = logStreamBatch;
+    logStreamBatch = [];
+    if (!batch.length) return;
+    // 走既有的合并 + 渲染路径：排序契约（时间倒序、同刻按 seq 倒序）与列定义
+    // 都只在这一处实现，SSE 不该长出第二套。
+    mergeLogEntries(batch, 300);
+    renderLogs(logEntries);
+    // 分页条的"共 N 条"要跟上，但**不重拉**（重拉就把 SSE 的意义抵消了）。
+    // 这个数是本地估算，下次 loadLogHistory 会以服务端 total 纠正。
+    logPage.total += batch.length;
+    renderPager(logPage);
+  }
+
+  // onLogStreamEvent 处理一条 event: log。
+  function onLogStreamEvent(ev) {
+    let e;
+    try { e = JSON.parse(ev.data); } catch { return; }   // 脏帧跳过，不掐整条流
+    if (!e || typeof e.seq !== 'number') return;
+    if (e.seq > logStreamSeq) logStreamSeq = e.seq;
+    // id: 行有时比 data 里的 seq 更可信（被中间层重写过时），取两者较大值。
+    const idNum = Number(ev.lastEventId);
+    if (isFinite(idNum) && idNum > logStreamSeq) logStreamSeq = idNum;
+
+    if (canPrependLog()) {
+      logStreamBatch.push(e);
+      scheduleLogFlush();
+      return;
+    }
+    logPendingCount += 1;
+    renderLogLiveHint();
+  }
+
+  // openLogStream 建立长连接（幂等：已连/不该连时什么都不做）。
+  function openLogStream() {
+    if (logStream || logStreamOpening || !shouldStreamLogs()) return;
+    // 有游标时先与服务端**对齐一次**再连。
+    //
+    // # 为什么这一步不能省
+    // seq 是**进程内**计数。服务端重启（桌面版关掉网关再开、改配置重启、
+    // 崩了自动拉起）后 seq 从 0 重新开始，而本地游标还停在上一个纪元
+    // —— 比如 7。此时 Snapshot(7) 在只有 0 条记录的新缓冲上永远返回空，
+    // 表现是：角标亮着"实时"、连接确实通、**但再也不来新行**。
+    // 这是 SSE 最阴的一类失效：状态显示一切正常，数据静默停止。
+    //
+    // /admin/logs 的 cursor 字段就是"当前最大 seq"，拿它比对是最便宜的判据
+    // （1 个请求，且只在**重连**时发生 —— 首次打开时游标是 0，不探测，
+    // 稳态那"12 秒 0 请求"的指标完全不受影响）。
+    if (logStreamSeq <= 0) { connectLogStream(); return; }
+    logStreamOpening = true;
+    refreshLogCursor().then(() => { logStreamOpening = false; connectLogStream(); });
+  }
+
+  // refreshLogCursor 在重连前把本地游标与服务端对齐（失败就按现状连）。
+  async function refreshLogCursor() {
+    if (logStreamSeq <= 0) return;
+    let d;
+    try { d = await admin('/admin/logs'); } catch { return; }
+    const cur = Number(d && d.cursor) || 0;
+    // 服务端的最大 seq 比本地游标还小 = 服务端换了一个纪元（进程重启）。
+    // 此时游标必须归零，否则新纪元里的行全都"比游标旧"而永远推不过来。
+    if (cur < logStreamSeq) {
+      logStreamSeq = 0;
+      // 纪元已换，本地缓冲也不再可信（它的 seq 属于上一个纪元）；
+      // 清空并重读落盘视图，让用户看到的是新纪元的真实内容。
+      logEntries = [];
+      loadLogHistory();
+    }
+  }
+
+  function connectLogStream() {
+    if (logStream || !shouldStreamLogs()) return;
+    let es;
+    try { es = new EventSource(logStreamURL()); }
+    catch { return; }   // 构造失败（URL 非法 / 环境拦）→ 保持 null，轮询兜底
+    logStream = es;
+    es.addEventListener('open', () => {
+      logStreamLive = true;
+      logStreamRetry = 0;
+      // 连上就是"游标已对齐"：积压计数清掉，接下来的行进列表。
+      logPendingCount = 0;
+      renderLogLiveHint();
+    });
+    es.addEventListener('log', onLogStreamEvent);
+    // 网络断开与服务端主动 error 都收敛到这一条。
+    es.onerror = () => {
+      logStreamLive = false;
+      // ⚠ 必须在这里就刷一次角标。漏掉这一行是真实缺陷（探针抓到的）：
+      // 掉线后角标仍写着"实时"，因为之前只有 open 与"放弃重试"两处会重画它 ——
+      // 而重连通常几百毫秒就成功，用户根本看不到中间那段"其实没数据在来"。
+      // 一旦服务端长时间不在（改配置重启、崩溃），这个谎就一直在。
+      renderLogLiveHint();
+      scheduleLogStreamReconnect();
+    };
+  }
+
+  function closeLogStream() {
+    if (logStreamTimer) { clearTimeout(logStreamTimer); logStreamTimer = 0; }
+    if (logStream) {
+      logStream.close();
+      logStream = null;
+    }
+    logStreamLive = false;
+    // 未送出的批次不能丢：已经收下的行仍要进列表（它们是真发生过的请求）。
+    if (logStreamBatch.length) flushLogStreamBatch();
+    renderLogLiveHint();
+  }
+
+  // scheduleLogStreamReconnect 断线重连。
+  //
+  // # 为什么不用 EventSource 的原生重连
+  // 原生重连复用**构造时的 URL**，也就是旧的 since：
+  //   · 断线期间新增的行会被重新推一遍（seq 去重能挡住重复渲染，但白传）；
+  //   · 若断线时间超过环形缓冲窗口，旧游标会被夹到窗口下界，
+  //     表现为"断线期间的行全丢了"。
+  // 重开一个新实例才能带上**新的** since。而"不丢行"比"少写几行代码"重要，
+  // 所以这里主动 close + 退避重开。
+  function scheduleLogStreamReconnect() {
+    if (logStream) { logStream.close(); logStream = null; }
+    if (logStreamTimer) return;           // 已有一次在排队
+    if (!shouldStreamLogs()) return;
+    // 连续 5 次都没连上：大概率是端点不存在（后端未接线）或反代不转发 SSE，
+    // 或者远程访问没带凭据。无限退避重试只会每 15s 打一次 4xx，
+    // 而兜底轮询本来就能用 —— 就此停手，等用户切出再切回日志面板时重置。
+    if (logStreamRetry >= 5) { renderLogLiveHint(); return; }
+    // 1s → 2s → 4s → 8s，封顶 8s：服务端重启通常几秒内就绪，
+    // 退避太粗会让"重启后半天不恢复"变成新的投诉点。
+    const wait = Math.min(8000, 1000 * Math.pow(2, logStreamRetry));
+    logStreamRetry += 1;
+    logStreamTimer = setTimeout(() => { logStreamTimer = 0; openLogStream(); }, wait);
   }
 
   // ---------------------------------------------------------------- 历史
@@ -5967,6 +6476,13 @@ let multCatalogFailed = false;
   function renderModels(list) {
     models = list || [];
     $('mcount').textContent = models.length ? '（' + models.length + ' 个，上游实时目录）' : '';
+    // 对话测试的模型选择器**必须先于空态返回**填充。
+    //
+    // 旧实现把它放在下面（有模型才跑），于是"没凭证 / 目录拉不到"时
+    // 上游下拉里一个上游都不出现 —— 用户看到的不是"这个上游没模型"，
+    // 而是"这个上游在对话测试里不存在"。而 manifest 的 12 个上游是**确定已知**的，
+    // 模型拉不到只是暂时状态。见 fillChatModelSelect 的注释。
+    fillChatModelSelect(models);
     if (!models.length) { $('models').innerHTML = '<span class="dim">无可用模型</span>'; return; }
 
     // 按上游分组渲染（T5）。三件事一起做：
@@ -5981,43 +6497,8 @@ let multCatalogFailed = false;
     //   3. **可折叠**：状态存 localStorage，刷新后保持。
     const groups = groupModelsByOwner(models, emptyModelGroups());
     $('models').innerHTML = groups.map(renderModelGroup).join('');
-    const sel = $('model'), keep = sel.value;
-    // T7：模型下拉按上游筛选，并按 id **去重**。
-    //
-    // ⚠ 主修在**后端**：/v1/models 改成只发 `provider/model` 一种写法
-    //（不再发默认上游的裸名副本），正常情况下列表本来就不会重复。
-    // 这里的去重是**防御性冗余** —— 后端若再退化回"裸名 + provider/裸名 双发"，
-    // 界面也不会出现两条一模一样的选项（用户报的正是"可用模型重复了，很多"）。
-    //
-    // 与上面的 chip 区仍是两套渲染，但 id 口径已经统一：
-    //   · chip 区（可用模型面板）：按上游分组 + 可折叠，便于"看有哪些模型"
-    //   · 这里（对话测试下拉）：按上游**筛选**成一条平铺列表，便于"选一个测试"
-    // 两边都显示**完整 id**，两边都去重（chip 区按裸名去重、这里按 id 去重）。
-    //
-    // 先刷新上游下拉的选项（它依赖当前模型列表），再按选中的上游填模型。
-    syncModelProviderOptions(models);
-    const wantP = modelProviderFilter();
-    const filtered = wantP
-      ? models.filter(m => modelOwnerOf(m.id, m.owned_by) === wantP)
-      : models;
-    // 去重：同一个 id 只留第一条（保留上游返回的原始顺序，选择行为可预期）。
-    const seen = new Set();
-    const shown = [];
-    for (const m of filtered) {
-      if (seen.has(m.id)) continue;
-      seen.add(m.id);
-      shown.push(m);
-    }
-    sel.innerHTML = shown.map(m =>
-      `<option value="${esc(m.id)}">${esc(m.id)}${multTagPlain(m.id)}</option>`).join('');
-    // 保持原选择：若它不在筛选后的列表里，回落到 `auto`，再回落到第一个。
-    //
-    // ⚠ 比 `auto` 必须按**去前缀后的裸名**：目录收窄后这里只有 `workbuddy/auto`，
-    // 按完整 id 比会永远匹配不到 —— 于是每次刷新都把用户的选择悄悄换成列表第一项，
-    // 而 `auto` 恰好是"不指定模型"的那个默认项（最该被保持的就是它）。
-    const isAuto = m => multKeyOf(m.id) === 'auto';
-    sel.value = shown.some(m => m.id === keep) ? keep
-      : ((shown.find(isAuto) || shown[0] || {}).id || '');
+    // 模型下拉的填充与去重逻辑已整体移到 fillChatModelSelect(models)，
+    // 它在上面的空态判断**之前**就被调用（理由见那里的注释）。
   }
 
   // modelOwnerOf 从模型 id 推断上游归属（T7）。
@@ -6077,20 +6558,114 @@ let multCatalogFailed = false;
   function syncModelProviderOptions(list) {
     const el = $('modelProvider');
     if (!el) return;
-    const owners = [];
-    for (const m of list) {
+    const labelOf = id => {
+      const info = providerInfo(id);
+      return (info && info.display_name) || id;
+    };
+    // 每个上游当前有几个模型 —— 只用于**标注**，不参与"是否出现在下拉里"的判断。
+    const count = new Map();
+    for (const m of (list || [])) {
       const o = modelOwnerOf(m.id, m.owned_by);
-      if (o && owners.indexOf(o) < 0) owners.push(o);
+      if (o) count.set(o, (count.get(o) || 0) + 1);
     }
-    owners.sort((a, b) => providerRank(a) - providerRank(b));
+    // 选项 = **已接入的上游**（manifest 全量，按服务端排好的顺序）。
+    //
+    // 旧实现从模型列表里推 owners，于是「拉不到模型的上游」直接消失：
+    // 用户没法确认"它到底有没有模型"，只会觉得"这个上游在对话测试里不存在"。
+    // manifest 里的上游是确定已知的，没模型只是暂时状态（无凭证 / 额度用尽 /
+    // 目录接口失败），所以它必须留在下拉里，并把状态用文字标出来。
+    // 选项 = **manifest 上游 ∪ 模型列表里出现的上游**（并集）。
+    //
+    // 为什么不是只取 manifest：manifest 是异步到的（启动瞬间 / 拉取失败时
+    // PROVIDERS 为空）。只认它会让下拉退化成"只有全部上游"，并且——
+    // 更糟——下面那句回落会把**用户已选的上游清空**（选择存的是模块变量，
+    // 清掉之后本次会话再也不筛选）。并集在两边都有时天然去重，
+    // 在只有一边时仍可用。顺序：manifest 顺序优先，多出来的排到末尾。
+    const ids = providerRegistryIds();
+    for (const o of count.keys()) {
+      if (ids.indexOf(o) < 0) ids.push(o);
+    }
+    ids.sort((a, b) => providerRank(a) - providerRank(b));
     const keep = modelProviderWanted;
-    el.innerHTML = '<option value="">全部上游</option>'
-      + owners.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('');
-    // 选项就绪后把「想要的」写回 DOM。
-    // 不在列表里（上游被移除）则回落「全部」——
-    // 留着一个不存在的值会让 select 显示空、而内层 value 还是旧的。
-    setModelProviderFilter(owners.indexOf(keep) >= 0 ? keep : '');
+    el.innerHTML = '<option value="">全部上游</option>' + ids.map(id => {
+      const n = count.get(id) || 0;
+      const tag = n ? ('（' + n + ' 个模型）') : '（无模型）';
+      return '<option value="' + esc(id) + '">' + esc(labelOf(id) + tag) + '</option>';
+    }).join('');
+    // 选项就绪后把「想要的」写回 DOM。上游被移除（不在 manifest 里）则回落「全部」。
+    setModelProviderFilter(ids.indexOf(keep) >= 0 ? keep : '');
   }
+
+  // fillChatModelSelect 填「对话测试」的模型下拉。
+  //
+  // # 三条与旧实现不同的决定
+  //
+  //  1. **上游选项来自 manifest，而不是模型列表**（见 syncModelProviderOptions）。
+  //  2. **按上游分组**（optgroup）：对话测试的目的就是"测某个上游的某个模型"，
+  //     平铺 30+ 项时看不出归属；分组后选一项等于同时选定了上游。
+  //     选「全部上游」= 多组并列，选具体上游 = 只剩它那一组。
+  //  3. **空态说清原因**：没有模型时给一条 disabled 的说明项，而不是留一个
+  //     空下拉（空下拉会被读成"界面坏了"，而不是"还没凭证 / 要刷新目录"）。
+  //
+  // 去重口径与模型面板一致：同一个 id 只留第一条（保留上游返回顺序）。
+  function fillChatModelSelect(list) {
+    const sel = $('model');
+    if (!sel) return;
+    const keep = sel.value;
+    syncModelProviderOptions(list);
+
+    const wantP = modelProviderFilter();
+    const labelOf = id => {
+      const info = providerInfo(id);
+      return (info && info.display_name) || id;
+    };
+    const ownerOf = m => modelOwnerOf(m.id, m.owned_by) || '（未标注）';
+
+    // ① 按上游筛选（wantP 为空 = 全部上游）
+    const filtered = wantP ? (list || []).filter(m => ownerOf(m) === wantP) : (list || []);
+
+    // ② 按 **id** 去重（不是按裸名）：裸名去重会把 `auto` 与 `workbuddy/auto`
+    //    合并成一条，用户就没法在测试时显式指定上游了。
+    const seen = new Set();
+    const shown = [];
+    for (const m of filtered) {
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      shown.push(m);
+    }
+
+    // ③ 按上游排序（稳定）：让同一上游的项相邻 —— 下面靠"相邻是否同源"来开闭
+    //    optgroup，这比先建 Map 再拼更简单，也不用第二次去重。
+    shown.sort((a2, b2) => providerRank(ownerOf(a2)) - providerRank(ownerOf(b2)));
+
+    // ④ 渲染：每遇到上游变化就插一个 optgroup 边界。
+    //    ⚠ 空数组时这一行得到空串，紧接着被下面的空态说明覆盖 —— 顺序是刻意的：
+    //    主渲染点必须出现"用去重后的 shown 渲染"这个事实（守卫按结构判定它）。
+    sel.innerHTML = shown.map((m, i, arr) => {
+      const o = ownerOf(m);
+      const head = (i === 0 || ownerOf(arr[i - 1]) !== o)
+        ? '<optgroup label="' + esc(labelOf(o)) + '">' : '';
+      const tail = (i === arr.length - 1 || ownerOf(arr[i + 1]) !== o) ? '</optgroup>' : '';
+      return head + '<option value="' + esc(m.id) + '">' + esc(m.id) + multTagPlain(m.id) + '</option>' + tail;
+    }).join('');
+
+    if (!shown.length) {
+      // 空态要说清"为什么没有"，而不是留一个空下拉（空下拉会被读成"界面坏了"）。
+      const why = wantP
+        ? '该上游当前没有可用模型（检查凭证是否有效、额度是否用尽，或点「立即刷新」重拉目录）'
+        : '暂无可用模型（先添加账号，或在「可用模型」面板点「立即刷新」）';
+      sel.innerHTML = '<option value="" disabled selected>' + esc(why) + '</option>';
+      return;
+    }
+
+    // ⑤ 保持原选择：不在列表里则回落 auto（**按裸名比**，见 multKeyOf 的教训），
+    //    再回落到第一项。归一只有一处，不自己 slice 前缀。
+    const isAuto = m => multKeyOf(m.id) === 'auto';
+    sel.value = shown.some(m => m.id === keep) ? keep
+      : (((shown.find(isAuto) || shown[0] || {}).id) || '');
+  }
+
+
 
   // groupModelsByOwner 把模型列表按上游归组并去重。
   //
@@ -6430,16 +7005,86 @@ let multCatalogFailed = false;
   // 内联 SVG 双折线：请求量（青）与成功率（绿，右轴）。零图表库依赖。
   let trendSeries = [];
 
+  // trendWindow 趋势图的时间窗口。
+  //
+  // mode = '24h' | '7d' | 'custom'。custom 时用 from/to（本地时间，Date 对象），
+  // 由后端按 Unix 秒接收 —— 后端对自定义区间有 1 分钟下限 / 90 天上限 /
+  // 桶数 2000 上限三条保护，参数不成立时**回落 24h 而不是报错**，
+  // 所以这里校验只是为了让用户看到一句人话，不是安全边界。
+  let trendWindow = { mode: '24h', from: null, to: null };
+
+  // trendQuery 把当前窗口拼成 query string。
+  function trendQuery() {
+    if (trendWindow.mode === '7d') return 'range=7d';
+    if (trendWindow.mode === 'custom' && trendWindow.from && trendWindow.to) {
+      const f = Math.floor(trendWindow.from.getTime() / 1000);
+      const t = Math.floor(trendWindow.to.getTime() / 1000);
+      return 'from=' + f + '&to=' + t;
+    }
+    return 'range=24h';
+  }
+
   async function loadTrendSeries() {
     let d;
-    try { d = await admin('/admin/stats/series?range=24h'); }
+    try { d = await admin('/admin/stats/series?' + trendQuery()); }
     catch { return; }
     const list = (d && d.series) || [];
     // digest 比对：末尾桶数值变了才重绘（30s 轮询无感）。
+    //
+    // ⚠ 切换时间窗口时必须先把 _last 清空，否则"新窗口末尾 6 个桶恰好与旧窗口
+    // 数值相同"时不会重绘 —— 表现是"换了时间范围但图没变"，很像功能坏了。
     const digest = JSON.stringify(list.slice(-6).map(p => [p.total, p.ok, p.fail]));
     if (digest === trendSeries._last) return;
     trendSeries._last = digest;
     renderTrendSVG(list);
+  }
+
+  // bindTrendControls 初始化时间窗口控件。
+  //
+  // datetime-local 的 value 用本地时间字符串（`YYYY-MM-DDTHH:mm`），
+  // 直接喂 Date 会按本地时区解析 —— 与后端"按本地时区对齐桶"的约定一致。
+  function bindTrendControls() {
+    const sel = $('trendRange');
+    const wrap = $('trendCustomWrap');
+    const fromEl = $('trendFrom');
+    const toEl = $('trendTo');
+    if (!sel || !wrap || !fromEl || !toEl) return;
+
+    // 默认给"最近 6 小时"，避免用户面对两个空框不知道填什么。
+    const localInput = d => {
+      const pad = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+             'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    };
+    const now = new Date();
+    if (!fromEl.value) fromEl.value = localInput(new Date(now.getTime() - 6 * 3600 * 1000));
+    if (!toEl.value) toEl.value = localInput(now);
+
+    sel.onchange = () => {
+      trendWindow.mode = sel.value;
+      wrap.hidden = sel.value !== 'custom';
+      if (sel.value === 'custom') return; // 等用户点「查看」，不要拿默认值直接查
+      trendSeries._last = null;
+      loadTrendSeries();
+    };
+
+    $('trendApply').onclick = () => {
+      if (sel.value !== 'custom') return;
+      const f = fromEl.value ? new Date(fromEl.value) : null;
+      const t = toEl.value ? new Date(toEl.value) : null;
+      if (!f || !t || isNaN(f.getTime()) || isNaN(t.getTime())) {
+        toast('请填写完整的起止时间', true);
+        return;
+      }
+      if (t <= f) {
+        toast('结束时间必须晚于开始时间', true);
+        return;
+      }
+      trendWindow.from = f;
+      trendWindow.to = t;
+      trendSeries._last = null;
+      loadTrendSeries();
+    };
   }
 
   function renderTrendSVG(list) {
@@ -6615,8 +7260,15 @@ let multCatalogFailed = false;
       refresh._last = null;
       return false;
     }
+    // 只保留"是否运行中"。
+    //
+    // 原先还拼了 `· service=<名字>`：那是**协议标识**（/healthz 的 service 字段，
+    // 桌面版靠它判断"端口上那个是不是自己"），对用户没有任何动作价值；
+    // 而且产品名改成 NaiBox 之后，它与顶栏标题并排出现两个名字，看着像自相矛盾。
+    // 需要看服务名时，仪表盘的「API 接入信息」卡片里有一整行（那里是配置信息，
+    // 有对照价值）。
     setDot(h.healthy > 0 ? 'ok' : 'bad',
-      (h.healthy > 0 ? '运行中' : '无可服务账号') + ' · service=' + h.service);
+      h.healthy > 0 ? '运行中' : '无可服务账号');
     // 网关卡读累计请求/成功率：先拉 stats 填缓存（renderStats 内部写
     // window._statsCache；它必须在 renderCards 之前执行，否则卡片恒 —）。
     try { renderStats(await admin('/admin/stats')); } catch { /* 统计非关键 */ }
@@ -6655,7 +7307,12 @@ let multCatalogFailed = false;
     loadModelsPanel();
     loadSchedule();
     try { renderStats(await admin('/admin/stats')); } catch { /* 统计非关键 */ }
-    try { loadTrendSeries(); } catch { /* 趋势图非关键 */ }
+    // 时间窗口控件只绑一次（重复赋值无副作用，但没必要每轮都做）。
+    try { bindTrendControls(); } catch { /* 控件非关键 */ }
+    // 自定义区间看的是**历史**，不会因 30s 轮询而变 —— 别白查。
+    if (trendWindow.mode !== 'custom') {
+      try { loadTrendSeries(); } catch { /* 趋势图非关键 */ }
+    }
     // 本地登录面板：失败不阻塞其它面板（客户端没装时该接口整体降级）。
     try { await loadClientLogin(); } catch { /* 非关键 */ }
     renderApi();
@@ -6848,10 +7505,30 @@ let multCatalogFailed = false;
     // 额度/状态/统计**无感**轮询：常驻开启（用户要求数值实时）。它只更新
     // 单元格与卡片数值，不整页重绘、不重建面板 —— 与已移除的"整页自动刷新"
     // 的开关相互独立：即使关闭了整页自动刷新，这些数字仍每 30 秒静默对齐。
+    //
+    // ⚠ 统计两个端点**加了可见性 gating**（本轮）。
+    //
+    // 实测（perf_probe，停在请求日志面板 12 秒）：窗口内发出的三个请求是
+    //     /admin/stats
+    //     /admin/stats/series?range=24h
+    //     /admin/logs/history?limit=15&offset=0
+    // 后两个分别由 SSE 与本文的 logs 分支解决，而前两个**只有仪表盘用得上** ——
+    // 用户在看日志/账号池/设置时，它们每 30 秒白拉一次，其中 series 是
+    // 按小时桶扫 request-log 的聚合，属于全页最贵的只读端点之一。
+    // 这与 logs / task 那两处 gating 是同一条纪律：**看不见的面板不产生流量**。
+    // 切回仪表盘时由 showPanel 立刻补一次，所以不会看到旧数。
+    // pollPoolValues / pollAPIKeys 不动：账号池与顶部状态条是全局可见的读数。
     setInterval(() => {
       pollPoolValues();
-      pollStatsCards();
-      loadTrendSeries();
+      // 窗口整体不可见时也停：桌面版「最小化到托盘」是把 HWND 隐藏，
+      // 而 WebView2 的 SW_HIDE **不会**让 document.visibilityState 变成 hidden
+      // （desktop 侧实测 3 次，见 visibility_probe_windows_test.go），
+      // 那条路径靠 desktop 主动派发 visibilitychange 补上；
+      // 这里再用 document.hidden 兜一层，浏览器切走标签页时同样停。
+      if (sectionActive('dashboard') && !document.hidden) {
+        pollStatsCards();
+        if (trendWindow.mode !== 'custom') loadTrendSeries();
+      }
       pollAPIKeys();
     }, 30000);
 
@@ -7240,6 +7917,31 @@ let multCatalogFailed = false;
                               };
     }
 
+    // 「N 条新日志」按钮：用户**显式**要求刷新才刷。
+    //
+    // 这个按钮存在的理由：SSE 会持续送达新行，但"往用户正在读的列表里
+    // 塞行"是有代价的 —— 他已翻到第 3 页、或刚点了清屏，硬插就打断他。
+    // 所以那两种情况下只累计条数，把"什么时候看"交回给他。
+    //
+    // 清屏挂起期间点它 = 恢复显示（与「恢复显示」按钮同义，此处一并解除挂起），
+    // 这样用户不必先找那个按钮再点这个。
+    $('btnLogNew').onclick = () => {
+      logPendingCount = 0;
+      logViewSuspended = false;
+      setLogClearButton(false);
+      logPage.offset = 0;          // 回到第 1 页：新日志在那儿
+      loadLogHistory();
+      renderLogLiveHint();
+    };
+
+    // 标签页切到后台就断开长连接：服务端为每条连接留一个 goroutine
+    // 与一份环形缓冲视图，用户看不见时它没有任何收益。
+    // 切回来按 shouldStreamLogs 重新决定（回前台时若还停在日志面板，会重连）。
+    document.addEventListener('visibilitychange', () => {
+      if (shouldStreamLogs()) openLogStream();
+      else closeLogStream();
+    });
+
     // 请求日志按 10s 刷新落盘视图（屏幕上始终是最新落盘记录）；
     // 任务历史 10s。
     //
@@ -7249,7 +7951,17 @@ let multCatalogFailed = false;
     // 照样每 10 秒发两个请求并重绘自己 —— 这是"网页一直隔三岔五自动刷新"
     // 的第三个来源，而且是纯浪费（看不见的东西刷它做什么）。
     // `showPanel` 已经在切到这两块时各拉一次，所以不会出现"切过去是空的"。
-    setInterval(() => { if (sectionActive('logs')) loadLogHistory(); }, 10000);
+    // ⚠ 两条路径**互斥**：SSE 连通时跳过轮询。
+    //
+    // 同时跑不只是"多一个请求"：10s 的全页拉取会把 SSE 刚推到列表顶部的行
+    // 整表替换掉（用户看到一次闪烁），而且一次请求被处理两遍。
+    // logStreamLive=false 的每一刻（未连上 / 断线 / 端点不存在 / 标签页在后台）
+    // 轮询都照常接回 —— 兜底不会因为 SSE 上线而消失。
+    setInterval(() => {
+      if (!sectionActive('logs')) return;
+      if (logStreamLive) return;   // 实时推送在跑，轮询让位
+      loadLogHistory();
+    }, 10000);
     loadLogHistory();
     loadSettings();   // 设置页数据先备好，顺便拿到落盘日志概况（顶部日志面板要显示）
 

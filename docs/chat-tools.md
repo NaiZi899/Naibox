@@ -73,7 +73,7 @@ internal/server/chattool_loop.go    循环本体（非流式）
 internal/server/chattool_stream.go  循环本体（流式）—— 边流边判断
 internal/server/chattool_send.go    循环内的发送（流式 / 非流式各一个）
 internal/wire/stream_frames.go      逐帧读取上游 SSE（帧判据复用 sseData）
-cmd/server/chattool_router.go       装配层适配（按上游 ID 找 Provider 执行）
+internal/boot/chattool_router.go    装配层适配（按上游 ID 找 Provider 执行）
 ```
 
 扩展点形状：

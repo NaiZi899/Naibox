@@ -318,6 +318,11 @@ func New(cfg Config) *Handler {
 
 	h.register("GET /admin/logs", h.logs)
 	h.register("GET /admin/logs/history", h.logsHistory)
+	// 实时推送（SSE 长连接）：只推**连上之后**的新行，历史仍由 history 分页。
+	// 鉴权不特殊处理 —— 它和其它 /admin/* 一样走 ServeHTTP 的统一入口
+	//（loopback 直连或管理钥匙），必须如此：这条端点会把完整请求日志
+	//（uid/model/消耗）持续推给客户端，单独开洞等于把账号池活动直播出去。
+	h.register("GET /admin/logs/stream", h.logsStream)
 	h.register("GET /admin/stats", h.stats)
 	h.register("GET /admin/stats/series", h.statsSeries)
 

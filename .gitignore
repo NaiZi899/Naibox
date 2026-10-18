@@ -56,6 +56,9 @@ docs/*
 !docs/loomy-local-toolchain.md
 !docs/image-generation.md
 !docs/chat-tools.md
+# 桌面版手工验收矩阵是**交付物**：它是"数据会不会丢"这类问题的唯一
+# 可复现判定依据（谁在什么环境下该看到什么、失败看哪里）。
+!docs/desktop.md
 
 # 运行期产物
 # logs/ 是 start.bat 与网关控制台写出的日志（含本机绝对路径、账号昵称、
@@ -86,6 +89,10 @@ tasks/
 !docs/loomy-local-toolchain.md
 !docs/image-generation.md
 !docs/chat-tools.md
+# 桌面版手工验收矩阵：同样是交付物（「数据会不会丢」的唯一可复现判定依据）。
+# 必须放在 `*.md` **之后** —— gitignore 是"最后匹配者胜"，
+# 只在 docs/* 那组里豁免会被后面的 `*.md` 重新盖掉（我第一版就这么错了）。
+!docs/desktop.md
 
 # ⚠ 被 go:embed 内嵌的 md 必须**显式**豁免 —— 它不是文档，是编译输入。
 #
@@ -116,6 +123,11 @@ tasks/
 /*_gen.js
 # Release 预编译产物（gh release 上传用，不入版本库）
 dist/
+# 构建期派生物：图标与资源对象。图标本身是代码画的（internal/icon +
+# tools/genicon），.ico 每次构建重新生成，没有理由进版本库 ——
+# 二进制一旦入库，改图形时 diff 看不出来，也容易和代码悄悄分叉。
+/.build/
+cmd/desktop/rsrc.syso
 # 本地测试实例（7864）的配置与数据：与生产 auths/data 同理，不入版本库
 config-test.json
 auths-test/

@@ -26,3 +26,24 @@
 #   git check-ignore -v <文件>        # exit 0 = 会被 .gitignore 吃掉 = CI 构建必挂
 #   git cat-file -s :<文件>           # 与工作树字节数比对，确认没有被换行转换改写
 internal/prompt/defaultprompt.md -text
+
+# ── 同一类陷阱：控制台页面 / 图标 / 桌面版默认配置 ──────────────────────────
+#
+# 它们同样被 //go:embed 逐字节内嵌。实测（修复前）：
+#
+#   internal/server/webui.html   工作树 CRLF 482014 字节 / index LF 473590 字节
+#                                差 8424 = 行数（每行一个 \r）
+#
+# 后果有两层，第一层是产物不同构，第二层更烦人：
+#
+#   1. `/ui` 返回的字节数在两个平台不同 —— 同一个 tag 产出不同字节的二进制，
+#      而这正是本文件开头要避免的"静默差异"。
+#   2. tests/frontend 的 46 个脚本直接读 webui.html 源码做正则断言，
+#      且按 LF 写模式。CRLF 工作树让它们在本机直接报错（实测
+#      `dashboard_gen.js` 的 sectionsOf 拿到 null → 16 个静态套件全红），
+#      而 Linux CI 是绿的 —— 也就是「本地全红、CI 全绿」这种最费解的分裂。
+#
+# 于是本机开发者无法用这套设施验证任何前端改动，只能靠 CI 试错。
+internal/server/webui.html -text
+internal/server/favicon.svg -text
+internal/desktop/defaultconfig.example.json -text

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  omni2api 桌面壳（omni2api-desktop.exe）的 Windows 应用清单。
+
+  用法：这个文件本身不会被 Go 编译器看到。它必须先变成一个资源目标文件
+  （windres / rsrc 产出的 .syso）放在 main 包目录下，链接器才会把清单和
+  图标一起写进 PE 的 .rsrc 段。见 internal/desktop/icon/README 与
+  scripts/build-desktop.ps1 里的提示。
+
+  # 为什么在这里显式声明 DPI（而不是靠系统"缩放修复"）
+
+  Go 的 GUI 程序默认被系统当成 DPI-unaware：在 150% 缩放的屏幕上会被位图
+  拉伸成一片糊，鼠标坐标还会被系统做一次假缩放（窗口拖到另一块不同缩放的
+  屏幕上时，坐标和命中区一起错位）。PerMonitorV2 是 Win10 1703+ 的正确档位
+  —— 窗口跨屏时系统会发 WM_DPICHANGED，由程序自己按新 DPI 重排。
+
+  同时保留 `dpiAware=true/pm`：那是 2016 年前的写法，供不认 dpiAwareness
+  的旧系统退化使用；两者同时存在时，新系统读 dpiAwareness。
+
+  # 为什么是 asInvoker
+
+  网关本体只需要监听本机回环端口 + 读写用户目录下的 config.json。要管理员
+  权限会造成两个实际坏处：每次启动弹 UAC，且配置/日志被写到另一个用户
+  语境下，和命令行启动的产物对不上。
+
+  # 为什么只声明 Win10/11 的 supportedOS
+
+  只声明真正支持的：go.mod 要求 go 1.22，而 Go 1.21 起已不再支持 Windows 7/8，
+  产物在那些系统上根本起不来。写上去只会让"支持哪些系统"这句话变成假话。
+  Win11 与 Win10 共用同一个 GUID（微软没发新的），所以一条就够。
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+
+  <assemblyIdentity
+      type="win32"
+      name="Omni2API.Desktop"
+      version="1.0.0.0"
+      processorArchitecture="amd64"/>
+
+  <!-- 以启动者的权限运行：不请求提权 -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!-- 旧档位：给不认 dpiAwareness 的系统用 -->
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <!-- Win10 1703+ 主档位。回退列表按优先级从高到低。 -->
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor, System</dpiAwareness>
+      <!-- 允许超过 MAX_PATH 的路径：配置里可能出现长路径 -->
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / Windows 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+
+</assembly>

@@ -68,6 +68,69 @@ var discoveryExemptPackages = []string{
 	"auth", "checkinlog", "clientlogin", "logbuf", "oauth", "redisstore", "session", "upstream",
 }
 
+// assemblyPackages 装配层 —— **允许**依赖上游，但不得被上游依赖。
+//
+// # 为什么需要第三类（core / exempt 之外）
+//
+// 装配层的职责就是"把核心与全部上游接起来"（cmd/server 与 cmd/desktop 共用），
+// 所以它**必然** import internal/gateway 与每一个上游包 —— 按判据
+// "非测试依赖含 gateway 且不在豁免表 → 上游"，它会被推导成上游，
+// 随后撞上 TestUpstreamsDoNotDependOnCore（"上游不得依赖 pool"）而
+// 必然报红。这不是它违规，是分类缺了一档。
+//
+// # 为什么不能塞进 corePackages
+//
+// corePackages 的语义是"**不得**依赖任何具体上游"（判据 3 的核心）。
+// 装配层恰好相反：它的存在意义就是依赖全部上游。塞进去要求它不依赖上游，
+// 那是把装配体拆散才能满足的条件 —— 方向错的。
+//
+// # 为什么不能塞进 discoveryExemptPackages
+//
+// 那张表的语义是"这个包**不可能是**上游"（且由
+// TestDiscoveryExemptionsAreJustified 强制它不得依赖 gateway）。
+// 装配层必然依赖 gateway，放进那张表会立刻触发那条断言。
+//
+// # 代价：必须补一条反向断言
+//
+// 允许装配层依赖上游，就必须防止**上游反向依赖装配层**（那会成环，
+// 且意味着某个上游偷偷拿到了"组装全部上游"的能力）。
+// 由 TestUpstreamsDoNotDependOnAssembly 守住 —— 与 corePackages
+// 的 TestUpstreamsDoNotDependOnCore 同一手法。
+//
+// ⚠ 新增装配层时**必须**在此登记，否则它会掉回"被当成上游"的误判里。
+// 由 TestAssemblyPackagesAreRegistered 强制。
+var assemblyPackages = []string{
+	// 装配层：把 config / pool / registry / server / scheduler 接起来，
+	// 供 cmd/server 与 cmd/desktop 两个入口共用（见 internal/boot/api.go）。
+	"boot",
+	// 桌面壳：平台能力的装配层（窗口 / 托盘 / 单实例 / 数据目录 / 日志文件）。
+	//
+	// # 为什么它也算装配层而不是上游
+	//
+	// 它 import internal/boot（拿 Runtime 与监听地址），而 boot 又 import
+	// 全部上游 —— 于是 dependsOnGateway 的**传递**判定会把它算成"消费契约"，
+	// 进而按上游去检查"不得依赖 pool / 不得依赖 upstream"。
+	//
+	// 但它的职责正是"把服务跑起来并给它一个窗口"：读写账号池（Flush）、
+	// 读 cfg、起 tray —— 这些依赖是它的本质，不是越界。
+	// 与 boot 同类：允许依赖一切，但不得被任何上游依赖
+	// （由 TestUpstreamsDoNotDependOnAssembly 守住）。
+	"desktop",
+}
+
+// assemblyNameSet 把 assemblyPackages 转成集合，供三处枚举（发现、两处独立枚举）统一过滤。
+//
+// 抽成函数而不是每处内联一遍：三处枚举**必须**用同一份过滤条件，
+// 漏改一处的表现是"发现阶段跳过它、独立枚举阶段又把它算成盲区"，
+// 于是报出与事实相反的 fail-open 警告。
+func assemblyNameSet() map[string]bool {
+	out := make(map[string]bool, len(assemblyPackages))
+	for _, p := range assemblyPackages {
+		out[p] = true
+	}
+	return out
+}
+
 // discoverUpstreams 从磁盘推导上游包名 —— **不靠字符串匹配，靠类型系统**。
 //
 // # 为什么必须改成这样（两次绕过教训）
@@ -114,6 +177,7 @@ func discoverUpstreams(t *testing.T, root string) []string {
 	for _, p := range discoveryExemptPackages {
 		exempt[p] = true
 	}
+	assembly := assemblyNameSet()
 
 	var out []string
 	for _, e := range entries {
@@ -125,7 +189,7 @@ func discoverUpstreams(t *testing.T, root string) []string {
 		if strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
 			continue
 		}
-		if coreNames[name] || exempt[name] {
+		if coreNames[name] || exempt[name] || assembly[name] {
 			continue
 		}
 		if dependsOnGateway(t, root, name) {
@@ -177,6 +241,92 @@ func TestDiscoveryExemptionsAreJustified(t *testing.T) {
 	}
 }
 
+// TestAssemblyPackagesAreRegistered 装配层登记必须**真实存在且不语义串台**。
+//
+// # 为什么需要这条
+//
+// assemblyPackages 是"允许依赖上游"的唯一出口。它比 corePackages
+// 更危险：core 的约束是"不许依赖上游"，漏登记的代价是某个上游被误判
+// 为核心包（会被反向断言抓住）；而 assembly 漏登记的代价是**装配层被
+// 当成上游**，于是"上游不得依赖 pool"直接打红 —— 症状看起来像
+// 装配层违规，实际是分类缺失。
+//
+// 所以这里钉三件事：
+//  1. 登记的包必须真的存在于 internal/ 下（防打字错误留下死登记）
+//  2. 它不得同时在 corePackages（语义相反，会自相矛盾）
+//  3. 它不得同时在 discoveryExemptPackages（那张表要求"不依赖 gateway"，
+//     而装配层必然依赖 gateway，同列必然触发那条断言）
+//
+// ⚠ 不断言"必须依赖 gateway"：装配层的实现可能分步落地（先有类型、
+// 后有装配体），中间态不该阻塞门禁。真正的风险（上游反向依赖它）
+// 由 TestUpstreamsDoNotDependOnAssembly 硬性守住。
+func TestAssemblyPackagesAreRegistered(t *testing.T) {
+	root := moduleRoot(t)
+	coreNames := map[string]bool{}
+	for _, p := range corePackages {
+		coreNames[strings.TrimPrefix(p, "github.com/NaiZi899/omni2api/internal/")] = true
+	}
+	exempt := map[string]bool{}
+	for _, p := range discoveryExemptPackages {
+		exempt[p] = true
+	}
+	for _, pkg := range assemblyPackages {
+		if _, err := os.Stat(filepath.Join(root, "internal", pkg)); err != nil {
+			t.Errorf("internal/%s 被登记为装配层，但目录不存在 —— 死登记会让真正的"+
+				"装配层掉回「被当成上游」的误判里", pkg)
+			continue
+		}
+		if coreNames[pkg] {
+			t.Errorf("internal/%s 同时在 corePackages 与 assemblyPackages —— "+
+				"前者要求「不得依赖上游」，后者要求「必须依赖上游」，语义自相矛盾", pkg)
+		}
+		if exempt[pkg] {
+			t.Errorf("internal/%s 同时在 discoveryExemptPackages 与 assemblyPackages —— "+
+				"前者由 TestDiscoveryExemptionsAreJustified 要求「不得依赖 gateway」，"+
+				"装配层必然依赖它，同列必红", pkg)
+		}
+		if !dependsOnGateway(t, root, pkg) {
+			t.Logf("internal/%s 已登记为装配层，但当前还不依赖 internal/gateway"+
+				"（可能是装配体尚未落地）；这不影响门禁", pkg)
+		}
+	}
+}
+
+// TestUpstreamsDoNotDependOnAssembly 上游**不得**反向依赖装配层。
+//
+// # 为什么这条比"上游不得依赖 core"更关键
+//
+// core 包只提供机制（pool / logbuf / session），上游依赖它最多是分层被破坏。
+// 装配层提供的是**全部上游的实例及其装配能力** —— 一个上游若能 import
+// 装配层，它就能看到（并操作）其它上游，那等于把"上游之间互不可见"
+// 这条前提直接作废，而且会成环（装配层 import 上游、上游 import 装配层）。
+//
+// 判据与 TestUpstreamsDoNotDependOnCore 一致：用 go list -deps 的
+// **传递**依赖，不是源码文本 —— 间接 import（经某个中间包）同样拦得住。
+func TestUpstreamsDoNotDependOnAssembly(t *testing.T) {
+	root := moduleRoot(t)
+	ups := discoverUpstreams(t, root)
+	if len(ups) == 0 {
+		t.Fatal("一个上游都没发现 —— 本测试自身失效")
+	}
+	targets := map[string]bool{}
+	for _, p := range assemblyPackages {
+		targets["github.com/NaiZi899/omni2api/internal/"+p] = true
+	}
+	for _, u := range ups {
+		deps, err := listDeps(root, "github.com/NaiZi899/omni2api/internal/"+u)
+		if err != nil {
+			t.Fatalf("internal/%s 的依赖列表不可得: %v", u, err)
+		}
+		for _, d := range deps {
+			if targets[d] {
+				t.Errorf("上游 internal/%s 依赖装配层 %s —— 方向反了（会成环，"+
+					"且该上游因此能看见其它上游）", u, strings.TrimPrefix(d, "github.com/NaiZi899/omni2api/internal/"))
+			}
+		}
+	}
+}
+
 // TestUpstreamsActuallyDependOnGateway 反向断言：被发现的上游必须真的依赖 gateway。
 //
 // 防止"依赖图判据"退化成"随便什么都算上游"（那样会让核心包被误判，
@@ -223,6 +373,7 @@ func TestDiscoveryFindsKnownUpstreams(t *testing.T) {
 	for _, p := range discoveryExemptPackages {
 		exempt[p] = true
 	}
+	assembly := assemblyNameSet()
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -231,7 +382,7 @@ func TestDiscoveryFindsKnownUpstreams(t *testing.T) {
 		if strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
 			continue
 		}
-		if coreNames[name] || exempt[name] {
+		if coreNames[name] || exempt[name] || assembly[name] {
 			continue
 		}
 		if dependsOnGateway(t, root, name) && !found[name] {
@@ -325,6 +476,7 @@ func TestDiscoveryHasNoBlindSpot(t *testing.T) {
 	for _, p := range discoveryExemptPackages {
 		exempt[p] = true
 	}
+	assembly := assemblyNameSet()
 	var implementers []string
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -334,7 +486,7 @@ func TestDiscoveryHasNoBlindSpot(t *testing.T) {
 		if strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
 			continue
 		}
-		if coreNames[name] || exempt[name] {
+		if coreNames[name] || exempt[name] || assembly[name] {
 			continue
 		}
 		if dependsOnGateway(t, root, name) {

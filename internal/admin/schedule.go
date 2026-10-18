@@ -144,6 +144,30 @@ type providerInfo struct {
 	// 加第三个上游时前端 0 改动。
 	Login *providerLogin `json:"login"`
 
+	// Entry 该上游**有没有任何上号入口**（页内登录 / 批量导入 / 凭证重载）。
+	// 判据见 hasEntryPoint。三者任一即 true。
+	//
+	// # 为什么必须要有这个字段（用户报的缺陷：账号池少了两个上游）
+	//
+	// 前端「账号池」的显示门槛原是「有账号 或 有自注册管理端点」。
+	// 而 jiyuan（基元律动）的批量导入走的是**通用**端点
+	// /admin/accounts/import、inkstone（书生·端砚）只有 CredentialLoader
+	// —— 两者都没有 AdminExt 路由，0 账号时整组从导航消失。
+	//
+	// 它们**都是能收号的**。用户看不到分组，就不知道该往哪放号，
+	// 界面看起来像"网关不支持这个上游"，而这与事实相反。
+	//
+	// # 为什么不塞进 Capabilities
+	//
+	// Capabilities 的语义是「上游**能做什么**」（chat / models / 福利…），
+	// Entry 的语义是「网关这边**能不能收号**」。两者不必同时成立：
+	// jiyuan 有 CapImport 但没有自注册端点；inkstone 连 CapImport 都没有，
+	// 只能放凭证文件。混在一起会让前端无法只按其中一个做判断。
+	//
+	// 不加 omitempty：`false` 是**有意义的取值**（"这个上游在这里收不了号"），
+	// 省掉它会让前端分不清"后端明确说没有"与"后端没下发这个字段"。
+	Entry bool `json:"entry"`
+
 	// AccountColumns 该上游自报的**账号池列集**（有序的列 id）。
 	//
 	// # 空（字段不出现）= "用核心默认列"
@@ -257,6 +281,41 @@ func importKindsOf(p gateway.Provider) []gateway.ImportCredentialKind {
 	return kinds
 }
 
+// hasEntryPoint 回答「这个上游有没有**任何**上号入口」（providerInfo.Entry）。
+//
+// 三条判据，任一成立即 true：
+//
+//  1. 页内登录：实现 LoginFlow 且 Configured()
+//     —— 与 info.Login 的判据**逐字相同**（两道都要，缺一条会渲染假按钮）
+//  2. 批量导入：importKindsOf 非空 —— 上游自报导入形态，说明它的导入框
+//     有内容可填（jiyuan 走通用端点 /admin/accounts/import，没有自注册路由）
+//  3. 凭证重载：实现 CredentialLoader —— 把凭证文件放进 auths/<id>/
+//     再点「重载 auths」就能上号（inkstone 的全部入口就是这条）
+//
+// # 为什么判据必须留在后端
+//
+// 前端「账号池」的显示门槛用不上第 2、3 条：它只看得到"有没有账号"与
+// "有没有自注册管理端点"。这两条对 jiyuan / inkstone 同时不成立，
+// 于是整组消失 —— 而前端**不认识任何上游名**（判据 1），
+// 不可能在前端补一个按名字的例外。所以由后端把事实算好再下发。
+//
+// # 为什么这里再调一次 importKindsOf（同一请求因此算两遍）
+//
+// 复用同一个判据函数，而不是在这里另写一份"有没有 CredentialKindReporter"：
+// 这样"前端看到的导入框"与"entry 的判定"永远同源 —— 将来 importKindsOf
+// 若开始过滤畸形形态，entry 会自动跟着改，不会出现两套判据各说各话。
+// 代价是畸形形态的告警日志会打两遍（那本来就是需要人看的告警）。
+func hasEntryPoint(p gateway.Provider) bool {
+	if lf, ok := gateway.ExtOf[gateway.LoginFlow](p); ok && lf.Configured() {
+		return true
+	}
+	if len(importKindsOf(p)) > 0 {
+		return true
+	}
+	_, ok := gateway.ExtOf[gateway.CredentialLoader](p)
+	return ok
+}
+
 // providerLogin 登录能力的**声明**（不含任何实现细节）。
 //
 // Kind 用字符串而不是数字：它是稳定契约，前端据此决定渲染什么按钮。
@@ -314,6 +373,10 @@ func (h *Handler) providers(w http.ResponseWriter, r *http.Request) {
 			// 只改一处会让 "/admin/providers 有、前端读的 manifest 没有"，
 			// 界面永远不出现第二个输入框，而接口调试看起来一切正常。
 			info.ImportKinds = importKindsOf(p)
+			// 上号入口：两个构造点**必须同步**（与上面两处同一个坑）——
+			// 只改一处的结果是"一个端点说有入口、另一个说没有"，
+			// 而排查时看到的往往是另一个端点。
+			info.Entry = hasEntryPoint(p)
 			infos = append(infos, info)
 		}
 	}

@@ -98,3 +98,58 @@ CHROME_PATH=/path/to/chrome node run_e2e.js http://127.0.0.1:18080/ui
 
 该解析器自身有测试（`test_chrome_resolver.js`，静态套件的一部分），
 断言覆盖链真的生效、且找不到时不会静默返回空串。
+
+## 性能基线（`perf_probe.js`）
+
+"性能占用少 / 使用流畅"是交付目标之一，此前**没有任何可复现的度量** —— 快慢全靠体感，
+于是既无法对比改动前后，也无法判断某个优化到底值不值。
+
+本探针零依赖：只用 Node 22 内置的 `WebSocket` 走 CDP，不需要 `ws` 包、不需要
+`package.json`/`node_modules`（本目录的 E2E 脚本 `require('ws')`，裸 clone 跑不起来 ——
+见下方"已知限制"）。
+
+```bash
+# 先起一个测试实例（别用生产 config.json）
+go build -o .build/omni2api-test.exe ./cmd/server
+.build/omni2api-test.exe -config config-test-port7864.json &
+
+PERF_IDLE_MS=12000 node tests/frontend/perf_probe.js http://127.0.0.1:7864/ui
+PERF_IDLE_MS=12000 node tests/frontend/perf_probe.js http://127.0.0.1:7864/ui --json > before.json
+```
+
+| 字段 | 含义 | 拿它判断什么 |
+|---|---|---|
+| `load.taskSec` / `load.domNodes` | 首屏 CPU 与 DOM 节点数 | 页面重量 |
+| `idle.cpuPercent` | **默认面板**下空闲 12s 的 CPU 占比 | 什么都不做时有多吵 |
+| `panel.taskSec` | 切到请求日志面板的渲染成本 | 最大一张表的渲染代价 |
+| `idleOnLogs.requestPaths` | **停在日志面板** 12s 发出的请求路径 | 轮询 vs 推送的硬判据 |
+
+**实测基线（2026-10，Chrome 155，本机）**
+
+```
+[load]  首屏       taskSec=0.106s  DOM=5021  JSHeap=1.62MB
+[idle]  空闲 12s    cpu=0.02%      longTasks=无
+[panel] 切日志面板  taskSec=0.069s
+[idle]  停日志面板  cpu=0.10%  请求数=3
+                     请求路径：/admin/stats  /admin/stats/series?range=24h  /admin/logs/history
+```
+
+判读要点（这条是踩出来的）：**CPU 占比到 0.0x% 量级后就不再是有效指标** ——
+轮询与推送在这一点上测不出差别。真正能区分它们的是 `requestPaths`：
+只要路径里还出现周期性的 `/admin/logs/history`，就说明日志还在轮询。
+另外注意默认面板是仪表盘，而 10s 轮询被"面板可见才拉"的 gating 挡住了，
+所以 `idle` 测不到轮询成本，**必须**看 `idleOnLogs` 那一段。
+
+## 已知限制（本次核对新增）
+
+- **E2E 套件缺依赖声明**：`accounts_e2e.js` / `audit_buttons.js` / `check_daily_actions.js`
+  等使用 `require('ws')`，而仓库没有 `package.json` / `node_modules`。
+  裸 clone 执行 `node run_e2e.js` 会在 `Cannot find module 'ws'` 处失败。
+  修法二选一：补 `package.json` 声明依赖（引入 npm 步骤），
+  或把这几处改成 Node 22 内置的全局 `WebSocket`（与 `perf_probe.js` 一致，推荐）。
+- **静态套件的既存失败**：`run_frontend_suites.js` 当前有 16 个失败，成因分两类：
+  ① generator 的 `sectionsOf` 解析器不认识字符串边界（webui.html 有 16 个 `<section`
+  但只有 13 个 `</section>`，注释与模板字符串里的标签把配平器搞崩，拿到 null 就 `.index`）；
+  ② 生成物会执行从 webui.html 提取的渲染函数，而沙箱没提供 `window`
+  （`renderCards` 现在读 `window._statsCache`）。
+  这两类都在 CI 之外（CI 只跑 `go test`），属于待偿技术债。

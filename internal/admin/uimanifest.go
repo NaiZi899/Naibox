@@ -39,6 +39,22 @@ import (
 type uiManifest struct {
 	// Service 网关身份标识。前端不再硬编码服务名（原先硬编码了 3 处）。
 	Service string `json:"service"`
+
+	// Brand 控制台对外显示的产品名（当前固定 "NaiBox"）。
+	//
+	// # 为什么不直接改 Service
+	//
+	// Service 是**协议字段**：它同时出现在 /healthz 与 /status 的 `service`
+	// 里，桌面版的单实例校验靠它判断"端口上那个是不是自己"，
+	// 外部监控也可能按它筛选。改名会让这些判据在存量部署上整体失效
+	// （桌面版会认不出自己已经在跑的实例）。
+	//
+	// 而 Brand 只用于界面显示：页面标题、顶栏 h1、API 卡片。
+	// 两者分开之后，品牌可以随产品改，协议标识保持稳定。
+	//
+	// 前端取 name = brand || service || 'gateway'，所以老后端不下发这个字段时
+	// 行为与改造前逐字节一致。
+	Brand string `json:"brand"`
 	// Providers 已注册上游（含能力位、是否默认、账号数）。
 	Providers []providerInfo `json:"providers"`
 	// Capabilities 全部已定义能力位的中文标题字典。
@@ -231,6 +247,9 @@ func prioritizeProviders(list []providerInfo, firstIDs ...string) []providerInfo
 func (h *Handler) uiManifest(w http.ResponseWriter, r *http.Request) {
 	m := uiManifest{
 		Service:      h.cfg.ServiceName,
+		// 产品名固定为 NaiBox：界面显示用它，协议字段（Service）保持不变。
+		// 用户改名时只需要动这一行，不用碰 config 里的 service_name。
+		Brand:        "NaiBox",
 		Providers:    []providerInfo{},
 		Capabilities: []capabilityInfo{},
 		AdminRoutes:  []uiAdminRoute{},
@@ -286,6 +305,16 @@ func (h *Handler) uiManifest(w http.ResponseWriter, r *http.Request) {
 		// 没实现 CredentialKindReporter 的上游 → 空切片 → 前端只渲染一个输入框
 		// （与改造前逐字节相同）。
 		info.ImportKinds = importKindsOf(p)
+		// 上号入口（第四次同款坑：两个构造点各算一次）。
+		//
+		// 这个字段的存在理由见 providerInfo.Entry 的注释：前端账号池的显示门槛
+		// 原来看不到"批量导入（通用端点）"与"凭证重载（CredentialLoader）"
+		// 这两条上号路径，于是一个 0 账号、没有自注册管理端点的上游
+		//（jiyuan / inkstone 正是）会整组从导航消失。
+		//
+		// ⚠ 判据在 schedule.go 的 hasEntryPoint —— 与 /admin/providers 那个
+		// 构造点共用同一个函数，不允许在这里另写一份。
+		info.Entry = hasEntryPoint(p)
 		m.Providers = append(m.Providers, info)
 
 		ext, ok := gateway.ExtOf[gateway.AdminExt](p)

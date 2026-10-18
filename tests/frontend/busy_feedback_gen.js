@@ -57,6 +57,21 @@ async function busyRun(btn, fn, opts) {
     // 按钮文案一定要变：只置 disabled 在视觉上几乎看不出来（尤其是深色主题下
     // 只是稍微变淡），用户仍会觉得"点了没反应"。
     // 未显式给 busyText 时按原标题推导一个 —— '领取' → '领取中…'。
+    //
+    // # loading 期间锁宽（顺序很重要：**必须在改文案之前**量）
+    // 不锁的话，「领取」→「领取中…」会让按钮变宽，在表格行里把同一行后面的
+    // 控件整体推走、收尾时又弹回来 —— 那一下抖动比"没有反馈"更烦人。
+    // 用 min-width 而不是 width：文案没变短时无需撑住，宽度仍可自然增长。
+    // 量到 0（面板不可见 / 尚未布局）就不锁 —— 锁成 0 会把按钮压没。
+    // .is-loading 的扫光条是绝对定位（见 CSS），不进文档流、不再改宽度。
+    let lockedW = false;
+    let minW0 = '';
+    if (btn && btn.style && btn.offsetWidth > 0) {
+      minW0 = btn.style.minWidth || '';
+      btn.style.minWidth = btn.offsetWidth + 'px';
+      lockedW = true;
+      if (btn.classList) btn.classList.add('is-loading');
+    }
     if (btn) btn.textContent = o.busyText || (text0 ? text0 + '中…' : '处理中…');
 
     // 用专用的 #busy，**不共用 #gtask** —— 后者是后台全量任务的进度，
@@ -67,11 +82,19 @@ async function busyRun(btn, fn, opts) {
     const t0 = Date.now();
     // 阈值从 SLOW_HINT_MS 推导，不写字面量 2 —— 否则改常量时这里会悄悄漂移。
     const slowSec = Math.ceil(SLOW_HINT_MS / 1000);
+    // 进度文案：默认"正在刷新界面"，但**等后台任务**的调用方必须能覆盖它。
+    //
+    // 为什么：`growthOneClick`（一键完成）等的是"成长待办后台跑完"，
+    // 单账号实测约 15s（专家链 8 次 × 6s 节流 + 事件上报间隔 1.05s），
+    // 4 个账号串行约 1 分钟。而默认文案写的是"正在刷新界面" ——
+    // 用户看到的是一句与事实无关的话，自然读成"卡住了 / 这功能坏了"。
+    // 传 progress 后显示"正在等待上游执行"，等待性质一目了然。
+    const progress = o.progress || '正在刷新界面';
     const render = () => {
       const sec = Math.floor((Date.now() - t0) / 1000);
       g.textContent = sec >= slowSec
-        ? `${label}：正在刷新界面…（上游较慢，已等 ${sec}s）`
-        : `${label}：正在刷新界面…`;
+        ? `${label}：${progress}…（上游较慢，已等 ${sec}s）`
+        : `${label}：${progress}…`;
     };
     render();
     g.hidden = false;
@@ -93,6 +116,9 @@ async function busyRun(btn, fn, opts) {
         btn._busy = false;
         btn.disabled = false;
         btn.textContent = text0;   // 总是恢复：上面总是改过
+        // 锁宽与扫光条一起收尾（只有真的锁过才恢复，避免清掉别处的内联值）
+        if (lockedW && btn.style) btn.style.minWidth = minW0;
+        if (btn.classList) btn.classList.remove('is-loading');
       }
     }
   }

@@ -54,7 +54,7 @@ POST /v1/images/generations
   └─ server.imagesGenerations          internal/server/images.go
        ├─ 入口校验（prompt / JSON / 上游前缀）
        ├─ 选号  Pool.PickFor(provider, model, nil)
-       └─ 转发  装配层 ImageGen 适配器      cmd/server/multiprovider.go
+       └─ 转发  装配层 ImageGen 适配器      internal/boot/multiprovider.go
             └─ gateway.ImageGenExt        internal/gateway/imagegen_ext.go
                  └─ loomy.Provider.GenerateImage   internal/loomy/imagegen_ext.go
                       └─ loomy.Client.GenerateImage internal/loomy/client.go

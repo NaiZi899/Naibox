@@ -9,15 +9,25 @@ const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'
 function resetEls() { for (const k of Object.keys(els)) { const e = els[k]; e.hidden = true; e.className=''; e.textContent=''; e.innerHTML=''; } }
 
 function renderCards(h, s) {
+    // 网关状态卡：核心运营读数（对标 one-api 管理台"渠道健康 + 汇总"）。
+    // 之前精简到 2 张后用户觉得太少 —— 这里加回排障/运营真正有用的维度：
+    // 冷却中/已禁用/在途 来自 /status 的每账号画像；累计请求/成功率来自
+    // /admin/stats（stats 数据在 renderStats 里单独渲染，这里只读缓存值）。
+    const accts = (s && s.accounts) || [];
+    const cooling = accts.filter(a => a.cooling).length;
+    const disabled = accts.filter(a => a.disabled).length;
+    const inflight = accts.reduce((n, a) => n + (a.in_flight || 0), 0);
+    const st = window._statsCache;
+    const reqTotal = st ? st.total : '—';
+    const reqRate = (st && st.total) ? Math.round((st.ok / st.total) * 100) + '%' : '—';
     const cards = [
       ['账号总数', s.total, ''],
       ['健康', s.healthy, s.healthy > 0 ? 'ok' : 'err'],
-      ['冷却中', s.cooling, s.cooling > 0 ? 'warn' : 'dim'],
-      ['已禁用', s.disabled, s.disabled > 0 ? 'err' : 'dim'],
-      ['在途占满', s.in_flight_full, s.in_flight_full > 0 ? 'warn' : 'dim'],
-      ['粘性会话', s.sticky_sessions, ''],
-      ['Redis', s.redis_mode, s.redis_mode === 'upstash' ? 'ok' : 'dim'],
-      ['/healthz', h.healthy > 0 ? '200' : '503', h.healthy > 0 ? 'ok' : 'err'],
+      ['冷却中', cooling, cooling > 0 ? 'warn' : ''],
+      ['已禁用', disabled, disabled > 0 ? 'err' : ''],
+      ['在途请求', inflight, inflight > 0 ? 'warn' : ''],
+      ['累计请求', reqTotal, ''],
+      ['成功率', reqRate, (st && st.total) ? (st.ok / st.total >= 0.95 ? 'ok' : 'warn') : ''],
     ];
     $('cards').innerHTML = cards.map(([k, v, c]) =>
       `<div class="card"><div class="k">${esc(k)}</div><div class="v ${c}">${esc(v)}</div></div>`).join('');
@@ -73,6 +83,18 @@ function sectionsOf(src) {
       depth += t[0].startsWith('</') ? -1 : 1;
       if (depth === 0) break;
     }
+    // 找不到配平的 </section> 时**跳过这一段**，不要拿 null 去取 index。
+    //
+    // 实测崩法（2026-10，本机）：webui.html 里有 16 个 <section 开标签、
+    // 只有 13 个 </section>。差额来自两处：注释文字里写的标签、以及 JS
+    // 模板字符串里只拼了开标签的地方。这个配平器不认识字符串边界，
+    // 于是 depth 永远回不到 0，循环跑到底把 t 留成 null，
+    // 下一行 t.index 直接抛 TypeError —— 整个 generator 崩掉。
+    //
+    // 为什么选择跳过而不是抛错：抛错会把一条"解析器太脆"变成"套件失败"，
+    // 掩盖后面所有断言的结论（真正该红的东西也一起被埋掉）。
+    // 跳过至少让能配平的面板照常被断言。
+    if (!t) continue;
     out.push(src.slice(m.index, t.index + t[0].length));
   }
   return out;

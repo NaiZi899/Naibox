@@ -75,10 +75,10 @@ const tail = String.raw`
 let fail = 0;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fail++; };
 
-const M = new Function('esc',
+const M = new Function('esc', 'hiddenProviders',
   SRC + '\nreturn { applyManifest, providerOf, providersWithCap, capTitle, providerInfo, routesFor, hasAnyPanel, upstreamGroups,' +
   ' get MANIFEST(){return MANIFEST}, get DEFAULT(){return DEFAULT_PROVIDER} };'
-)(esc);
+)(esc, []);
 
 // ---------------------------------------------------------------- applyManifest
 console.log('\n[1] applyManifest 的形状归一与降级');

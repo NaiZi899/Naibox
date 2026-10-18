@@ -87,6 +87,18 @@ function sectionsOf(src) {
       depth += t[0].startsWith('</') ? -1 : 1;
       if (depth === 0) break;
     }
+    // 找不到配平的 </section> 时**跳过这一段**，不要拿 null 去取 index。
+    //
+    // 实测崩法（2026-10，本机）：webui.html 里有 16 个 <section 开标签、
+    // 只有 13 个 </section>。差额来自两处：注释文字里写的标签、以及 JS
+    // 模板字符串里只拼了开标签的地方。这个配平器不认识字符串边界，
+    // 于是 depth 永远回不到 0，循环跑到底把 t 留成 null，
+    // 下一行 t.index 直接抛 TypeError —— 整个 generator 崩掉。
+    //
+    // 为什么选择跳过而不是抛错：抛错会把一条"解析器太脆"变成"套件失败"，
+    // 掩盖后面所有断言的结论（真正该红的东西也一起被埋掉）。
+    // 跳过至少让能配平的面板照常被断言。
+    if (!t) continue;
     out.push(src.slice(m.index, t.index + t[0].length));
   }
   return out;
@@ -173,6 +185,16 @@ process.exit(fail ? 1 : 0);
 `;
 
 const out = header + '\n' + renderCardsSrc + '\n' + tail;
-fs.writeFileSync('dashboard_gen.js', out);
+// 写路径必须锚在 __dirname，不能用相对 cwd 的字面量。
+//
+// 实测后果（2026-10）：本文件第 1 行就声明"可用环境变量覆盖仓库根、从任何目录
+// 调用都能找对位置"（读路径确实用了 __dirname），但写路径是 `'dashboard_gen.js'` ——
+// 于是在仓库根执行 `node tests/frontend/gen_dashboard.js` 时：
+//   产物被写到 <仓库根>/dashboard_gen.js，
+//   tests/frontend/dashboard_gen.js 一个字节都没变，
+//   而脚本照样打印"生成: dashboard_gen.js"。
+// 这是最坏的一种失败：**静默成功**。修模板→重新生成→断言没变化，
+// 会让人以为"改了没用"，实际上改的东西根本没进产物。
+fs.writeFileSync(__dirname + '/dashboard_gen.js', out);
 console.log('生成: dashboard_gen.js (' + out.length + ' 字节)');
 console.log('  [renderCards] ' + renderCardsSrc.split('\n')[0].trim());

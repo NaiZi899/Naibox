@@ -96,9 +96,11 @@ function buildGrowthAccountSelect() {
     const sel = $('growthAccount');
     if (!sel) return;
     const prev = growthUID;
-    const opts = growthSnaps.map(g => {
+    // 「全部账号」= 空 uid：下拉按钮（一键完成）与顶部「全部xxx」动作将作用于所有账号。
+    const allOpt = `<option value="">全部账号（下方按钮对所有账号执行）</option>`;
+    const opts = allOpt + growthSnaps.map(g => {
       const c = growthCounts(g);
-      const name = g.nickname || (g.uid || '').slice(0, 8);
+      const name = maskNick(g.nickname);
       const hint = g.tasks_total
         ? `（待接单 ${c.acceptable} · 进行中 ${c.running}）`
         : '（未探测）';
@@ -106,9 +108,9 @@ function buildGrowthAccountSelect() {
     }).join('');
     sel.innerHTML = opts;
 
-    // 保持原选择；账号被删掉时回落到第一个。
+    // 保持原选择；账号被删掉时回落到「全部账号」。
     const exists = growthSnaps.some(g => g.uid === prev);
-    growthUID = exists ? prev : ((growthSnaps[0] || {}).uid || '');
+    growthUID = (exists || prev === '') ? prev : '';
     sel.value = growthUID;
   }
 
@@ -164,6 +166,24 @@ function renderGrowthGroups() {
     }
 
     buildGrowthAccountSelect();
+    // 「全部账号」选中时：任务表按账号铺开太长，显示提示 + 各账号待办摘要，
+    // 让"点一键完成 = 所有账号都执行"这个作用域一眼可见。
+    if (growthUID === '') {
+      const lines = growthSnaps.map(g => {
+        const c = growthCounts(g);
+        const name = esc(maskNick(g.nickname));
+        const left = c.acceptable + c.running;
+        const done = c.done;
+        return `<div style="padding:5px 0;font-size:12px">${name}
+          <span class="pill ${left ? 'warn' : 'dim'}">待完成 ${left}</span>
+          <span class="pill ${done ? 'ok' : 'dim'}">已完成 ${done}</span></div>`;
+      }).join('');
+      host.innerHTML = `<div class="dim" style="padding:12px 16px;font-size:12px">
+        已选择「全部账号」：点上方「一键完成」将对所有账号依次执行（成长待办+领奖 → 开学季）。
+        要查看/操作单个账号请在下拉框选择它。</div><div style="padding:0 16px">${lines}</div>`;
+      $('growthTaskMeta').textContent = '';
+      return;
+    }
     const g = growthSnaps.find(x => x.uid === growthUID) || growthSnaps[0];
     const c = growthCounts(g);
 
@@ -183,7 +203,7 @@ function renderGrowthGroups() {
     $('growthTaskMeta').textContent =
       `待接单 ${c.acceptable} · 进行中 ${c.running} · 已完成 ${c.done} · 共 ${c.all}`;
 
-    const name = esc(g.nickname || (g.uid || '').slice(0, 8));
+    const name = esc(maskNick(g.nickname));
     if (g.error && !g.tasks_total) {
       host.innerHTML = `<div class="ggroup">
         <div class="ghead"><span class="gname">${name}</span>
@@ -211,15 +231,30 @@ function renderGrowthGroups() {
       const locked = t.locked ? ' <span class="pill warn">未解锁</span>' : '';
       // 领取优先于接单：completed 的任务已经做完了，唯一可做的就是领奖。
       //
-      // accepted / in_progress 给的不是按钮而是说明 —— 这两类任务**本网页无法代做**，
-      // 必须去 WorkBuddy 客户端里真正把动作做掉。留一个禁用按钮只会让人反复点。
+      // ⚠ 这一格原来对 accepted / in_progress 一律显示「去客户端做」，
+      // 注释写着"这两类任务**本网页无法代做**"。移植伪造遥测层之后该结论
+      // **不再成立**：autoActions 里那 17 条就是网关能直接做完的。
+      //
+      // 所以现在的判据是「该任务码在不在后端能力表里」：
+      //   在 → 「一键完成」（后端自己会处理"先接单"这一步）
+      //   不在 → 仍然退回说明文字 —— 对**确实**只能去客户端做的任务保留诚实提示
+      //
+      // ⚠ 必须排除**已做完**的任务（claimed）。claimed 的 claimable 为 false，
+      // 于是它会一路落到这个分支上 —— 只看能力表的话，「已领取」的任务行也会
+      // 长出一个「一键完成」按钮，点了只会回一句"已完成（1/1）"。
+      // 这里复用 GROWTH_VIEWS.done.test 而**不另写一遍** status 判断：
+      // "什么算做完"只有一处定义，否则两边必然会漂移（视图把它算已完成、
+      // 按钮却认为还能再做）。
+      const canAuto = autoCodes.has(t.task_code) && !GROWTH_VIEWS.done.test(t);
       const btn = t.claimable
         ? `<button data-gclaimreward="${esc(t.task_code)}" data-uid="${esc(g.uid)}">领取 ${t.reward_credit || 0} 分</button>`
-        : (t.status === 'not_accepted' && !t.locked)
-          ? `<button data-gaccept="${esc(t.task_code)}" data-uid="${esc(g.uid)}" class="ghost">接单</button>`
-          : (t.status === 'accepted' || t.status === 'in_progress')
-            ? '<span class="dim" style="font-size:11px">去客户端做</span>'
-            : '<span class="dim">—</span>';
+        : (canAuto && !t.locked)
+          ? `<button data-gauto="${esc(t.task_code)}" data-uid="${esc(g.uid)}" class="ghost" title="网关直接把该任务做完并领奖（上报伪造的客户端行为遥测）；只做这一个任务">一键完成</button>`
+          : (t.status === 'not_accepted' && !t.locked)
+            ? `<button data-gaccept="${esc(t.task_code)}" data-uid="${esc(g.uid)}" class="ghost">接单</button>`
+            : (t.status === 'accepted' || t.status === 'in_progress')
+              ? '<span class="dim" style="font-size:11px">去客户端做</span>'
+              : '<span class="dim">—</span>';
       const tag = t.tag ? ` <span class="pill">${esc(t.tag)}</span>` : '';
       // 到期列：只有部分任务有期限（上游 18 个里 4 个），其余显示占位。
       // 已过期时即使有「领取」按钮也要同时给出提示 —— 那种情况下按钮点了会失败。

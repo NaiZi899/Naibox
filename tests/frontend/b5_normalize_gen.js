@@ -1,7 +1,7 @@
 
 let DEFAULT_PROVIDER = '';
 let PROVIDERS = [];
-const SRC = "function normalizeAccount(a) {\r\n    if (!a || typeof a !== 'object') return null;\r\n    const out = Object.assign({}, a);\r\n    // 缺 provider：交给 providerOf 走默认上游，但记下\"这是推断来的\"，\r\n    // 供表格显示「上游?」并在分组标题里说明。\r\n    if (!out.provider) out.provider_inferred = true;\r\n    return out;\r\n  }\nfunction providerOf(a) {\r\n    if (!a || typeof a !== 'object') return '';\r\n    return a.provider || DEFAULT_PROVIDER;\r\n  }";
+const SRC = "function normalizeAccount(a) {\n    if (!a || typeof a !== 'object') return null;\n    const out = Object.assign({}, a);\n    // 缺 provider：交给 providerOf 走默认上游，但记下\"这是推断来的\"，\n    // 供表格显示「上游?」并在分组标题里说明。\n    if (!out.provider) out.provider_inferred = true;\n    return out;\n  }\nfunction providerOf(a) {\n    if (!a || typeof a !== 'object') return '';\n    return a.provider || DEFAULT_PROVIDER;\n  }";
 
 let fail = 0;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fail++; };
