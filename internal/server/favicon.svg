@@ -1,16 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="omni2api">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="NaiBox">
+  <!--
+    NaiBox 站点图标（浏览器标签页 / 控制台顶栏）。
+
+    ⚠ 与 assets/icon/app.svg、internal/icon/icon.go 是**同一套几何**：
+    底板 3..61 圆角 15，字母 N 左竖 x=21 / 右竖 x=43 / 上 y=16 / 下 y=48，
+    笔画直径 7.5。改图形时三处一起改 —— 否则"标签页是旧标、exe 是新标"
+    这种不一致会长期存在（没人会主动去比对）。
+  -->
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#4f8cff"/>
-      <stop offset="1" stop-color="#8b5cf6"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a8dcf7"/>
+      <stop offset="1" stop-color="#6fbfef"/>
     </linearGradient>
   </defs>
-  <!-- 圆角底板 -->
-  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#bg)"/>
-  <!-- 对话气泡（带左下尾巴）：网关转发的是对话 -->
-  <path d="M20 18 H44 a8 8 0 0 1 8 8 V36 a8 8 0 0 1 -8 8 H34 l-10 8 v-8 H20 a8 8 0 0 1 -8 -8 V26 a8 8 0 0 1 8 -8 z"
-        fill="#ffffff" fill-opacity="0.96"/>
-  <!-- 气泡内的四角星：AI / 代理的意象 -->
-  <path d="M32 21 l2.4 7.6 L42 31 l-7.6 2.4 L32 41 l-2.4 -7.6 L22 31 l7.6 -2.4 z"
-        fill="#4f8cff"/>
+  <rect x="3" y="3" width="58" height="58" rx="15" fill="url(#bg)"/>
+  <path d="M21 48 V16 L43 48 V16" fill="none" stroke="#0d4a75" stroke-width="7.5"
+        stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

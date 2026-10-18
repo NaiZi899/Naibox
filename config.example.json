@@ -86,6 +86,16 @@
     "pool_accounts": true,
     "client_data_dir": ""
   },
+  "inkstone": {
+    "enabled": true,
+    "auth_dir": "./auths/inkstone",
+    "pool_accounts": true
+  },
+  "jiyuan": {
+    "enabled": true,
+    "auth_dir": "./auths/jiyuan",
+    "pool_accounts": true
+  },
   "features": {
     "sanitize_blacklist_fingerprints": true
   },

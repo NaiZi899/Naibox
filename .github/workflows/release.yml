@@ -30,7 +30,8 @@ name: Release
 #   **所有平台都由本 workflow 出，本机不再手工上传任何产物。**
 #   命名统一为 `omni2api-server-<goos>-<goarch>.<zip|tar.gz>`（不带版本号 ——
 #   版本信息在 Release tag 与 zip 内的二进制里，文件名带版本号只会让
-#   "同一个 tag 重发"产生两个名字）。
+#   "同一个 tag 重发"产生两个名字）。桌面壳沿用同一套形状：
+#   `NaiBox-windows-amd64.zip`（它只有 windows-amd64 一种）。
 #
 # # 产物
 #
@@ -39,7 +40,13 @@ name: Release
 #   omni2api-server-linux-arm64.tar.gz
 #   omni2api-server-darwin-amd64.tar.gz
 #   omni2api-server-darwin-arm64.tar.gz
-#   SHA256SUMS.txt                       上面五者的校验和（合并成一份）
+#   NaiBox-windows-amd64.zip     含 NaiBox.exe（GUI 子系统，
+#                                          无控制台窗）+ config.example.json + README.txt
+#   SHA256SUMS.txt                        上面六者的校验和（合并成一份）
+#
+# ⚠ 新增产物名时必须同步改文件末尾 "Prune stale assets" 里那道白名单正则，
+#   否则新产物会被自己的清理步骤当成历史残留删掉（判据就是"名字不符合规范"，
+#   而它只认识写死在正则里的那几个名字）。
 on:
   push:
     tags: ['v*']
@@ -177,9 +184,114 @@ jobs:
             *.tar.gz
             SHA256SUMS-*.txt
 
+  # 桌面壳（Windows GUI exe）单独一个 job，不塞进上面的 matrix：
+  #
+  #   1. 它只有 windows-amd64 一种形态 —— 其余四个平台会变成"跑了但跟桌面无关"
+  #      的空转，还会各自产一份无意义的校验和。
+  #   2. 打包内容不同：桌面壳不带 start.bat（那是给命令行服务端双击用的），
+  #      带一份 README.txt 说明首次启动去哪个端口。
+  #   3. -H=windowsgui 是 Windows 链接器开关，跟交叉编译矩阵混在一起会让
+  #      "这个平台到底该不该加这个 flag"变成要看 condition 才能回答的问题。
+  #   4. 图标与 DPI 清单要现场派生（代码画 ICO → rsrc 打成 .syso），比别的
+  #      job 多两步前置；仓库里没有任何 .ico/.png 可捡。
+  desktop:
+    name: build desktop windows-amd64
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      # 图标与 DPI 清单是**资源**：仓库里没有 .ico/.png（图形是 internal/icon
+      # 的代码画的），必须先落成 ICO，再由 rsrc 打成 cmd/desktop/rsrc.syso
+      # 才会被链接进 PE 的 .rsrc 段。缺这一步不会让构建失败，产出的 exe 只是
+      # 无图标、无 DPI 声明 —— 那种问题在 CI 日志里看不见，要等用户装了才反馈。
+      - name: Generate icon (pure Go)
+        run: |
+          go run ./tools/genicon -out .build/icon/app.ico
+          ls -la .build/icon
+
+      - name: Generate Windows resource (.syso)
+        env:
+          # 首次要下载 rsrc 模块。goproxy.cn 优先（国内链路），再落回官方代理。
+          GOPROXY: https://goproxy.cn,https://proxy.golang.org,direct
+        run: |
+          go run github.com/akavel/rsrc@v0.10.2 -arch amd64 \
+            -ico .build/icon/app.ico \
+            -manifest assets/icon/app.manifest \
+            -o cmd/desktop/rsrc.syso
+          ls -la cmd/desktop
+
+      - name: Build desktop shell
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
+          # -H=windowsgui：把 PE 子系统设成 GUI，双击不弹黑色控制台窗口。
+          # 代价是 stdout/stderr 不再挂控制台，日志得走文件/界面。
+          go build -trimpath -ldflags="-s -w -H=windowsgui" \
+            -o "dist/NaiBox.exe" ./cmd/desktop
+          ls -la dist
+
+      # 光看 go build 返回 0 不够：-H=windowsgui 写错成别的形式、或被后面的
+      # 链接参数覆盖，编译器都不会报错；.syso 没被链接进去同样不报错。
+      # 用 tools/genicon -verify 读 PE 头把两件事都变成断言：
+      #   OPTIONAL_HEADER.Subsystem == 2（GUI）且资源目录非空（图标 + manifest 在）。
+      - name: Verify PE header (GUI subsystem + resources present)
+        run: go run ./tools/genicon -verify dist/NaiBox.exe
+
+      - name: Assemble package
+        run: |
+          set -e
+          PKG="NaiBox-windows-amd64"
+          mkdir -p "pkg/$PKG"
+          cp dist/NaiBox.exe "pkg/$PKG/"
+          cp config.example.json "pkg/$PKG/"
+          # README 直接写在这里，不引外部文件：桌面壳的说明只有这几行，
+          # 单独维护一个 docs/*.md 会让它和 zip 里的内容不同步。
+          cat > "pkg/$PKG/README.txt" <<'EOF'
+          omni2api 桌面壳（Windows amd64）
+          ================================
+
+          双击 NaiBox.exe 即可启动，无控制台窗口。
+          首次启动会读取同目录的 config.example.json；把它复制成 config.json
+          后按需修改（端口、上游、api_key），再重启生效。
+
+          网关默认监听 127.0.0.1:7863，启动后浏览器打开：
+              http://127.0.0.1:7863/healthz
+
+          日志/配置目录：见界面里的「打开数据目录」，或 %APPDATA%\omni2api。
+          卸载：直接删除本目录，不写注册表、不装服务。
+
+          校验和见 Release 页的 SHA256SUMS.txt。
+          EOF
+          cd pkg
+          zip -r "../$PKG.zip" "$PKG"
+          cd ..
+          echo "--- 产物 ---"
+          ls -la
+
+      - name: Checksums
+        run: |
+          find . -maxdepth 1 -name '*.zip' -printf '%f\n' \
+            | sort | xargs sha256sum > "SHA256SUMS-desktop-windows-amd64.txt"
+          cat "SHA256SUMS-desktop-windows-amd64.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-desktop-windows-amd64
+          path: |
+            *.zip
+            SHA256SUMS-*.txt
+
   release:
     name: publish release assets
-    needs: build
+    needs: [build, desktop]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -233,7 +345,7 @@ jobs:
             echo "$ASSETS" | xargs gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "omni2api $TAG" \
-              --notes "自动构建产物（Windows / Linux / macOS，amd64 + arm64）。详见仓库 README。"
+              --notes "自动构建产物（Windows / Linux / macOS，amd64 + arm64；另含 Windows 桌面壳 NaiBox-windows-amd64.zip）。详见仓库 README。"
           fi
 
       - name: Prune stale assets
@@ -249,14 +361,22 @@ jobs:
         # 留着，让下载的人分不清哪个才是这个 tag 的产物。
         #
         # 判据：资产名必须匹配本 workflow 的命名规范。
+        #
+        # ⚠ 这条正则是**唯一的放行名单**，新增产物必须同步加进来，
+        #   否则上面刚上传的新资产会在这里被当成历史残留删掉
+        #   （同样的形状在 v1.7.0 之后已经坑过一次：新产物传上去、
+        #   下一步自己删掉，Release 页上看着就像"构建没产出"）。
         run: |
           set -e
           TAG="${GITHUB_REF_NAME}"
           echo "检查 $TAG 上的资产是否符合命名规范…"
-          # 允许的名字：omni2api-server-<os>-<arch>.<zip|tar.gz> 与 SHA256SUMS.txt
+          # 允许的名字：
+          #   omni2api-server-<windows|linux|darwin>-<amd64|arm64>.<zip|tar.gz>
+          #   NaiBox-windows-amd64.zip
+          #   SHA256SUMS.txt（单独一条 grep -v，见下）
           STALE=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '.assets[].name' \
-            | grep -Ev '^omni2api-server-(windows|linux|darwin)-(amd64|arm64)\.(zip|tar\.gz)$' \
+            | grep -Ev '^(omni2api-server-(windows|linux|darwin)-(amd64|arm64)\.(zip|tar\.gz)|NaiBox-windows-amd64\.zip)$' \
             | grep -v '^SHA256SUMS\.txt$' || true)
           if [ -z "$STALE" ]; then
             echo "没有残留资产。"

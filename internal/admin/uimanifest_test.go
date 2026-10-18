@@ -430,3 +430,162 @@ func TestUIManifestCapTitleFallbackIsVisible(t *testing.T) {
 // 让编译器确认 fakeUpstream 满足 gateway.Provider + AdminExt，
 // 免得将来 Provider 接口变化时这里的替身悄悄失配。
 var _ gateway.Provider = (*fakeUpstream)(nil)
+
+// importKindsStub 复刻 jiyuan（基元律动）的**入口形状**：
+// 没有 AdminExt、没有 LoginFlow、没有 CredentialLoader，只有自报导入形态。
+//
+// 真实实现：internal/jiyuan/import.go 的 ImportCredentialKinds（三个输入区），
+// 批量导入走**通用**端点 /admin/accounts/import → 没有自注册管理路由。
+type importKindsStub struct{ stubProvider }
+
+func (s *importKindsStub) ImportCredentialKinds() []gateway.ImportCredentialKind {
+	return []gateway.ImportCredentialKind{{ID: "key", Label: "API Key"}}
+}
+
+// credLoaderStub 复刻 inkstone（书生·端砚）的**入口形状**：
+// 只有 CredentialLoader（把凭证文件放进 auths/<id>/ 再重载）。
+//
+// 真实实现：internal/inkstone/loader.go 的 LoadCredentials。
+// ⚠ 它的 Caps 里**没有** CapImport —— 这正是旧门槛探不到它的原因。
+type credLoaderStub struct{ stubProvider }
+
+func (s *credLoaderStub) LoadCredentials(dir string) ([]gateway.Credential, error) {
+	return nil, nil
+}
+
+var (
+	_ gateway.Provider               = (*importKindsStub)(nil)
+	_ gateway.Provider               = (*credLoaderStub)(nil)
+	_ gateway.CredentialKindReporter = (*importKindsStub)(nil)
+	_ gateway.CredentialLoader       = (*credLoaderStub)(nil)
+)
+
+// TestUIManifestEntryPoint 事故回归（用户截图：账号池少了 jiyuan / inkstone）。
+//
+// # 事故的形状
+//
+// 这两个上游都是 **account_count=0 + 没有自注册管理端点**：
+//
+//   - jiyuan（基元律动）：批量导入走**通用**端点 /admin/accounts/import，
+//     没有 AdminExt 路由；入口是自报导入形态
+//   - inkstone（书生·端砚）：只有 CredentialLoader，Caps 里连 import 都没有
+//
+// 前端 upstreamGroups 的旧门槛（有账号 ∨ 有面板）对它们同时不成立 → 整组消失。
+// 后端把"有没有任何上号入口"算成 entry 下发，前端就能只按数据渲染。
+//
+// # 为什么每条判据都配一个反例
+//
+// 只断言两个 true 的话，把 Entry 写死成常量 true 也能全绿 —— 而那样
+// **真的收不了号**的上游也会占住账号池的分组（点进去没有上号的地方）。
+// 所以 `bare`（什么入口都没有）与 `loginoff`（实现了 LoginFlow 但没配置）
+// 必须是 false；两个单入口桩还要自检**各自只命中一条**判据，
+// 否则"任一成立即 true"会退化成同义反复（只判 importKinds 也能过）。
+func TestUIManifestEntryPoint(t *testing.T) {
+	reg := gateway.NewRegistry()
+	jiyuanUp := &importKindsStub{stubProvider{
+		id:   "jiyuan",
+		caps: gateway.CapChat | gateway.CapModels | gateway.CapImport,
+	}}
+	inkstoneUp := &credLoaderStub{stubProvider{
+		id:   "inkstone",
+		caps: gateway.CapChat | gateway.CapModels,
+	}}
+	bareUp := &stubProvider{id: "bare", caps: gateway.CapChat}
+	loginOn := &loginStubProvider{
+		stubProvider: stubProvider{id: "loginon", caps: gateway.CapChat},
+		configured:   true,
+	}
+	loginOff := &loginStubProvider{
+		stubProvider: stubProvider{id: "loginoff", caps: gateway.CapChat},
+		configured:   false,
+	}
+	for _, up := range []gateway.Provider{jiyuanUp, inkstoneUp, bareUp, loginOn, loginOff} {
+		if err := reg.Register(up); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 桩形状自检：两个"单入口"桩必须各自只命中一条判据。
+	// 少了这一步，将来给桩加个方法就会让本测试悄悄失去区分力。
+	for _, c := range []struct {
+		name                  string
+		p                     gateway.Provider
+		wantLoader, wantKinds bool
+	}{
+		{"jiyuan", jiyuanUp, false, true},
+		{"inkstone", inkstoneUp, true, false},
+	} {
+		_, hasLoader := gateway.ExtOf[gateway.CredentialLoader](c.p)
+		_, hasKinds := gateway.ExtOf[gateway.CredentialKindReporter](c.p)
+		if hasLoader != c.wantLoader || hasKinds != c.wantKinds {
+			t.Fatalf("桩 %q 的形状不对：CredentialLoader=%v（want %v）CredentialKindReporter=%v（want %v）"+
+				" —— 桩变成多入口后，entry 的断言就不再能区分判据",
+				c.name, hasLoader, c.wantLoader, hasKinds, c.wantKinds)
+		}
+	}
+
+	h := New(Config{Registry: reg}) // Pool=nil → account_count 全 0（正是事故形态）
+	m := manifestFor(t, h)
+
+	got := map[string]providerInfo{}
+	for _, p := range m.Providers {
+		got[p.ID] = p
+	}
+	want := map[string]bool{
+		"jiyuan":   true,  // 批量导入（通用端点）
+		"inkstone": true,  // CredentialLoader
+		"loginon":  true,  // 页内登录且已配置
+		"bare":     false, // 三种入口都没有 → 不该占账号池分组
+		"loginoff": false, // 实现了 LoginFlow 但 Configured()=false → 是假按钮，不算入口
+	}
+	for id, w := range want {
+		p, ok := got[id]
+		if !ok {
+			t.Errorf("上游 %q 消失在 manifest 里", id)
+			continue
+		}
+		if p.Entry != w {
+			t.Errorf("manifest 里 %s.entry=%v，want %v —— 前端账号池的显示门槛就靠它",
+				id, p.Entry, w)
+		}
+	}
+
+	// 字段必须**始终下发**（不带 omitempty）：false 是有意义的取值，
+	// "字段缺失"会让前端分不清"明确没有入口"与"后端版本太旧没这个字段"。
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, localReq(http.MethodGet, "/admin/ui/manifest"))
+	var raw struct {
+		Providers []map[string]any `json:"providers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("manifest 不是合法 JSON: %v", err)
+	}
+	if len(raw.Providers) != len(want) {
+		t.Errorf("raw providers=%d，want %d", len(raw.Providers), len(want))
+	}
+	for _, p := range raw.Providers {
+		if _, has := p["entry"]; !has {
+			t.Errorf("provider %v 的 JSON 里没有 entry 字段（omitempty 会让前端读成 undefined）", p["id"])
+		}
+	}
+
+	// 另一个构造点（/admin/providers）必须给出**同一个**答案。
+	// 两个端点各组装一次 providerInfo，只接一个会让界面与接口互相打脸。
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, localReq(http.MethodGet, "/admin/providers"))
+	var prov struct {
+		Providers []providerInfo `json:"providers"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &prov); err != nil {
+		t.Fatalf("/admin/providers 不是合法 JSON: %v", err)
+	}
+	if len(prov.Providers) != len(want) {
+		t.Errorf("/admin/providers 的 provider 数=%d，want %d", len(prov.Providers), len(want))
+	}
+	for _, p := range prov.Providers {
+		if w, ok := want[p.ID]; ok && p.Entry != w {
+			t.Errorf("/admin/providers 里 %s.entry=%v，want %v —— "+
+				"两个构造点必须同步（schedule.go / uimanifest.go）", p.ID, p.Entry, w)
+		}
+	}
+}

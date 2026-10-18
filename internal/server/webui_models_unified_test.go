@@ -660,15 +660,20 @@ func TestWebUIModelIDsUnifiedChatDropdownDedup(t *testing.T) {
 	}
 	code := stripJSCommentsDeep(src)
 
-	const marker = "function renderModels("
+	// 目标函数是 fillChatModelSelect 而不是 renderModels。
+	//
+	// 2026-10 把对话测试的模型选择器整体抽出：它必须**先于"模型列表为空"的
+	// early return** 执行，否则没凭证时上游下拉里一个上游都不出现。
+	// 判据跟着逻辑走 —— 留在一段不再包含该逻辑的函数体上，守卫只会假绿。
+	const marker = "function fillChatModelSelect("
 	body, ok := extractJSFunction(code, marker)
 	if !ok {
-		t.Fatal("找不到 renderModels 函数 —— 守卫无法定位（fail-open）；" +
-			"如果它被改名/拆分了，本守卫的判据也要跟着改，而不是让它空转")
+		t.Fatal("找不到 fillChatModelSelect 函数 —— 守卫无法定位（fail-open）；" +
+			"如果它被改名/挪位置了，本守卫的判据也要跟着改，而不是让它空转")
 	}
-	// fail-closed 自检：确认切出来的**确实**是 renderModels。
-	if !strings.Contains(body, "$('mcount')") || !strings.Contains(body, "syncModelProviderOptions(") {
-		t.Fatalf("切出来的函数体不像 renderModels（缺 $('mcount') / syncModelProviderOptions，共 %d 字节）—— "+
+	// fail-closed 自检：确认切出来的**确实**是那个函数（含同步上游选项 + 渲染下拉）。
+	if !strings.Contains(body, "syncModelProviderOptions(") || !strings.Contains(body, "sel.innerHTML =") {
+		t.Fatalf("切出来的函数体不像 fillChatModelSelect（缺 syncModelProviderOptions / sel.innerHTML，共 %d 字节）—— "+
 			"切分逻辑已失效，本守卫此时无论绿红都不可信", len(body))
 	}
 	if len(body) > 8000 || strings.Contains(body, "function modelOwnerOf(") {
@@ -1085,13 +1090,19 @@ func TestWebUIModelIDsUnifiedChatDropdownAutoFallback(t *testing.T) {
 	}
 	code := stripJSCommentsDeep(src)
 
-	body, ok := extractJSFunction(code, "function renderModels(")
+	// 目标函数是 fillChatModelSelect 而不是 renderModels。
+	//
+	// 2026-10 把对话测试的模型选择器（含 auto 回落）从 renderModels 里整体抽出，
+	// 因为它必须**先于"模型列表为空"的 early return** 执行 —— 否则没凭证时
+	// 连上游都选不了。判据跟着逻辑走，否则这条守卫会在一段不再包含该逻辑的
+	// 函数体上打转（表现为"缺 sel.innerHTML、切分失效"）。
+	body, ok := extractJSFunction(code, "function fillChatModelSelect(")
 	if !ok {
-		t.Fatal("找不到 renderModels 函数 —— 守卫无法定位（fail-open）；" +
-			"改名/拆分了就要跟着改判据，而不是让它空转")
+		t.Fatal("找不到 fillChatModelSelect 函数 —— 守卫无法定位（fail-open）；" +
+			"改名/挪位置了就要跟着改判据，而不是让它空转")
 	}
 	if !strings.Contains(body, "sel.innerHTML") {
-		t.Fatalf("切出来的函数体不像 renderModels（缺 sel.innerHTML，共 %d 字节）—— "+
+		t.Fatalf("切出来的函数体不像 fillChatModelSelect（缺 sel.innerHTML，共 %d 字节）—— "+
 			"切分逻辑已失效，本守卫此时无论绿红都不可信", len(body))
 	}
 
