@@ -246,7 +246,7 @@ func prioritizeProviders(list []providerInfo, firstIDs ...string) []providerInfo
 
 func (h *Handler) uiManifest(w http.ResponseWriter, r *http.Request) {
 	m := uiManifest{
-		Service:      h.cfg.ServiceName,
+		Service: h.cfg.ServiceName,
 		// 产品名固定为 NaiBox：界面显示用它，协议字段（Service）保持不变。
 		// 用户改名时只需要动这一行，不用碰 config 里的 service_name。
 		Brand:        "NaiBox",
