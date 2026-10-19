@@ -123,6 +123,15 @@ tasks/
 /*_gen.js
 # Release 预编译产物（gh release 上传用，不入版本库）
 dist/
+# 本地打包的中间目录与最终归档。
+#
+# pkg/ 是 scripts/make-packages.py 组装包内容的暂存区（每个平台一个目录），
+# out/ 是 zip/tar.gz 与 SHA256SUMS.txt 的落点。两者都是**本机派生**的：
+# 同一份源码在不同机器/时间编出来的字节不同（即便 -trimpath），
+# 入库只会让"这个二进制对应哪个 commit"变成一件查不清的事。
+# CI 的产物走 Release 资产，不进 git。
+pkg/
+out/
 # 构建期派生物：图标与资源对象。图标本身是代码画的（internal/icon +
 # tools/genicon），.ico 每次构建重新生成，没有理由进版本库 ——
 # 二进制一旦入库，改图形时 diff 看不出来，也容易和代码悄悄分叉。
