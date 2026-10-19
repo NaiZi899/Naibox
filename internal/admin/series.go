@@ -21,7 +21,13 @@ type statsSeriesItem struct {
 	Total  int64  `json:"total"`  // 请求数
 	OK     int64  `json:"ok"`     // 成功数
 	Fail   int64  `json:"fail"`   // 失败数
-	Tokens int64  `json:"tokens"` // 消耗 token（usage 缺失不计）
+	Tokens int64  `json:"tokens"` // 输出 token（usage 缺失不计）
+	// PromptTokens 输入侧 token（usage.prompt_tokens）。
+	//
+	// 与 Tokens 分开而不是合成一个"总量"：趋势图的形状由输入侧主导
+	// （输入约为输出的 90 倍），合起来之后输出侧的抖动就完全看不见了。
+	// 需要总量时前端把两者相加即可。
+	PromptTokens int64 `json:"prompt_tokens"`
 }
 
 // registerStatsSeries 注册趋势图端点。
@@ -78,6 +84,12 @@ func (h *Handler) statsSeries(w http.ResponseWriter, r *http.Request) {
 		}
 		if e.Tokens >= 0 {
 			out[i].Tokens += int64(e.Tokens)
+		}
+		// 历史行没有 prompt_tokens（反序列化得 0）：这里不做反推。
+		// 反推口径只用在 /admin/stats 的卡片合计上（见 aggregateChatLog），
+		// 趋势图保持"后端给的原始输入侧"，避免同一张图上混两种来源。
+		if e.PromptTokens > 0 {
+			out[i].PromptTokens += int64(e.PromptTokens)
 		}
 	}
 	if !win.custom {

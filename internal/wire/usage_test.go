@@ -359,3 +359,71 @@ func TestParseUsageExtrasJSONNumber(t *testing.T) {
 		t.Errorf("json.Number: got %+v want {0.25 0 42 0}", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 输入侧 token（prompt_tokens）与它的缓存明细
+// ---------------------------------------------------------------------------
+
+// 输入侧 token 必须被抽出来：它曾**完全没有**被读取，是"用量统计偏少"
+// 两个数量级的根因（实测输入约为输出的 90 倍）。
+func TestParseUsageExtrasPromptTokens(t *testing.T) {
+	got := ParseUsageExtras(map[string]any{"prompt_tokens": 91234.0})
+	if got.PromptTokens != 91234 {
+		t.Errorf("PromptTokens=%d want 91234", got.PromptTokens)
+	}
+	// 字符串化数字（上游偶有）走同一条归一化路径。
+	if got := ParseUsageExtras(map[string]any{"prompt_tokens": " 1234 "}); got.PromptTokens != 1234 {
+		t.Errorf("字符串形态: PromptTokens=%d want 1234", got.PromptTokens)
+	}
+	// 缺失 / 脏值一律 0，且不影响其它字段。
+	got = ParseUsageExtras(map[string]any{"prompt_tokens": -5.0, "credit": 0.5})
+	if got.PromptTokens != 0 || got.Credit != 0.5 {
+		t.Errorf("负数应归零且不污染 credit: got %+v", got)
+	}
+	if got := ParseUsageExtras(nil); got.PromptTokens != 0 {
+		t.Errorf("nil usage: PromptTokens=%d want 0", got.PromptTokens)
+	}
+}
+
+// 缓存命中的**官方嵌套形态**：prompt_tokens_details.cached_tokens。
+//
+// 实测回执（基元律动 /v1/chat/completions）就是这个形状：
+//
+//	{"prompt_tokens":31,"prompt_tokens_details":{"cached_tokens":0},...}
+//
+// 旧实现只兜底到顶层 cached_tokens，于是这类上游的命中量恒为 0，
+// 面板的 cache_hit_rate 只反映另一家上游 —— 静默漏统计。
+func TestParseUsageExtrasCacheHitFromNestedDetails(t *testing.T) {
+	got := ParseUsageExtras(map[string]any{
+		"prompt_tokens":         4096.0,
+		"prompt_tokens_details": map[string]any{"cached_tokens": 3840.0},
+	})
+	if got.CacheHitTokens != 3840 {
+		t.Errorf("嵌套形态: CacheHitTokens=%d want 3840", got.CacheHitTokens)
+	}
+	if got.PromptTokens != 4096 {
+		t.Errorf("PromptTokens=%d want 4096", got.PromptTokens)
+	}
+}
+
+// 嵌套键存在且为 0 时**不得**被顶层简写键顶掉 —— 与
+// TestParseUsageExtrasFallbackOnlyWhenKeyAbsent 同一条纪律，只是多了一层嵌套。
+// 否则"这一轮没有任何缓存命中"会被一个无关的顶层键改写成非零，静默高报。
+func TestParseUsageExtrasNestedZeroDoesNotFallThrough(t *testing.T) {
+	got := ParseUsageExtras(map[string]any{
+		"prompt_tokens":         100.0,
+		"prompt_tokens_details": map[string]any{"cached_tokens": 0.0},
+		"cached_tokens":         999.0,
+	})
+	if got.CacheHitTokens != 0 {
+		t.Errorf("嵌套键存在(值为0)时不该回落到顶层键: CacheHitTokens=%d want 0", got.CacheHitTokens)
+	}
+	// 嵌套对象形态不对（不是对象）时才允许回落。
+	got = ParseUsageExtras(map[string]any{
+		"prompt_tokens_details": "broken",
+		"cached_tokens":         999.0,
+	})
+	if got.CacheHitTokens != 999 {
+		t.Errorf("details 非对象时应回落到顶层键: CacheHitTokens=%d want 999", got.CacheHitTokens)
+	}
+}

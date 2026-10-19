@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/logbuf"
-	"github.com/NaiZi899/omni2api/internal/wire"
+	"github.com/NaiZi899/Naibox/internal/logbuf"
+	"github.com/NaiZi899/Naibox/internal/wire"
 )
 
 // chatSeq 进程级请求序号（只用于 stdout 表格的 #%03d 显示）。
@@ -324,9 +324,15 @@ func logChatRow(ttfb, total time.Duration, model, mode, uid string, status int, 
 // logChatRowProvider 打印一行请求级表格日志（直接输出 stdout，无 log 时间戳前缀）。
 // toks<0 表示 usage 缺失，显示 "-"。provider 为空表示未标注。
 //
-// usage 为上游 usage 对象（nil = 缺失）。扩展字段（credit/推理 token/缓存命中未命中）
-// 由此处解析并写入环形缓冲：**只有 toks>=0（usage 存在）时才填**，
-// usage 缺失时保持 0 而不是 -1 —— 新字段没有哨兵语义，-1 会污染后续求和聚合。
+// usage 为上游 usage 对象（nil = 缺失）。扩展字段（credit/输入 token/推理 token/
+// 缓存命中未命中）由此处解析并写入环形缓冲。
+//
+// ⚠ 这里**不再**用 `toks >= 0` 门控扩展字段。原写法把「输出侧没给
+// completion_tokens」当成「整个 usage 不可信」，于是连能读的 prompt_tokens
+// 一起丢 —— 而输入侧才是用量的主要部分（实测约 90 倍于输出）。现在的判据是
+// **按字段各自缺失**：usage 为 nil 时全为 0（新字段没有哨兵语义，-1 会污染求和），
+// 有 usage 时每个字段自己决定读到什么。`toks` 仍只由 completion_tokens 决定，
+// 它的 -1 哨兵语义不受影响。
 func logChatRowProvider(ttfb, total time.Duration, model, mode, uid, provider string, status int, toks int, usage map[string]any) {
 	if !chatLogEnabled {
 		return
@@ -345,11 +351,11 @@ func logChatRowProvider(ttfb, total time.Duration, model, mode, uid, provider st
 		Tokens:   toks,
 		TotalMS:  total.Milliseconds(),
 	}
-	// tokens<0 是「usage 缺失」的哨兵；此时 usage 对象即使非 nil 也不可信
-	// （例如上游给了半截 usage），扩展字段一律留 0。
-	if toks >= 0 {
+	// usage 存在就解析扩展字段（不再被 toks 的哨兵值门控，理由见上）。
+	if usage != nil {
 		x := wire.ParseUsageExtras(usage)
 		entry.Credit = x.Credit
+		entry.PromptTokens = x.PromptTokens
 		entry.ThinkTokens = x.ThinkTokens
 		entry.CacheHitTokens = x.CacheHitTokens
 		entry.CacheMissTokens = x.CacheMissTokens

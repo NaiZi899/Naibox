@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/logbuf"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/logbuf"
 )
 
 // 调用统计必须覆盖**全部历史**，而不是「进程启动至今」。
@@ -671,5 +671,114 @@ func TestAggregateChatLogStaysPure(t *testing.T) {
 		if _, ok := first[k]; ok {
 			t.Errorf("纯聚合函数输出了 %s，应只由 stats handler 附加", k)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 输入侧 token（prompt_tokens）：用量统计曾经只算输出侧，差两个数量级
+// ---------------------------------------------------------------------------
+
+// TestStatsCountsInputSideTokens 输入侧 token 必须进聚合，且 total_tokens
+// 是"输入+输出"的合计口径，**不再**把 reasoning 加第二遍。
+//
+// 背景（实测）：这台网关上每请求平均 prompt 约 9 万、completion 约 962，
+// 只统计输出会让面板上的"消耗"只剩真实量的 1.65%。同时 reasoning token 是
+// completion 的子集（completion_tokens_details.reasoning_tokens），
+// 任何"总量"再把它加一次就是高报 —— 这两个方向的错误此前同时存在。
+func TestStatsCountsInputSideTokens(t *testing.T) {
+	base := time.Date(2026, 10, 17, 10, 0, 0, 0, time.UTC)
+	entries := []logbuf.Entry{
+		// 新行：输入/输出/推理齐全
+		{At: base, Model: "deepseek-v4.1-flash", Provider: "wb", Status: 200,
+			Tokens: 100, PromptTokens: 9000, ThinkTokens: 60, Credit: 0.5},
+		// 历史行：加字段之前落盘，没有 prompt_tokens 键 → 反序列化得 0
+		{At: base.Add(time.Minute), Model: "deepseek-v4.1-flash", Provider: "wb", Status: 200,
+			Tokens: 200},
+		// 另一家上游，只有输入侧没有 credit
+		{At: base.Add(2 * time.Minute), Model: "deepseek-flash", Provider: "jy", Status: 200,
+			Tokens: 50, PromptTokens: 1000},
+		// 历史行（老格式）：没有 prompt_tokens，但有 cache 明细 → 反推输入侧
+		{At: base.Add(3 * time.Minute), Model: "deepseek-v4.1-flash", Provider: "wb", Status: 200,
+			Tokens: 30, CacheHitTokens: 5000, CacheMissTokens: 200},
+	}
+	h, _ := newStatsHandler(t, entries)
+	out := doStats(t, h)
+
+	if got := out["prompt_tokens"].(float64); got != 15200 {
+		t.Errorf("prompt_tokens=%v，期望 15200（9000+1000+5200 反推）", got)
+	}
+	if got := out["prompt_covered"].(float64); got != 3 {
+		t.Errorf("prompt_covered=%v，期望 3（第 2 行仍是历史裸行，没有输入侧数据）", got)
+	}
+	if got := out["prompt_derived"].(float64); got != 1 {
+		t.Errorf("prompt_derived=%v，期望 1（只有第 4 行是从 cache 明细反推的）", got)
+	}
+	if got := out["tokens"].(float64); got != 380 {
+		t.Errorf("tokens=%v，期望 380（输出侧口径不变）", got)
+	}
+	if got := out["total_tokens"].(float64); got != 15580 {
+		t.Errorf("total_tokens=%v，期望 15580（输入 15200 + 输出 380，不再重复计入 reasoning）", got)
+	}
+	// 推理 token 仍然单独暴露，方便看"思考占比"，但不进合计。
+	if got := out["think_tokens"].(float64); got != 60 {
+		t.Errorf("think_tokens=%v，期望 60（60 已含在 100 个 completion 里）", got)
+	}
+
+	byProv, ok := out["by_provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("by_provider 缺失: %v", out)
+	}
+	wb, _ := byProv["wb"].(map[string]any)
+	if got := wb["prompt_tokens"].(float64); got != 14200 {
+		t.Errorf("by_provider[wb].prompt_tokens=%v，期望 14200（9000 + 5200 反推）", got)
+	}
+	jy, _ := byProv["jy"].(map[string]any)
+	if got := jy["prompt_tokens"].(float64); got != 1000 {
+		t.Errorf("by_provider[jy].prompt_tokens=%v，期望 1000", got)
+	}
+}
+
+// TestSeriesCarriesInputTokens 趋势桶同样要带输入侧，且与卡片合计一致。
+//
+// 只给输出侧的趋势图会让"用量"看起来几乎为零 —— 输入约为输出的 90 倍，
+// 图上根本看不出真实负载。
+func TestSeriesCarriesInputTokens(t *testing.T) {
+	// 时间锚点必须是**现在**：/admin/stats/series 默认窗口是「最近 24h」，
+	// 用固定日期写死会让这条用例在两天后自己变红（看起来像产品坏了）。
+	base := time.Now().Add(-90 * time.Minute).Truncate(time.Minute)
+	entries := []logbuf.Entry{
+		{At: base, Model: "m", Status: 200, Tokens: 10, PromptTokens: 1000},
+		{At: base.Add(30 * time.Minute), Model: "m", Status: 200, Tokens: 20, PromptTokens: 2000},
+	}
+	h, _ := newStatsHandler(t, entries)
+	// 直接打 /admin/stats/series：本仓库没有 seriesWithQuery 帮助函数，
+	// 就地构造请求即可（与 doStats 同一套 loopback 鉴权路径）。
+	req := httptest.NewRequest(http.MethodGet, "/admin/stats/series", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("series HTTP %d: %s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	list, _ := out["series"].([]any)
+	var tokSum, promptSum int64
+	for _, raw := range list {
+		item, _ := raw.(map[string]any)
+		if v, ok := item["tokens"].(float64); ok {
+			tokSum += int64(v)
+		}
+		if v, ok := item["prompt_tokens"].(float64); ok {
+			promptSum += int64(v)
+		}
+	}
+	if tokSum != 30 {
+		t.Errorf("趋势图输出侧合计=%d，期望 30", tokSum)
+	}
+	if promptSum != 3000 {
+		t.Errorf("趋势图输入侧合计=%d，期望 3000", promptSum)
 	}
 }

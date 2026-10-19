@@ -18,7 +18,7 @@ const DefaultCapacity = 2000
 
 // Entry 一条请求日志（字段刻意扁平，便于直接 JSON 出去）。
 //
-// 关于 usage 派生字段（Credit/ThinkTokens/CacheHitTokens/CacheMissTokens）：
+// 关于 usage 派生字段（Credit/PromptTokens/ThinkTokens/CacheHitTokens/CacheMissTokens）：
 //   - 它们全部来自上游 usage 对象，缺失/不可解析时一律写 0，**不使用 -1 哨兵**。
 //     只有 Tokens 保留 -1=「usage 缺失」的语义，新字段靠「Tokens<0 ⇒ 全为 0」
 //     间接表达缺失，避免每个字段各自引入一套哨兵值。
@@ -44,7 +44,20 @@ type Entry struct {
 	Provider string `json:"provider,omitempty"`
 	TTFBMS   int64  `json:"ttfb_ms"`
 	Tokens   int    `json:"tokens"` // -1 表示 usage 缺失
-	TotalMS  int64  `json:"total_ms"`
+	// PromptTokens 输入侧 token 总数（usage.prompt_tokens）。
+	//
+	// # 为什么它是独立字段而不是「再算一遍」
+	//
+	// 面板的「消耗」曾是纯输出口径（completion + reasoning），而实测流量里
+	// 输入是输出的 ~90 倍（每请求平均 prompt 9.1 万 / completion 962）。
+	// 缺了它，统计不是「略少」而是「差两个数量级」。
+	//
+	// 兼容性：历史行没有这个键 → 反序列化得 0。0 与「上游没给」不可区分，
+	// 所以读侧**不能**把它当作「这次真的没有输入 token」，需要覆盖率时
+	// 单独数「有多少行的 PromptTokens > 0」（见 /admin/stats 的 prompt_covered）。
+	// omitempty：值为 0 时不出现在 JSON 里，历史行与写入前的行保持逐字节可比。
+	PromptTokens int   `json:"prompt_tokens,omitempty"`
+	TotalMS      int64 `json:"total_ms"`
 
 	Credit          float64 `json:"credit"`            // 本次请求实际消耗的额度
 	ThinkTokens     int     `json:"think_tokens"`      // 推理（思维链）token 数

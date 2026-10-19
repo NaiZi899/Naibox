@@ -26,14 +26,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/apikey"
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/logbuf"
-	"github.com/NaiZi899/omni2api/internal/pool"
-	"github.com/NaiZi899/omni2api/internal/prompt"
-	"github.com/NaiZi899/omni2api/internal/session"
-	"github.com/NaiZi899/omni2api/internal/wire"
+	"github.com/NaiZi899/Naibox/internal/apikey"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/logbuf"
+	"github.com/NaiZi899/Naibox/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/prompt"
+	"github.com/NaiZi899/Naibox/internal/session"
+	"github.com/NaiZi899/Naibox/internal/wire"
 )
 
 // Config handler 依赖。
@@ -940,7 +940,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			tw := &commitTracker{ResponseWriter: w}
 			serr := wire.Stream(tw, stats)
 			st.ttfb = stats.TTFB()
-			st.toks, _ = stats.Tokens()
+			// ⚠ 必须看 ok 标志：`st.toks, _ = stats.Tokens()` 会在「末帧没有
+			// usage」时把 0 写进去，于是 -1 哨兵被悄悄抹掉 —— 日志显示
+			// tok=0（"这次真的用了 0 个 token"）而不是 tok=-（"上游没给"）。
+			// 这两个语义对聚合完全不同：0 会进平均，-1 被排除。实测踩到过：
+			// 一次 200 的流式请求记录了 tokens=0，而同一账号的下一条正常记录是 648。
+			if toks, has := stats.Tokens(); has {
+				st.toks = toks
+			}
 			st.usage = stats.Usage()
 			_ = wd.Close()
 

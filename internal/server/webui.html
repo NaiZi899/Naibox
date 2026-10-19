@@ -3085,10 +3085,14 @@ let loginProvider = '';
     if (a.disabled) return '<span class="pill err">已禁用</span>';
 
     const ex = a.last_error || null;
-    // titleText 组装悬浮提示：状态码 / 分类 / 详细解读 / 时间。
+    // titleText 组装悬浮提示：**当前状态那一句** + 状态码 / 分类 / 详细解读 / 时间。
     const titleOf = (extra) => {
       if (!ex) return extra || '';
       const parts = [];
+      // extra 必须排在最前：它是"此刻是什么状态"（冷却中 / 已恢复），
+      // 而下面那些是历史快照。改造前 ex 一存在就把 extra 整个丢掉 ——
+      // 于是"冷却中"的 tooltip 里没有一个字提到冷却，读起来像纯报错。
+      if (extra) parts.push(extra, '');
       if (ex.code) parts.push('上游状态码：' + ex.code);
       if (ex.http_status) parts.push('HTTP ' + ex.http_status);
       if (ex.kind) parts.push('分类：' + ex.kind);
@@ -3109,8 +3113,27 @@ let loginProvider = '';
     }
     // 未冷却但有过错误：显示解读（这是"偶发失败"最需要被看见的地方 ——
     // 只看 cooling 的话，一个每分钟错一次的号在列表里永远显示"正常"）。
+    //
+    // ⚠ 但解读是**最近一次错误的快照**，成功一次不会擦掉它
+    // （pool.NoteErrorExplain 刻意如此：「成功就清」会让偶发失败在界面上
+    // 永远无痕）。代价是「之后又成功了」与「现在还是坏的」在数据上同形 ——
+    // 唯一能区分的是两个时刻的先后。不比较它们，一次瞬时的上游 503 就会
+    // 把一个健康的号在列表里**永久**标成「上游故障」（实测：15:07 的两次
+    // 503 之后，15:08–15:13 连续 200，而状态列一直显示上游故障）。
+    // 所以：last_success 晚于错误时刻 = 已恢复 → 显示"正常"，
+    // 把那次错误降级进悬浮提示（信息不丢，只是不再冒充当前状态）。
     if (ex) {
-      return `<span class="pill dim" title="${esc(titleOf('最近一次错误，当前可用'))}">${esc(ex.summary || '曾报错')}</span>`;
+      const tErr = Date.parse(ex.at || '');
+      const tOk = Date.parse(a.last_success || '');
+      const recovered = isFinite(tErr) && isFinite(tOk) && tOk > tErr;
+      if (recovered) {
+        return `<span class="pill ok" title="${esc(titleOf('已恢复：最近一次请求成功于 ' + timeAgo(a.last_success)))}">正常</span>`;
+      }
+      // 没有"之后成功过"的证据时，把时刻写进**标签本身**：只放在 title 里
+      // 等于要求用户先悬浮才不被误导，而这列是他扫一眼就下判断的地方。
+      const ago = isFinite(tErr) ? timeAgo(ex.at) : '';
+      const label = (ex.summary || '曾报错') + (ago ? ' · ' + ago : '');
+      return `<span class="pill dim" title="${esc(titleOf('最近一次错误，当前可用'))}">${esc(label)}</span>`;
     }
     return '<span class="pill ok">正常</span>';
   }
@@ -4401,6 +4424,13 @@ let loginProvider = '';
           body: JSON.stringify(payload),
         });
         const results = (r && Array.isArray(r.results) ? r.results : []);
+        // 说明性结论（后端 200 + notice）：**不是失败**，所以不打红、不报"导入失败"。
+        // 典型内容：「登录凭证有效，但这一栏不新增账号」—— 一条必须读完的结论，
+        // 塞进 3 秒的 toast 只会剩下"失败"两个字。
+        if (r && r.notice) {
+          showInfo('登录凭证已确认（本次不新增账号）', r.notice);
+          return;
+        }
         const bads = results.filter(x => !x.ok).map(x => '#' + x.index + ' ' + (x.error || '失败'));
         // 靠登录凭证换来的那些，明确说一句"是替你拉出来的" ——
         // 用户贴的是一个 sess_，拿回 N 个账号，不说清会很意外。
@@ -7318,6 +7348,16 @@ let loginProvider = '';
       win = '（未启用日志）';
     }
     if (s.error) win += ' · ' + esc(String(s.error));
+    // 输入侧覆盖率：prompt_tokens 是后加的字段，历史行没有它（反序列化得 0）。
+    // 不把这件事说出来，用户会在改完之后看到"输入 token 只有新数据那么多"，
+    // 再判一次"统计不准"。这里只在不完整时才提，完整时不占版面。
+    const covered = numNonNeg(s.prompt_covered);
+    const derived = numNonNeg(s.prompt_derived);
+    const totalN = numNonNeg(s.total);
+    if (covered !== null && totalN !== null && covered < totalN) {
+      win += ` · 输入侧覆盖 ${Math.round(covered)} 条`
+        + (derived ? `（其中 ${Math.round(derived)} 条由缓存明细反推）` : '');
+    }
     $('statsWindow').textContent = win;
 
     // 成功率：total 缺失或为 0 时不给数字（会得到 0/0 → NaN）。
@@ -7332,11 +7372,23 @@ let loginProvider = '';
     //
     // 「累计消耗」改成 token（用户本轮要求）：不同上游的 credit 单位不同
     //（积分/额度/点），加起来没有可比性；而 token 是跨上游统一的口径。
-    // 消耗 token = 输出 token + 推理 token（usage 里记录的只有这两个）。
+    //
+    // 「消耗 token」= 输入 + 输出（后端算好的 total_tokens）。
+    //
+    // # 这里修的是两处口径错误，方向相反但同源
+    //
+    // ① 曾经只统计输出侧：本网关跑的是 agentic 客户端，每轮回灌全量历史，
+    //    实测每请求平均 prompt ≈ 9 万、completion ≈ 1 千 —— 只看输出，
+    //    「消耗」只剩真实量的 1~2%，用户看到的就是"总量偏少"。
+    // ② 曾经写成 `tokens + think_tokens`：reasoning 是 completion 的**子集**
+    //    （completion_tokens_details.reasoning_tokens），加第二遍等于高报。
+    //    实测该口径整体高报 58%。
+    //
+    // 现在三个数都由后端给（prompt_tokens / tokens / total_tokens），
+    // 前端只做展示，不再自己拼"总量" —— 否则窗口切换时三块视图又会各算一遍。
     //
     // 计算抽成 statsCardsEntries：renderStats（整页渲染）与无感轮询
     // pollStatsCards（只改数值）共用同一份判据，杜绝两处漂移。
-    const totalTokens = (num(s.tokens) || 0) + (num(s.think_tokens) || 0);
 
     // card 统一渲染：v 为 null 表示缺数据 → 显示占位符 + dim 色。
     // data-stat-key 供无感轮询定位（见 pollStatsCards）。
@@ -7349,19 +7401,34 @@ let loginProvider = '';
   }
 
   // statsCardsEntries 统计卡的内容（renderStats 与无感轮询共用）。
+  //
+  // 口径纪律（三张 token 卡的关系）：
+  //
+  //	输入 token   后端 prompt_tokens（历史行没有 → null → 显示 —）
+  //	输出 token   后端 tokens（completion，reasoning 已含在其中）
+  //	消耗 token   后端 total_tokens = 输入 + 输出
+  //
+  // 不要在这里把 reasoning 再加一遍，也不要在后端缺失时自己拿
+  // `tokens + think_tokens` 顶上 —— 那正是之前高报 58% 的算法。
   function statsCardsEntries(s) {
     if (!s) return [];
     const total = num(s.total);
     const ok = num(s.ok);
     const rate = total && ok !== null ? Math.round((ok / total) * 100) : null;
-    const totalTokens = (num(s.tokens) || 0) + (num(s.think_tokens) || 0);
+    const inTok = numNonNeg(s.prompt_tokens);
+    const outTok = numNonNeg(s.tokens);
+    const sumTok = numNonNeg(s.total_tokens);
+    // 旧后端没有 total_tokens 时退回"输入+输出"；两者都缺才给 null（显示 —）。
+    const totalTokens = sumTok !== null ? sumTok
+      : (inTok === null && outTok === null ? null : (inTok || 0) + (outTok || 0));
     return [
       ['总请求', fmtCount(s.total), ''],
       ['成功', fmtCount(s.ok), ok ? 'ok' : 'dim'],
       ['失败', fmtCount(s.fail), num(s.fail) ? 'err' : 'dim'],
       ['成功率', rate === null ? null : rate + '%', rate === null ? 'dim' : rate >= 95 ? 'ok' : rate >= 80 ? 'warn' : 'err'],
       ['消耗 token', totalTokens ? fmtTokens(totalTokens) : null, totalTokens ? '' : 'dim'],
-      ['输出 token', fmtTokens(s.tokens), num(s.tokens) ? '' : 'dim'],
+      ['输入 token', fmtTokens(inTok), inTok ? '' : 'dim'],
+      ['输出 token', fmtTokens(outTok), outTok ? '' : 'dim'],
       ['平均 TTFB', fmtCount(s.avg_ttfb_ms) === null ? null : s.avg_ttfb_ms + 'ms', ''],
       ['平均总耗时', fmtCount(s.avg_total_ms) === null ? null : s.avg_total_ms + 'ms', ''],
     ];
