@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // Task 8：面板按上游分组 + 能力位驱动显隐。

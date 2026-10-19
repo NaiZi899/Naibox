@@ -341,7 +341,7 @@ go test ./... -count=1
 本项目是**开源项目基础上的二次开发**：
 
 ```
-Sliverkiss/workbuddy2api  ──►  Practice019/multi2api  ──►  NaiZi899/omni2api (NaiBox)
+Sliverkiss/workbuddy2api  ──►  Practice019/multi2api  ──►  NaiZi899/Naibox (NaiBox)
     WorkBuddy 专用反代            多上游聚合网关（10 个）        12 个上游 + 桌面版
 ```
 

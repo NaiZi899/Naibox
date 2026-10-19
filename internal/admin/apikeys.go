@@ -15,7 +15,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/NaiZi899/omni2api/internal/apikey"
+	"github.com/NaiZi899/Naibox/internal/apikey"
 )
 
 // apiKeysStore 本包持有的存储（Config.APIKeys 注入，nil = 未启用）。

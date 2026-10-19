@@ -8,9 +8,9 @@ package boot
 import (
 	"log"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/inkstone"
-	"github.com/NaiZi899/omni2api/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/inkstone"
+	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
 // dedupeInkstoneByUID 把目录扫描结果投影成 (核心账号, 不透明 secret)。

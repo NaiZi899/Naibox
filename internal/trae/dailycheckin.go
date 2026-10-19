@@ -14,8 +14,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // checkinAllOnce 对本上游全部账号各签一次，返回逐账号结果。

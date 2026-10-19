@@ -23,8 +23,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // fakeFlow 一个可注入的 LoginFlow，用来在测试里控制轮询结果。

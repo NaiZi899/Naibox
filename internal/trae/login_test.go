@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // freePort 找一个可用的本机端口（登录测试各用自己的回调端口，避免互抢 18080）。

@@ -35,10 +35,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/pool"
-	"github.com/NaiZi899/omni2api/internal/workbuddy"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/workbuddy"
 )
 
 // wbNext4AM 是 workbuddy 的额度恢复策略（直接借用它的实现，

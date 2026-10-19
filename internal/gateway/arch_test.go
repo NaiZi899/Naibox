@@ -27,14 +27,14 @@ import (
 // 加新上游时这些包一行都不该改。谁在这里 import 了具体上游，
 // 谁就破坏了"加一个上游 = 加一个目录"。
 var corePackages = []string{
-	"github.com/NaiZi899/omni2api/internal/gateway",
-	"github.com/NaiZi899/omni2api/internal/pool",
-	"github.com/NaiZi899/omni2api/internal/logbuf",
-	"github.com/NaiZi899/omni2api/internal/admin",
-	"github.com/NaiZi899/omni2api/internal/server",
-	"github.com/NaiZi899/omni2api/internal/scheduler",
-	"github.com/NaiZi899/omni2api/internal/checkinlog",
-	"github.com/NaiZi899/omni2api/internal/clientlogin",
+	"github.com/NaiZi899/Naibox/internal/gateway",
+	"github.com/NaiZi899/Naibox/internal/pool",
+	"github.com/NaiZi899/Naibox/internal/logbuf",
+	"github.com/NaiZi899/Naibox/internal/admin",
+	"github.com/NaiZi899/Naibox/internal/server",
+	"github.com/NaiZi899/Naibox/internal/scheduler",
+	"github.com/NaiZi899/Naibox/internal/checkinlog",
+	"github.com/NaiZi899/Naibox/internal/clientlogin",
 }
 
 // upstreamPrefix 上游实现的包路径前缀。
@@ -42,7 +42,7 @@ var corePackages = []string{
 // ⚠ 新增上游时**必须**在此登记，否则约束测试管不到它。
 // 这本身是被测试强制的：TestUpstreamListIsEnforced 会检查每个
 // internal/<名字>/ 是否在此列。
-var upstreamPrefix = "github.com/NaiZi899/omni2api/internal/workbuddy"
+var upstreamPrefix = "github.com/NaiZi899/Naibox/internal/workbuddy"
 
 // gatewayContractMarkers 已废弃 —— 见 discoverUpstreams 的说明。
 //
@@ -171,7 +171,7 @@ func discoverUpstreams(t *testing.T, root string) []string {
 
 	coreNames := map[string]bool{}
 	for _, p := range corePackages {
-		coreNames[strings.TrimPrefix(p, "github.com/NaiZi899/omni2api/internal/")] = true
+		coreNames[strings.TrimPrefix(p, "github.com/NaiZi899/Naibox/internal/")] = true
 	}
 	exempt := map[string]bool{}
 	for _, p := range discoveryExemptPackages {
@@ -208,12 +208,12 @@ func discoverUpstreams(t *testing.T, root string) []string {
 // 交叉验证，不会因为一次命令失败就静默放行。
 func dependsOnGateway(t *testing.T, root, pkg string) bool {
 	t.Helper()
-	deps, err := listDeps(root, "github.com/NaiZi899/omni2api/internal/"+pkg)
+	deps, err := listDeps(root, "github.com/NaiZi899/Naibox/internal/"+pkg)
 	if err != nil {
 		return false
 	}
 	for _, d := range deps {
-		if d == "github.com/NaiZi899/omni2api/internal/gateway" {
+		if d == "github.com/NaiZi899/Naibox/internal/gateway" {
 			return true
 		}
 	}
@@ -264,7 +264,7 @@ func TestAssemblyPackagesAreRegistered(t *testing.T) {
 	root := moduleRoot(t)
 	coreNames := map[string]bool{}
 	for _, p := range corePackages {
-		coreNames[strings.TrimPrefix(p, "github.com/NaiZi899/omni2api/internal/")] = true
+		coreNames[strings.TrimPrefix(p, "github.com/NaiZi899/Naibox/internal/")] = true
 	}
 	exempt := map[string]bool{}
 	for _, p := range discoveryExemptPackages {
@@ -311,17 +311,17 @@ func TestUpstreamsDoNotDependOnAssembly(t *testing.T) {
 	}
 	targets := map[string]bool{}
 	for _, p := range assemblyPackages {
-		targets["github.com/NaiZi899/omni2api/internal/"+p] = true
+		targets["github.com/NaiZi899/Naibox/internal/"+p] = true
 	}
 	for _, u := range ups {
-		deps, err := listDeps(root, "github.com/NaiZi899/omni2api/internal/"+u)
+		deps, err := listDeps(root, "github.com/NaiZi899/Naibox/internal/"+u)
 		if err != nil {
 			t.Fatalf("internal/%s 的依赖列表不可得: %v", u, err)
 		}
 		for _, d := range deps {
 			if targets[d] {
 				t.Errorf("上游 internal/%s 依赖装配层 %s —— 方向反了（会成环，"+
-					"且该上游因此能看见其它上游）", u, strings.TrimPrefix(d, "github.com/NaiZi899/omni2api/internal/"))
+					"且该上游因此能看见其它上游）", u, strings.TrimPrefix(d, "github.com/NaiZi899/Naibox/internal/"))
 			}
 		}
 	}
@@ -367,7 +367,7 @@ func TestDiscoveryFindsKnownUpstreams(t *testing.T) {
 	}
 	coreNames := map[string]bool{}
 	for _, p := range corePackages {
-		coreNames[strings.TrimPrefix(p, "github.com/NaiZi899/omni2api/internal/")] = true
+		coreNames[strings.TrimPrefix(p, "github.com/NaiZi899/Naibox/internal/")] = true
 	}
 	exempt := map[string]bool{}
 	for _, p := range discoveryExemptPackages {
@@ -470,7 +470,7 @@ func TestDiscoveryHasNoBlindSpot(t *testing.T) {
 	// admin 依赖 gateway 是**正常的**（它遍历 Registry 挂载上游端点）。
 	coreNames := map[string]bool{}
 	for _, p := range corePackages {
-		coreNames[strings.TrimPrefix(p, "github.com/NaiZi899/omni2api/internal/")] = true
+		coreNames[strings.TrimPrefix(p, "github.com/NaiZi899/Naibox/internal/")] = true
 	}
 	exempt := map[string]bool{}
 	for _, p := range discoveryExemptPackages {
@@ -702,18 +702,18 @@ func TestPrivateSDKIsNotConsumedByOtherUpstreams(t *testing.T) {
 			continue
 		}
 
-		dependents := packagesDependingOn(t, root, "github.com/NaiZi899/omni2api/internal/"+sdk)
+		dependents := packagesDependingOn(t, root, "github.com/NaiZi899/Naibox/internal/"+sdk)
 		t.Logf("internal/%s（所有者 %s）的依赖者: %v", sdk, own, dependents)
 
 		for _, d := range dependents {
-			name := strings.TrimPrefix(d, "github.com/NaiZi899/omni2api/internal/")
+			name := strings.TrimPrefix(d, "github.com/NaiZi899/Naibox/internal/")
 			// 允许：所有者自己
 			if name == own {
 				continue
 			}
 			// cmd/* 装配层：它是唯一同时认识核心与所有上游的地方，依赖是**正当的**
 			// （装配就是把两边接起来）。故不视为违规，也不登记。
-			if strings.HasPrefix(d, "github.com/NaiZi899/omni2api/cmd/") {
+			if strings.HasPrefix(d, "github.com/NaiZi899/Naibox/cmd/") {
 				continue
 			}
 			// 违规：另一个上游
@@ -920,11 +920,11 @@ func coreDependents(t *testing.T, root, name string) []string {
 	t.Helper()
 	var out []string
 	for _, c := range corePackages {
-		if c == "github.com/NaiZi899/omni2api/internal/"+name {
+		if c == "github.com/NaiZi899/Naibox/internal/"+name {
 			continue
 		}
-		if dependsOnPkg(root, c, "github.com/NaiZi899/omni2api/internal/"+name) {
-			out = append(out, strings.TrimPrefix(c, "github.com/NaiZi899/omni2api/internal/"))
+		if dependsOnPkg(root, c, "github.com/NaiZi899/Naibox/internal/"+name) {
+			out = append(out, strings.TrimPrefix(c, "github.com/NaiZi899/Naibox/internal/"))
 		}
 	}
 	sort.Strings(out)
@@ -962,12 +962,12 @@ func upstreamDependents(t *testing.T, root, name string) []string {
 		if up == name {
 			continue
 		}
-		deps, err := listDeps(root, "github.com/NaiZi899/omni2api/internal/"+up)
+		deps, err := listDeps(root, "github.com/NaiZi899/Naibox/internal/"+up)
 		if err != nil {
 			continue
 		}
 		for _, d := range deps {
-			if d == "github.com/NaiZi899/omni2api/internal/"+name {
+			if d == "github.com/NaiZi899/Naibox/internal/"+name {
 				out = append(out, up)
 				break
 			}
@@ -982,16 +982,16 @@ func packagesDependingOn(t *testing.T, root, pkg string) []string {
 	t.Helper()
 	var out []string
 	for _, name := range candidatePackages(t, root) {
-		if "github.com/NaiZi899/omni2api/internal/"+name == pkg {
+		if "github.com/NaiZi899/Naibox/internal/"+name == pkg {
 			continue
 		}
-		if dependsOnPkg(root, "github.com/NaiZi899/omni2api/internal/"+name, pkg) {
-			out = append(out, "github.com/NaiZi899/omni2api/internal/"+name)
+		if dependsOnPkg(root, "github.com/NaiZi899/Naibox/internal/"+name, pkg) {
+			out = append(out, "github.com/NaiZi899/Naibox/internal/"+name)
 		}
 	}
 	for _, name := range cmdPackages(t, root) {
-		if dependsOnPkg(root, "github.com/NaiZi899/omni2api/cmd/"+name, pkg) {
-			out = append(out, "github.com/NaiZi899/omni2api/cmd/"+name)
+		if dependsOnPkg(root, "github.com/NaiZi899/Naibox/cmd/"+name, pkg) {
+			out = append(out, "github.com/NaiZi899/Naibox/cmd/"+name)
 		}
 	}
 	sort.Strings(out)
@@ -1050,7 +1050,7 @@ func TestCoreDoesNotDependOnUpstreams(t *testing.T) {
 	t.Logf("被约束的上游包: %v", upstreams)
 
 	for _, pkg := range corePackages {
-		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(pkg, "github.com/NaiZi899/omni2api/")))); err != nil {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(pkg, "github.com/NaiZi899/Naibox/")))); err != nil {
 			t.Logf("跳过（包尚不存在）: %s", pkg)
 			continue
 		}
@@ -1061,7 +1061,7 @@ func TestCoreDoesNotDependOnUpstreams(t *testing.T) {
 		}
 		for _, d := range deps {
 			for _, up := range upstreams {
-				if d == "github.com/NaiZi899/omni2api/internal/"+up {
+				if d == "github.com/NaiZi899/Naibox/internal/"+up {
 					t.Errorf("架构违规：核心包 %s 依赖了上游包 %s\n"+
 						"  判据 1 要求：加新上游时核心零改动。\n"+
 						"  修法：把用到的能力加到 gateway 接口，或用 ExtOf 类型断言发现扩展点。",
@@ -1081,15 +1081,15 @@ func TestUpstreamsDoNotDependOnCore(t *testing.T) {
 
 	// 上游**不得**依赖的
 	forbidden := []string{
-		"github.com/NaiZi899/omni2api/internal/pool",
-		"github.com/NaiZi899/omni2api/internal/admin",
-		"github.com/NaiZi899/omni2api/internal/server",
-		"github.com/NaiZi899/omni2api/internal/scheduler",
+		"github.com/NaiZi899/Naibox/internal/pool",
+		"github.com/NaiZi899/Naibox/internal/admin",
+		"github.com/NaiZi899/Naibox/internal/server",
+		"github.com/NaiZi899/Naibox/internal/scheduler",
 	}
 
 	upstreams := discoverUpstreams(t, root)
 	for _, up := range upstreams {
-		pkg := "github.com/NaiZi899/omni2api/internal/" + up
+		pkg := "github.com/NaiZi899/Naibox/internal/" + up
 		deps, err := listDeps(root, pkg)
 		if err != nil {
 			t.Errorf("go list -deps %s 失败: %v", pkg, err)
@@ -1107,7 +1107,7 @@ func TestUpstreamsDoNotDependOnCore(t *testing.T) {
 				if other == up {
 					continue
 				}
-				if d == "github.com/NaiZi899/omni2api/internal/"+other {
+				if d == "github.com/NaiZi899/Naibox/internal/"+other {
 					t.Errorf("架构违规：上游 %s 依赖了另一个上游 %s（上游之间必须独立）", pkg, d)
 				}
 			}
@@ -1120,13 +1120,13 @@ func TestUpstreamsDoNotDependOnCore(t *testing.T) {
 func TestGatewayDoesNotDependOnAnyUpstream(t *testing.T) {
 	root := moduleRoot(t)
 	upstreams := discoverUpstreams(t, root)
-	deps, err := listDeps(root, "github.com/NaiZi899/omni2api/internal/gateway")
+	deps, err := listDeps(root, "github.com/NaiZi899/Naibox/internal/gateway")
 	if err != nil {
 		t.Fatalf("go list -deps 失败: %v", err)
 	}
 	for _, d := range deps {
 		for _, up := range upstreams {
-			if d == "github.com/NaiZi899/omni2api/internal/"+up {
+			if d == "github.com/NaiZi899/Naibox/internal/"+up {
 				t.Errorf("架构违规：gateway 依赖了上游 %s（依赖方向反了）", d)
 			}
 		}
@@ -1145,19 +1145,19 @@ func TestGatewayDoesNotDependOnAnyUpstream(t *testing.T) {
 func TestArchDetectionLogicDetectsViolation(t *testing.T) {
 	// 合成的依赖列表：模拟"核心包依赖了上游"
 	deps := []string{
-		"github.com/NaiZi899/omni2api/internal/pool",
-		"github.com/NaiZi899/omni2api/internal/auth",
-		"github.com/NaiZi899/omni2api/internal/workbuddy", // ← 违规
+		"github.com/NaiZi899/Naibox/internal/pool",
+		"github.com/NaiZi899/Naibox/internal/auth",
+		"github.com/NaiZi899/Naibox/internal/workbuddy", // ← 违规
 		"fmt",
 	}
-	got := findViolations(deps, []string{"workbuddy", "codearts"}, "github.com/NaiZi899/omni2api/internal/")
-	if len(got) != 1 || got[0] != "github.com/NaiZi899/omni2api/internal/workbuddy" {
+	got := findViolations(deps, []string{"workbuddy", "codearts"}, "github.com/NaiZi899/Naibox/internal/")
+	if len(got) != 1 || got[0] != "github.com/NaiZi899/Naibox/internal/workbuddy" {
 		t.Fatalf("检测逻辑应找出 1 处违规，实际 %v", got)
 	}
 
 	// 反向：干净的依赖列表应当零违规（避免"永远报错"式误判）
-	clean := []string{"github.com/NaiZi899/omni2api/internal/pool", "fmt", "strings"}
-	if got := findViolations(clean, []string{"workbuddy"}, "github.com/NaiZi899/omni2api/internal/"); len(got) != 0 {
+	clean := []string{"github.com/NaiZi899/Naibox/internal/pool", "fmt", "strings"}
+	if got := findViolations(clean, []string{"workbuddy"}, "github.com/NaiZi899/Naibox/internal/"); len(got) != 0 {
 		t.Fatalf("干净依赖不该报违规，实际 %v", got)
 	}
 	t.Log("✓ 反向验证通过：检测逻辑能区分违规与干净")

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/wire"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/wire"
 )
 
 // newHdrReqForUA 造一个用于 UA 断言的请求。

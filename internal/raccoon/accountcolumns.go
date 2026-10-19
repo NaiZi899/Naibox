@@ -1,6 +1,6 @@
 package raccoon
 
-import "github.com/NaiZi899/omni2api/internal/gateway"
+import "github.com/NaiZi899/Naibox/internal/gateway"
 
 // accountcolumns.go —— raccoon 自报「账号池里我要哪些列」。
 //

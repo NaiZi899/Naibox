@@ -15,10 +15,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/admin"
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/scheduler"
-	"github.com/NaiZi899/omni2api/internal/workbuddy"
+	"github.com/NaiZi899/Naibox/internal/admin"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/scheduler"
+	"github.com/NaiZi899/Naibox/internal/workbuddy"
 )
 
 // settingsStore 实现 admin.SettingsStore。

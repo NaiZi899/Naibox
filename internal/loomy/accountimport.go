@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // errNoImportUID 解析出了凭证，但拿不到账号主键（uid）。

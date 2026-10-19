@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // modelsForTest 用一份合法凭证取目录（Models 会先做 authOf 校验）。

@@ -16,7 +16,7 @@ package codearts
 import (
 	"log"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 编译期断言：Provider 满足新扩展点。

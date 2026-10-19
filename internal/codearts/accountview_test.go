@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestAccountColumnsVocabulary 钉住 codearts 自报的列集与顺序。

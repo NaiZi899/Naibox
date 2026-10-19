@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/wire"
+	"github.com/NaiZi899/Naibox/internal/wire"
 )
 
 // 上游域名。与 product.json 的 commercialVersionDomain.newFramework.productDomain 对应。

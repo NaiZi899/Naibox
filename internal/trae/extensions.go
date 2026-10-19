@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // shortErr 把错误压缩成一行短句（表格 detail 列用）。

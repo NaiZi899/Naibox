@@ -27,7 +27,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // modelsCatalogPath 模型目录端点路径（挂在 chatBase 之后）。

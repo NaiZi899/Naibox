@@ -17,7 +17,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // ChatTools 返回某上游可注入对话的工具。

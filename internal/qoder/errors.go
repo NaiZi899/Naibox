@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // ErrRefreshExpired 续期终态：refresh_token 已失效，需重新登录。

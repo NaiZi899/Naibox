@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestImplementsImageGenExt Provider 必须自报生图能力。

@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
 // bootState 一个已启动实例的全部内部状态。

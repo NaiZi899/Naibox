@@ -29,7 +29,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // upstreamError 基元律动的错误信封（顶层 code，不是 OpenAI 的 error 对象）。

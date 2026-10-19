@@ -52,7 +52,7 @@ package codearts
 // 映射到 gateway.ErrKindAuth（core 侧只换号不罚）。
 
 import (
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 编译期断言（与 gateway.Provider / AdminExt / CredentialLoader /

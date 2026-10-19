@@ -13,9 +13,9 @@ package boot
 import (
 	"log"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/lobsterai"
-	"github.com/NaiZi899/omni2api/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/lobsterai"
+	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
 // dedupeLobsteraiByUID 把目录扫描的结果投影成 (核心账号, 不透明 secret)。

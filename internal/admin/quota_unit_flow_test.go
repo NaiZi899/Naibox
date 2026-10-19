@@ -21,9 +21,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
 // TestToPoolQuotaCarriesUnit 转换点必须透传 Unit。

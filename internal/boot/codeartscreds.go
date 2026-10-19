@@ -45,9 +45,9 @@ import (
 	"log"
 	"sync"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/codearts"
-	"github.com/NaiZi899/omni2api/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/codearts"
+	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
 // codeartsCredStore 保证「一个 uid = 一个进程内 *codearts.Auth 对象」。

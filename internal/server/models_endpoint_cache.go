@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // providerModelsTimeout 单个上游目录拉取的超时。

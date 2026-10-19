@@ -51,8 +51,8 @@ package workbuddy
 import (
 	"log"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // quotaRefreshTrigger 本适配层刷新额度时写进任务历史的 trigger。

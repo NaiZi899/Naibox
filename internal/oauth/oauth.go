@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // 上游常量。CN 为默认；海外版（baseURL 含 workbuddy.ai）由 New 推导。

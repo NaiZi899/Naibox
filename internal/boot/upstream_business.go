@@ -19,14 +19,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/admin"
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/clientlogin"
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/oauth"
-	"github.com/NaiZi899/omni2api/internal/pool"
-	"github.com/NaiZi899/omni2api/internal/scheduler"
-	"github.com/NaiZi899/omni2api/internal/workbuddy"
+	"github.com/NaiZi899/Naibox/internal/admin"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/clientlogin"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/oauth"
+	"github.com/NaiZi899/Naibox/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/scheduler"
+	"github.com/NaiZi899/Naibox/internal/workbuddy"
 )
 
 // ---------------------------------------------------------------------------

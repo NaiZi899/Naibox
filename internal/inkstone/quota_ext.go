@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // RefreshQuota 取某账号的墨点余额（gateway.QuotaExt）。

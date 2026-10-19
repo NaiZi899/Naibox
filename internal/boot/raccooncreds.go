@@ -7,9 +7,9 @@ package boot
 import (
 	"log"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/pool"
-	"github.com/NaiZi899/omni2api/internal/raccoon"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/raccoon"
 )
 
 // dedupeRaccoonByUID 把目录扫描的结果投影成 (核心账号, 不透明 secret)。

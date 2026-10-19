@@ -23,8 +23,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // checkinAllPath 全量福利领取端点的路径。

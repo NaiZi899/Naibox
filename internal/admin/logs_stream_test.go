@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/logbuf"
+	"github.com/NaiZi899/Naibox/internal/logbuf"
 )
 
 // 这组测试起**真实** HTTP 服务（httptest.NewServer）并用 http.Client 读真实

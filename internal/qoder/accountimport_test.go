@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestImplementsAccountImportExt qoder / qodercn 必须自报"我能批量导入"。

@@ -3,7 +3,7 @@ package raccoon
 import (
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // credentialext.go —— raccoon 通过 `gateway.CredentialExpiryExt` 自报

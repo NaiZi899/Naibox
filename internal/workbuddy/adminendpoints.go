@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
 )
 
 // writeJSON 写一个 JSON 响应（与改造前 admin.writeJSON 逐字一致）。

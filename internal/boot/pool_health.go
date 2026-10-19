@@ -19,8 +19,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
 // healthCheckMinAge 最近错误距今小于该时长的不急着探测（A2 也跳过

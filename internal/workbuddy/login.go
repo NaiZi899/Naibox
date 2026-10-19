@@ -25,7 +25,7 @@ package workbuddy
 import (
 	"errors"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // OAuthFlow 本包对"登录流程"的最小需求。

@@ -27,8 +27,8 @@ package workbuddy
 // 这个断言只出现在**本包内**，核心一行都没碰（判据 3）。
 
 import (
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 编译期断言：两个可选扩展点都要认。

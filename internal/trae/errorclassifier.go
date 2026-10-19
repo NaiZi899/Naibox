@@ -17,7 +17,7 @@ package trae
 import (
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // sessionDeadMarkers 401 时区分"会话失效"与其它 401 的正文特征。

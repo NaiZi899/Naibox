@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // 复现评审 F1（CRITICAL）：stateOverviewLocked 从不写 Quota。

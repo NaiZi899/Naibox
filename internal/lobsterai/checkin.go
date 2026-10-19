@@ -5,8 +5,8 @@ import (
 	"errors"
 	"log"
 
-	"github.com/NaiZi899/omni2api/internal/dailycheckin"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/dailycheckin"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // checkin.go —— 把 LobsterAI 的每日签到接到**共享驱动**（internal/dailycheckin）。

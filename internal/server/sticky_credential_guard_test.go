@@ -33,7 +33,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // guardRouter 包装一个真实 router，并在 Credential 上**强制注入归属校验**。

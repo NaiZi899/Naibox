@@ -40,7 +40,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // nonDefaultProvider 本文件统一的载体：**不是**桩里的默认上游（loomy）。

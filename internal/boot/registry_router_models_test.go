@@ -26,11 +26,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/codearts"
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/pool"
-	"github.com/NaiZi899/omni2api/internal/workbuddy"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/codearts"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/workbuddy"
 )
 
 // codeartsCredJSON 造一份 codearts 凭证（扁平形，与 multiprovider_test.go 同款）。

@@ -8,7 +8,7 @@
 // 仅有的适配：
 //
 //	模块路径   github.com/linguo2625469/omni2api-panel/internal/auth
-//	         → github.com/NaiZi899/omni2api/internal/auth
+//	         → github.com/NaiZi899/Naibox/internal/auth
 //	desktopUA 在本文件定义（B 在 client 段定义）
 //	WebBaseCN 落到 Client 字段上（本仓库新增该字段，见 client.go 的注释）
 //
@@ -49,7 +49,7 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 const (

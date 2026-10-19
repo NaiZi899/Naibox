@@ -17,7 +17,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // Provider 实现 gateway.Provider 与若干可选扩展点。

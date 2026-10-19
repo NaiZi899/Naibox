@@ -25,8 +25,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 // GrowthErrMax 快照里的错误原因上限，避免把上游长文本灌进快照。

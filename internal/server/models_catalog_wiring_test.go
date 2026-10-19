@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 // catalogBody 是 /v3/config 的最小真实形状（带 credits 系数串）。

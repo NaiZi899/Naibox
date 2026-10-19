@@ -18,7 +18,7 @@ package codearts
 import (
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // realInsufficientQuotaBody 是 codearts 额度耗尽的**实测原文**

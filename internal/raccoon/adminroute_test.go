@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // creditsFake 一个假的积分上游（按路径分发）。

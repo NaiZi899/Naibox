@@ -34,7 +34,7 @@ package workbuddy
 import (
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // refreshSkew workbuddy 的提前续期窗口。

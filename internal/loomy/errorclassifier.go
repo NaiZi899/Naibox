@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 正文判据。全部按手册实录的**原文**匹配（大小写不敏感）。

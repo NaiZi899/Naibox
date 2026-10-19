@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
 // travelStub 模拟 growth 域全部端点，记录调用次数与请求参数。

@@ -37,8 +37,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/session"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/session"
 )
 
 // newStickyMultiHandler 造一个"workbuddy(默认) + codearts"的 handler，

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/boot"
+	"github.com/NaiZi899/Naibox/internal/boot"
 )
 
 // Version 桌面壳版本（发布构建可用 -ldflags "-X .../desktop.Version=x.y.z" 覆盖）。

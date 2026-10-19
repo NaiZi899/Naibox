@@ -4,7 +4,7 @@
 //
 // 仅有的适配：
 //
-//	模块路径      → github.com/NaiZi899/omni2api/internal/auth
+//	模块路径      → github.com/NaiZi899/Naibox/internal/auth
 //	ListTasks     → GrowthTasks（本仓库的任务列表函数名）
 //	t.Current 等  → t.Current() 等（本仓库用访问器，见 growth.go 的说明）
 //	ChatStream    → ChatStreamWithIP(a, body, "")（本仓库多一个 IP 透传参数）
@@ -26,7 +26,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // InNightWindow 当前是否处于夜猫子计数窗口（23:00–08:00 本地时区）。

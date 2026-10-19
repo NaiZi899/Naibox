@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
 )
 
 // countProbes 统计 stub 上 tasks 接口被调了几次 —— 每次 probeGrowth 必调它一次。

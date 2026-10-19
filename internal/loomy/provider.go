@@ -65,7 +65,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // providerID 上游标识。

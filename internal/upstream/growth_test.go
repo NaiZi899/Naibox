@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // TestGrowthClaimRequestShape 断言领奖请求的路径/方法/空 body。

@@ -30,8 +30,8 @@ package server
 import (
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 // allUpstreamKinds 枚举 upstream.ErrKind 的全部合法取值。

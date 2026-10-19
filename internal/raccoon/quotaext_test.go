@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // newQuotaServer 假余额上游（raccoon：{code:0,data:{available_points:N}}）。

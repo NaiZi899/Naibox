@@ -36,7 +36,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // 客户端凭证文件的固定名，以及它默认所在的目录。

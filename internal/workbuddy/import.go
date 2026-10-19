@@ -57,7 +57,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // importPath 批量导入端点的路径（**相对**路径，与 Routes() 里其它端点一致）。

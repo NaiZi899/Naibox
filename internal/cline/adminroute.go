@@ -26,7 +26,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // balancePath 余额端点路径。

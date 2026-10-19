@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // loginSession 一次进行中的授权，含"等待已下沉到后台"的状态。

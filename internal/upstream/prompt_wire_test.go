@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/prompt"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/prompt"
 )
 
 // wireBody 起一个假上游，返回"客户端发出去时上游收到的 body"。

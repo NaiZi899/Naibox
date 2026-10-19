@@ -21,7 +21,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // ProviderRouter 出口层需要的多上游能力。

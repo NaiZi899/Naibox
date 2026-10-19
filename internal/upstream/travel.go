@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // growth 域路径（实测）。

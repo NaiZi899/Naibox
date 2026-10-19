@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // callClientStore 打一次诊断端点并返回 (状态码, 原始正文)。

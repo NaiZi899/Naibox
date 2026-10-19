@@ -28,10 +28,10 @@ import (
 	"errors"
 	"io"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/server"
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/server"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 // defaultUpstream 把 *upstream.Client 适配成 server.DefaultUpstream。

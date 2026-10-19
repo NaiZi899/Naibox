@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // ---------------------------------------------------------------------------

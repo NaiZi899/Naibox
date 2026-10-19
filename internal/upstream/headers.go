@@ -25,8 +25,8 @@ package upstream
 import (
 	"net/http"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/wire"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/wire"
 )
 
 const (

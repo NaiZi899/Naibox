@@ -47,7 +47,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 var _ gateway.JobExt = (*Provider)(nil)

@@ -9,7 +9,7 @@ package workbuddy
 import (
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 // TestGrowthSnapshotPendingSemantics 钉死「待完成」的口径。

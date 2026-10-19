@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
 )
 
 // Upstream 一个"有签到类每日动作"的上游需要提供的事实。

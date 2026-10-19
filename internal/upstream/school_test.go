@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // TestMPEventBaseFingerprint 小程序指纹必须是完整的一套。

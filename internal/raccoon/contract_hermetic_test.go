@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // fixtureJWT 造一个带指定 exp 的假 JWT（只需 base64url 的 payload 段）。

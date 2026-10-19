@@ -4,7 +4,7 @@
 //
 // 仅有的适配：
 //
-//	模块路径      → github.com/NaiZi899/omni2api/internal/auth
+//	模块路径      → github.com/NaiZi899/Naibox/internal/auth
 //	clientToken() → newClientToken()（本仓库既有的幂等令牌生成函数，语义相同）
 //
 // 端点、请求体、事件载荷、请求头**一字未改**。
@@ -30,7 +30,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 const schoolBase = "/portal/activity/school"

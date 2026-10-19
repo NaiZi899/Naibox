@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // TestCoolScheduleIsInjectable 冷却恢复时点必须由调用方（上游）决定。

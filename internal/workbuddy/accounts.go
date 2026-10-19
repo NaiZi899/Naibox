@@ -22,7 +22,7 @@
 // 隐含依赖越深，将来换池实现越难。
 package workbuddy
 
-import "github.com/NaiZi899/omni2api/internal/auth"
+import "github.com/NaiZi899/Naibox/internal/auth"
 
 // Account 账号池在本包看来是什么样（只保留本包真正读的字段）。
 //

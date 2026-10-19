@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 type row struct {

@@ -39,7 +39,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/codearts"
+	"github.com/NaiZi899/Naibox/internal/codearts"
 )
 
 // caFindByUID 在 store.List() 的结果里按 uid 找对象（找不到返回 nil）。

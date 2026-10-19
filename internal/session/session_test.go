@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/redisstore"
+	"github.com/NaiZi899/Naibox/internal/redisstore"
 )
 
 // countingStore 记录镜像调用次数的假 Store（不联网）。

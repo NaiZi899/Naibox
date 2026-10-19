@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/clientlogin"
-	"github.com/NaiZi899/omni2api/internal/codearts"
-	"github.com/NaiZi899/omni2api/internal/loomy"
-	"github.com/NaiZi899/omni2api/internal/prompt"
+	"github.com/NaiZi899/Naibox/internal/clientlogin"
+	"github.com/NaiZi899/Naibox/internal/codearts"
+	"github.com/NaiZi899/Naibox/internal/loomy"
+	"github.com/NaiZi899/Naibox/internal/prompt"
 )
 
 // UAModelFamilyConfig 一条"按模型名前缀覆写 UA"的规则。

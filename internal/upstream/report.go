@@ -37,7 +37,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // reportPath 活跃上报通道（billing 域，与签到/余额同源）。

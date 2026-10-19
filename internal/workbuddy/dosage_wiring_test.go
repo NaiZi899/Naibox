@@ -20,9 +20,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/pool"
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 // newCreditsProvider 起一个假上游（按 handler 分流）与只含 u1 的 Provider。

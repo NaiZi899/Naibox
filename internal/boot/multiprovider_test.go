@@ -36,9 +36,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/codearts"
-	"github.com/NaiZi899/omni2api/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/codearts"
+	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
 // credJSON 造一份扁平形凭证 JSON。

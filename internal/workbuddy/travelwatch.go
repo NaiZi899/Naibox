@@ -22,9 +22,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 // travelIdleRecheck 空闲账号的复查间隔（无猫或已领完时的兜底）。

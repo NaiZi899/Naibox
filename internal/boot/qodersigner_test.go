@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/qoder"
+	"github.com/NaiZi899/Naibox/internal/qoder"
 )
 
 // TestQoderSignerAdapterProducesRealEncryptedRequest 装配层的适配器必须真的

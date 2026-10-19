@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
 )
 
 // record 写一条任务历史（未注入 Log 时静默丢弃）。

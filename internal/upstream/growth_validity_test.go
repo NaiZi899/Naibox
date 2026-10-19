@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // 真实响应样本（实测自 /v2/activity/growth/tasks，已脱敏）。

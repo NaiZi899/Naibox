@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/admin"
+	"github.com/NaiZi899/Naibox/internal/admin"
 )
 
 // 复现并守住阶段 0 评审的 F1：**部分 PUT 不得覆盖未提交的配置**。

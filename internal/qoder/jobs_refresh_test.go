@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestRefreshResponseFieldNames 续期响应的字段名**逐字锁定**。

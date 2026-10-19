@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // newSoftPool 单个账号的池子，软限流基数为 d。

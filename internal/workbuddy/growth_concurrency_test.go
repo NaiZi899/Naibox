@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // slowStub 每个请求睡 delay，并记录并发峰值。

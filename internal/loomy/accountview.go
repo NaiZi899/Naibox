@@ -27,7 +27,7 @@
 package loomy
 
 import (
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 编译期断言：loomy 实现这三个扩展点。

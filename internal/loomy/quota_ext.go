@@ -48,7 +48,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // RefreshQuota 取该账号的当前额度（gateway.QuotaExt）。

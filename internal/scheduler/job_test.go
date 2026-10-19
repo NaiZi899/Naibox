@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // stubProvider 实现 gateway.Provider + JobExt —— 模拟一个注册了任务的上游。

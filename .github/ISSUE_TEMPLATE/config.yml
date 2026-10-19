@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 🔒 报告安全漏洞
-    url: https://github.com/NaiZi899/omni2api/security/advisories/new
+    url: https://github.com/NaiZi899/Naibox/security/advisories/new
     about: 漏洞请走私密报告通道，不要开公开 Issue（同 SECURITY.md）
   - name: 📖 先读文档
-    url: https://github.com/NaiZi899/omni2api#readme
+    url: https://github.com/NaiZi899/Naibox#readme
     about: 配置项、上游接入、部署与排障都在 README 与 docs/ 里

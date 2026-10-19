@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // TestConcurrentMutationsStayConsistent 在有并发写的同时验证数据不变式。

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
 )
 
 // stub 一个可编程的上游桩，记录被问了什么、领了什么。
@@ -466,7 +466,7 @@ func TestNoGatewayImport(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(raw), `"github.com/NaiZi899/omni2api/internal/gateway"`) {
+		if strings.Contains(string(raw), `"github.com/NaiZi899/Naibox/internal/gateway"`) {
 			t.Errorf("%s 引用了 internal/gateway —— 本包必须与契约解耦：\n"+
 				"  依赖 gateway 会让本包被 arch_test 当成「上游实现」，\n"+
 				"  于是各上游 import 它就变成「上游依赖上游」= 架构违规。\n"+

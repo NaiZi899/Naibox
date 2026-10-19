@@ -32,8 +32,8 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
 // quotaRefresher 一次额度刷新的统计（供端点回执与测试断言）。

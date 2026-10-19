@@ -1,7 +1,7 @@
 package workbuddy
 
 import (
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 编译期断言：workbuddy 自报账号池列集。

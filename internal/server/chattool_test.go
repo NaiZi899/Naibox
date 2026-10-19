@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestToolCallsOfAcceptsBothShapes 必须认**两种**形状。

@@ -25,7 +25,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // credentialSource 由装配层注入的"按 uid 取凭证"访问器。

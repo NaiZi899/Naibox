@@ -11,7 +11,7 @@ GOOS=windows CGO_ENABLED=0 go build -o dist/NaiBox.exe ./cmd/desktop
 
 # 发布构建（GUI 子系统：双击不闪黑框；rsrc.syso 由构建脚本生成到本目录）
 GOOS=windows CGO_ENABLED=0 go build -trimpath \
-  -ldflags "-s -w -H=windowsgui -X github.com/NaiZi899/omni2api/internal/desktop.Version=0.1.0" \
+  -ldflags "-s -w -H=windowsgui -X github.com/NaiZi899/Naibox/internal/desktop.Version=0.1.0" \
   -o dist/NaiBox.exe ./cmd/desktop
 ```
 

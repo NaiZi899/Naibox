@@ -23,7 +23,7 @@
 // 与 wire 里的是**同一个函数值**，行为与签名都不可能漂移。
 package upstream
 
-import "github.com/NaiZi899/omni2api/internal/wire"
+import "github.com/NaiZi899/Naibox/internal/wire"
 
 // 出站请求体改写（三层签名是历史顺序，见 wire/payload.go 的注释）。
 var (

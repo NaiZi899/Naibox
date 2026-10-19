@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // newHdrReq 造一个空请求，供直接调 Headers 方法。

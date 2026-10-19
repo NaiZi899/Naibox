@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestRefreshDueAtPrefersLiveCredential 判据必须优先用**活凭证**的过期时刻。

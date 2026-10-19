@@ -3,7 +3,7 @@ package upstream
 import (
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // X-Product-Code 是产品身份的一部分（参照项目从 CodeBuddy CN IDE 逆向）。

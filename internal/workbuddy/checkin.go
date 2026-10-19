@@ -26,8 +26,8 @@ import (
 	"log"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 // 槽位名。由 cmd/server 装配时用同一组常量（它们是对外契约的一部分：

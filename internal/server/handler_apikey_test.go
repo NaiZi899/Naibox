@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/apikey"
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/apikey"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 func newAPIKeyStore(t *testing.T) *apikey.Store {

@@ -31,7 +31,7 @@
 // auths/codearts/ 下那 2 份凭证原样留着，重新启用该上游后会被重新并入。
 package boot
 
-import "github.com/NaiZi899/omni2api/internal/pool"
+import "github.com/NaiZi899/Naibox/internal/pool"
 
 // pruneUnregisteredProviders 把池中「本次启动没有注册的上游」的账号逐出。
 // 返回被逐出的上游数与账号数（供调用方打日志）。

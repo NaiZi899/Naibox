@@ -40,8 +40,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/wire"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/wire"
 )
 
 // sseWriter 把上游帧写到客户端，并管理 SSE 响应头与 flush。
