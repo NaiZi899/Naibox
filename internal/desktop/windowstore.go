@@ -40,6 +40,17 @@ func (s *windowStore) Get() WindowState {
 // SetGeometry 更新窗口几何并落盘。返回是否发生了实际变化
 // （窗口线程 5 秒一次轮询，没必要每次都写盘）。
 func (s *windowStore) SetGeometry(x, y, width, height int) bool {
+	return s.SetGeometryMax(x, y, width, height, false)
+}
+
+// SetGeometryMax 同 SetGeometry，但一并记录"当前是否最大化"。
+//
+// # 为什么要 max 参数而不是让调用方分两步写
+//
+// 分两步就是两次落盘，中间那一瞬间的状态是"几何已更新、最大化位还是旧值"。
+// 恰好在这个窗口里进程被强杀，下次启动就会用一个不匹配的组合（典型后果
+// 见 WindowState.Maximized 的注释）。一次写完没有中间态。
+func (s *windowStore) SetGeometryMax(x, y, width, height int, maximized bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// 与 SaveWindowState 同一口径的最小尺寸：缩到看不见的窗口不该被记住。
@@ -50,6 +61,7 @@ func (s *windowStore) SetGeometry(x, y, width, height int) bool {
 	next.X, next.Y = x, y
 	next.Width, next.Height = width, height
 	next.HasPos = true
+	next.Maximized = maximized
 	if next == s.st {
 		return false
 	}

@@ -90,6 +90,11 @@ func newView(l Layout, url string, store *windowStore, logger *log.Logger) (Wind
 	if st.HasPos {
 		moveWindow(v.hwnd, st.X, st.Y)
 	}
+	// 上次是最大化就恢复最大化：否则会按普通窗口建一个"铺满屏幕还多一点"
+	// 的窗口（最大化的几何比可见屏幕大，含边框），位置偏负又压住整屏。
+	if st.Maximized {
+		showWindow(v.hwnd, swMaximize)
+	}
 	w.Navigate(url)
 	return v, nil
 }
@@ -156,12 +161,17 @@ func (v *webviewView) Run() {
 //
 // 只写几何：关窗行为/气泡标记由 windowStore 单独更新。旧版这里是
 // "拼一个全新的 WindowState 写回"，那样会**顺手把关窗行为清空**（每 5 秒一次）。
+//
+// ⚠ 最大化状态必须一起记（见 WindowState.Maximized 的注释）：最大化时
+// GetWindowRect 给的是"铺满屏幕 + 边框"的尺寸，只存几何不存这个位，
+// 下次启动就会按普通窗口建一个比屏幕还大的窗口。
 func (v *webviewView) snapshot() {
 	r, ok := windowRect(v.hwnd)
 	if !ok {
 		return
 	}
-	v.store.SetGeometry(int(r.left), int(r.top), int(r.right-r.left), int(r.bottom-r.top))
+	v.store.SetGeometryMax(int(r.left), int(r.top), int(r.right-r.left), int(r.bottom-r.top),
+		isMaximized(v.hwnd))
 }
 
 // ConfigureClose 安装关窗策略（子类化窗口过程）。
