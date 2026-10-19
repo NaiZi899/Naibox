@@ -24,11 +24,15 @@ var (
 	procSetWindowPos              = user32.NewProc("SetWindowPos")
 	procShowWindow                = user32.NewProc("ShowWindow")
 	procSetForegroundWindow       = user32.NewProc("SetForegroundWindow")
+	procIsZoomed                  = user32.NewProc("IsZoomed")
 )
 
 const (
 	swShow          = 5
 	swRestore       = 9
+	swMaximize      = 3
+	swpNoSize       = 0x0001
+	swpNoMove       = 0x0002
 	swpNoZOrder     = 0x0004
 	swpNoActivate   = 0x0010
 	mbSetForeground = 0x00010000
@@ -219,11 +223,49 @@ func windowRect(hwnd uintptr) (winRect, bool) {
 }
 
 // moveWindow 只挪位置，不改大小。
+//
+// # SWP_NOSIZE 不能省（这行曾经把它漏掉，导致窗口启动即缩成 135×37）
+//
+// SetWindowPos 的签名是 (hwnd, after, x, y, cx, cy, flags)。传 cx=cy=0
+// **只有在 flags 含 SWP_NOSIZE 时**才表示"不动尺寸"；不含它时，0 就是一个
+// 真实的尺寸请求 —— Windows 会把窗口压到**最小跟踪尺寸**（标题栏 + 边框，
+// 实测 135×37），并落在参数给的坐标上。
+//
+// 实测形态（2026-10-19，本机 175% DPI）：window.json 里存着
+// `has_pos=true, x=-11, y=-11`（最大化窗口留下的几何），第二次启动时
+// 建窗尺寸正确（2582×1622 @ 0,0），紧接着这次"只挪位置"的调用把它变成
+// 135×37 @ (-7,-7) —— 正是用户报的"打开就在左上角缩成一个小窗口"。
+//
+// 首次启动看不出来：HasPos=false 不调本函数，窗口居中且尺寸正确。
+// 只有存在 window.json 之后才复现，所以"重装一次就好了"是假象。
+//
+// 用 SWP_NOSIZE 而不是传 GetWindowRect 的量回去：后者要读一次再写一次，
+// 中间窗口可能被别的消息改过（WM_DPICHANGED 会改），拿旧值回写等于回滚。
+// isMaximized 窗口当前是否最大化（IsZoomed）。
+//
+// 用 IsZoomed 而不是比较窗口矩形与屏幕尺寸：多显示器 + DPI 缩放下
+// "矩形是否等于屏幕"这个判据会给出错误答案（最大化窗口的矩形在每块屏上
+// 都不同），而 IsZoomed 直接问系统它自己记的那个状态位。
+func isMaximized(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	r, _, _ := procIsZoomed.Call(hwnd)
+	return r != 0
+}
+
+// moveWindowFlags moveWindow 调 SetWindowPos 时用的标志位。
+//
+// 提成具名常量是为了让 movewindow_windows_test.go 能在**不建窗口**的前提下
+// 断言它 —— 这类"少一个标志位"的缺陷没有任何编译期/运行期信号：调用返回
+// 成功、窗口也在，只是尺寸不对。详见 moveWindow 的注释与那条测试。
+const moveWindowFlags = swpNoSize | swpNoZOrder | swpNoActivate
+
 func moveWindow(hwnd uintptr, x, y int) {
 	if hwnd == 0 {
 		return
 	}
-	procSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), 0, 0, swpNoZOrder|swpNoActivate)
+	procSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), 0, 0, moveWindowFlags)
 }
 
 // showAndFocus 把窗口显示出来并提到前台。
