@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // syncTTFBStall 上游在读流之前故意停顿的时长。

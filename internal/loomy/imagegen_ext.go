@@ -39,7 +39,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // imageModelIDs 本上游**仅用于生图**的模型（实测清单，2026-10-03）。

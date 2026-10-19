@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // growthBase 成长中心前缀（挂在 chatBase 之后）。

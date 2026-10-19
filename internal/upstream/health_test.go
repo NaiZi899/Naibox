@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // 真实响应样本（实测自 /v2/plugin/accounts，已脱敏 uid/phone）。

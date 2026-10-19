@@ -3,7 +3,7 @@ package lobsterai
 import (
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestHasTokenReadsLiveCredential has_token 必须来自**活凭证**，不是池投影。

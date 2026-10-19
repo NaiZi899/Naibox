@@ -43,7 +43,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // maxToolRounds 工具循环的最大轮次。

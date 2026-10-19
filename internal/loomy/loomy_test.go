@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // ── 凭证解析与加载 ──────────────────────────────────────────────────────

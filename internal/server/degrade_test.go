@@ -27,8 +27,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/prompt"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/prompt"
 )
 
 // newBuf 返回一个记录响应的 ResponseRecorder。

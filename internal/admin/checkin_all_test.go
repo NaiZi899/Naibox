@@ -24,7 +24,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // ⚠ 假上游必须实现**完整的** gateway.Provider（ID/Caps/Chat/Models），

@@ -12,9 +12,9 @@
 package boot
 
 import (
-	"github.com/NaiZi899/omni2api/internal/cline"
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/cline"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
 // clineCredSource 造一个"按 uid 取活凭证"的访问器。

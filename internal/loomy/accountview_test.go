@@ -17,7 +17,7 @@ package loomy
 import (
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestLoomyAccountColumns 列集必须逐列全等。

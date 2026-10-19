@@ -26,8 +26,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 任务名。用作调度器日志与状态展示的稳定标识。

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
 func TestPoolUnavailableHintOf(t *testing.T) {

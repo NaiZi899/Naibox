@@ -22,8 +22,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // makeJWT 造一个仅 payload 有意义的假 JWT（签名段恒为 "sig"）。

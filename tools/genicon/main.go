@@ -26,7 +26,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/icon"
+	"github.com/NaiZi899/Naibox/internal/icon"
 )
 
 func main() {

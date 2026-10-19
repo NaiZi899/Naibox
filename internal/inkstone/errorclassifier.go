@@ -16,7 +16,7 @@ package inkstone
 import (
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // Classify 实现 gateway.ErrorClassifier（状态码 + 响应体）。

@@ -3,7 +3,7 @@ package codearts
 import (
 	"context"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 编译期断言：codearts 实现模型倍率扩展点。

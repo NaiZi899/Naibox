@@ -28,8 +28,8 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/scheduler"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/scheduler"
 )
 
 // uiManifest 控制台渲染契约。

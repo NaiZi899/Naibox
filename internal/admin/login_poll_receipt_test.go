@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // lifetimeFlowProvider 在 flowProvider 之上再实现 `CredentialLifetimeExt`。

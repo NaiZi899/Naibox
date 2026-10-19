@@ -41,7 +41,7 @@ package codearts
 import (
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 编译期断言（与 RefreshSkew / CredentialRefresher / ErrorClassifier 并列）。

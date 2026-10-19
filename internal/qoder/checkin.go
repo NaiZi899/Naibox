@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/NaiZi899/omni2api/internal/dailycheckin"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/dailycheckin"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // checkin.go —— 把 Qoder 的每日积分领取接到**共享驱动**（internal/dailycheckin）。

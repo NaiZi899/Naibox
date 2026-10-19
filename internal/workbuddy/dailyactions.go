@@ -29,7 +29,7 @@
 // 也就是说：本次改动**只接管签到与保活**，其余行内按钮一个都不动。
 package workbuddy
 
-import "github.com/NaiZi899/omni2api/internal/gateway"
+import "github.com/NaiZi899/Naibox/internal/gateway"
 
 // 动作 ID。用常量而不是散落的字面串：前端按 ID 写 data-act，
 // 两处必须一致，且它们会出现在测试断言里。

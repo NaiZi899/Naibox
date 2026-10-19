@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/redisstore"
+	"github.com/NaiZi899/Naibox/internal/redisstore"
 )
 
 // entry 单条会话绑定。

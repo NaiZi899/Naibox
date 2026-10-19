@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 管理端点（AdminExt 实现）。

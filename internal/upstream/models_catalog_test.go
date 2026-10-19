@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // realCatalogBody 是 /v3/config 的真实形状（字段与实测一致，模型取真实样本里的几个）。

@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
 )
 
 // seedHistoryWithForeign 造一个双上游池 + 一份**混着两家 uid**的历史。

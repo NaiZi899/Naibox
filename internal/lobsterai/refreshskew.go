@@ -3,7 +3,7 @@ package lobsterai
 import (
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // refreshskew.go —— lobsterai 通过 `gateway.RefreshSkewExt` 自报「多早算该刷」。

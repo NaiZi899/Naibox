@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestContract 跑 gateway 行为契约（ID 合法且稳定、Caps 含 CapChat、

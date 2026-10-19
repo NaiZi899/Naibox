@@ -29,8 +29,8 @@ package workbuddy
 import (
 	"context"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // DailyCheckinAll 本上游一趟全量签到的**唯一**实现（供两处入口共用）。

@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // decodeOpenAIErrCode 取出 writeOpenAIError 写下的 error.code。

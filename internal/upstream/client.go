@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/prompt"
-	"github.com/NaiZi899/omni2api/internal/wire"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/prompt"
+	"github.com/NaiZi899/Naibox/internal/wire"
 )
 
 // ErrKind 错误分类，pool 据此决定冷却时长。

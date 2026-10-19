@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // Task 2：把 pool 的**额度语义**从上游专属的"积分"抽象出来。

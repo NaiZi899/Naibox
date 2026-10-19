@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestMultiplierIsUpstreamFixedValue 锁定倍率来自上游下发值而非本地估算。

@@ -11,7 +11,7 @@ package loomy
 import (
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // pointsStoreDir 造一个"客户端已登录 + 有积分缓存"的假数据目录。

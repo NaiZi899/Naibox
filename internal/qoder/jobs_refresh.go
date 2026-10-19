@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // jobs_refresh.go —— qoder / qodercn 的后台主动续期。

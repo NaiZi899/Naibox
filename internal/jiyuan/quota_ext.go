@@ -52,7 +52,7 @@ import (
 	"log"
 	"math"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // quotaTimeoutSec 额度刷新的 ctx 超时（与 sessionTimeout 同量级：

@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 // TestCanonicalModelCaseInsensitive 覆盖规范化映射本身。

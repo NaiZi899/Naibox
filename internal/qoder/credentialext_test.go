@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestTokenExpiryFallsBackToJWT 没有 expire_time 时回落 token 的 `exp`。

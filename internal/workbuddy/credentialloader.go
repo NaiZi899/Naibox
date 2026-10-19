@@ -16,8 +16,8 @@ package workbuddy
 // **不硬编码任何上游的格式**。这也让"加新上游核心零改动"这条判据重新成立。
 
 import (
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 编译期断言（与 AuthDirExt 那条并列）。

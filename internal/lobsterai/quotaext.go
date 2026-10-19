@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // quotaext.go —— lobsterai 通过 `gateway.QuotaExt` 自报「我的额度怎么取」。

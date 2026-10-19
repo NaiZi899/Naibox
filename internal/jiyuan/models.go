@@ -27,7 +27,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // upstreamModel 是 `GET /v1/models` 单条的形状（只取本包要用的字段）。

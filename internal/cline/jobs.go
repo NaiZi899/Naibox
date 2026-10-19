@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // isRefreshExpired 报告一个续期错误是不是**终态**（refresh_token 本身失效）。

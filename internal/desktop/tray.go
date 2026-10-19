@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/NaiZi899/omni2api/internal/icon"
+	"github.com/NaiZi899/Naibox/internal/icon"
 )
 
 // trayAction 托盘菜单动作。

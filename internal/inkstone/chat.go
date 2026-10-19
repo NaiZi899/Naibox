@@ -20,7 +20,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // authOf 从 gateway.Credential 取出书生端砚凭证（类型断言）。

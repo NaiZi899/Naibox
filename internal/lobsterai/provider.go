@@ -21,9 +21,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/dailycheckin"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/dailycheckin"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // Provider 实现 gateway.Provider 与若干可选扩展点。

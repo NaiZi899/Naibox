@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 本文件把 workbuddy 的 11 列表头**逐字**钉死，并把它与后端契约焊在一起。

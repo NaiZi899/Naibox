@@ -30,7 +30,7 @@
 // 那正是"两个渲染点互相污染"的形态。
 package codearts
 
-import "github.com/NaiZi899/omni2api/internal/gateway"
+import "github.com/NaiZi899/Naibox/internal/gateway"
 
 // 编译期断言：codearts 实现这两个扩展点。
 //

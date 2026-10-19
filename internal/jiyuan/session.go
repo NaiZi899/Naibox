@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // mgmtBase 管理面基址（`/api/*` 挂在这个域名下，与 /v1 同域）。

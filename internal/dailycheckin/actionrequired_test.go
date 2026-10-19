@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
 )
 
 // TestActionRequiredSurvivesError ★ actionRequired 必须**跟着错误一起**出去。

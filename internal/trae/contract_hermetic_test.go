@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // fixtureToken 一个合成的 JWT（形态与真货一致：三段 base64 点分）。

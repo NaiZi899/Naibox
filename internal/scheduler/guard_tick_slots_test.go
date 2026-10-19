@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // registryWithAlwaysDueJob 造一个"注册了一个恒到期任务"的注册表。

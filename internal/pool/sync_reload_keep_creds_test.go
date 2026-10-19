@@ -8,7 +8,7 @@ package pool
 import (
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // TestSyncToDirForKeepsExistingCreds 已有凭证的账号被投影同步时不丢 token。

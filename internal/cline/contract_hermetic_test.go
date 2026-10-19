@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // fixtureToken 固定 fixture 令牌（不含真实凭据）。

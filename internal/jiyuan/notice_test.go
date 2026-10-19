@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestReadOnlySessionReturnsNoticeNotParseError 只读栏的结论必须是 Notice。

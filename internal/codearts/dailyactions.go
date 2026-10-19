@@ -41,7 +41,7 @@
 // 它跟着**事实**走，不是跟着历史形态走。
 package codearts
 
-import "github.com/NaiZi899/omni2api/internal/gateway"
+import "github.com/NaiZi899/Naibox/internal/gateway"
 
 // DailyActionWelfare 福利领取动作的 ID。
 //

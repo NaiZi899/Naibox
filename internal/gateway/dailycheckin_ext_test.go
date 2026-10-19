@@ -21,12 +21,12 @@ import (
 	"context"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/codearts"
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/lobsterai"
-	"github.com/NaiZi899/omni2api/internal/qoder"
-	"github.com/NaiZi899/omni2api/internal/trae"
-	"github.com/NaiZi899/omni2api/internal/workbuddy"
+	"github.com/NaiZi899/Naibox/internal/codearts"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/lobsterai"
+	"github.com/NaiZi899/Naibox/internal/qoder"
+	"github.com/NaiZi899/Naibox/internal/trae"
+	"github.com/NaiZi899/Naibox/internal/workbuddy"
 )
 
 // checkinProviders 本轮**必须有**全量签到入口的上游。

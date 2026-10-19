@@ -1,6 +1,6 @@
 package cline
 
-import "github.com/NaiZi899/omni2api/internal/gateway"
+import "github.com/NaiZi899/Naibox/internal/gateway"
 
 // credentialtoken.go —— cline 自报「这份凭证有可用的 access token 吗」。
 //

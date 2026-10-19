@@ -16,8 +16,8 @@ package workbuddy
 import (
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 // TestWorkbuddyClassifyMatchesUpstreamClassify 是**逐字不变**的主闸门。

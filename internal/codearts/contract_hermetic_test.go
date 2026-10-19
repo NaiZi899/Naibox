@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 让 `gateway.RunProviderContract` **在 CI 里真的跑起来** —— 判据 2 的 enforcement。

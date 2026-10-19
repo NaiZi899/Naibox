@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/server"
+	"github.com/NaiZi899/Naibox/internal/server"
 )
 
 // bootDesktopConfig 桌面形态的最小配置：监听 127.0.0.1:0（端口交给系统），

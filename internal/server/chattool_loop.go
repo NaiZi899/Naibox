@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/wire"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/wire"
 )
 
 // toolLoopParams 一次工具循环的入参。

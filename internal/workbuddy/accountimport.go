@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // accountimport.go workbuddy 自报「怎么把一段 JSON 变成我的一份凭证」。

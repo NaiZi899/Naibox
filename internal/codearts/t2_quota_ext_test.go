@@ -3,7 +3,7 @@ package codearts
 import (
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // T2：`gateway.QuotaExt` 在 codearts 上的实现（RefreshQuota）。

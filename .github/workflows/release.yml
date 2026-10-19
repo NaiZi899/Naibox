@@ -15,10 +15,10 @@ name: Release
 # v1.7.0 的 Release 上有 **7 个**资产，但实际只有 5 个平台 ——
 # 因为两套命名并存：
 #
-#   CI 编的：  omni2api-server-windows-amd64.zip
-#              omni2api-server-linux-amd64.tar.gz
-#   本机编的： omni2api-server-v1.7.0-windows-amd64.zip
-#              omni2api-server-v1.7.0-linux-amd64.zip
+#   CI 编的：  Naibox-server-windows-amd64.zip
+#              Naibox-server-linux-amd64.tar.gz
+#   本机编的： Naibox-server-v1.7.0-windows-amd64.zip
+#              Naibox-server-v1.7.0-linux-amd64.zip
 #              （还有 linux-arm64 / darwin-amd64 / darwin-arm64）
 #
 # 其中 windows-amd64 与 linux-amd64 **各重复了一次**，且命名风格还不一致
@@ -28,18 +28,18 @@ name: Release
 # 所以现在的约定是：
 #
 #   **所有平台都由本 workflow 出，本机不再手工上传任何产物。**
-#   命名统一为 `omni2api-server-<goos>-<goarch>.<zip|tar.gz>`（不带版本号 ——
+#   命名统一为 `Naibox-server-<goos>-<goarch>.<zip|tar.gz>`（不带版本号 ——
 #   版本信息在 Release tag 与 zip 内的二进制里，文件名带版本号只会让
 #   "同一个 tag 重发"产生两个名字）。桌面壳沿用同一套形状：
 #   `NaiBox-windows-amd64.zip`（它只有 windows-amd64 一种）。
 #
 # # 产物
 #
-#   omni2api-server-windows-amd64.zip      含 exe + config.example.json + start.bat
-#   omni2api-server-linux-amd64.tar.gz     含可执行文件 + config.example.json
-#   omni2api-server-linux-arm64.tar.gz
-#   omni2api-server-darwin-amd64.tar.gz
-#   omni2api-server-darwin-arm64.tar.gz
+#   Naibox-server-windows-amd64.zip      含 exe + config.example.json + start.bat
+#   Naibox-server-linux-amd64.tar.gz     含可执行文件 + config.example.json
+#   Naibox-server-linux-arm64.tar.gz
+#   Naibox-server-darwin-amd64.tar.gz
+#   Naibox-server-darwin-arm64.tar.gz
 #   NaiBox-windows-amd64.zip     含 NaiBox.exe（GUI 子系统，
 #                                          无控制台窗）+ config.example.json + README.txt
 #   SHA256SUMS.txt                        上面六者的校验和（合并成一份）
@@ -141,14 +141,14 @@ jobs:
           # -trimpath 必须保留：去掉本机绝对路径与 module 缓存路径
           # -s -w 去掉符号表与 DWARF，体积约减小 30%
           go build -trimpath -ldflags="-s -w" \
-            -o "dist/omni2api-server${{ matrix.ext }}" ./cmd/server
+            -o "dist/Naibox-server${{ matrix.ext }}" ./cmd/server
 
       - name: Assemble package
         run: |
           set -e
-          PKG="omni2api-server-${{ matrix.goos }}-${{ matrix.goarch }}"
+          PKG="Naibox-server-${{ matrix.goos }}-${{ matrix.goarch }}"
           mkdir -p "pkg/$PKG"
-          cp "dist/omni2api-server${{ matrix.ext }}" "pkg/$PKG/"
+          cp "dist/Naibox-server${{ matrix.ext }}" "pkg/$PKG/"
           cp config.example.json "pkg/$PKG/"
           # Windows 包额外带上 start.bat（双击即用）。
           # 其它平台不带：那些平台的用户习惯自己写启动脚本，
@@ -371,12 +371,12 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           echo "检查 $TAG 上的资产是否符合命名规范…"
           # 允许的名字：
-          #   omni2api-server-<windows|linux|darwin>-<amd64|arm64>.<zip|tar.gz>
+          #   Naibox-server-<windows|linux|darwin>-<amd64|arm64>.<zip|tar.gz>
           #   NaiBox-windows-amd64.zip
           #   SHA256SUMS.txt（单独一条 grep -v，见下）
           STALE=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '.assets[].name' \
-            | grep -Ev '^(omni2api-server-(windows|linux|darwin)-(amd64|arm64)\.(zip|tar\.gz)|NaiBox-windows-amd64\.zip)$' \
+            | grep -Ev '^(Naibox-server-(windows|linux|darwin)-(amd64|arm64)\.(zip|tar\.gz)|NaiBox-windows-amd64\.zip)$' \
             | grep -v '^SHA256SUMS\.txt$' || true)
           if [ -z "$STALE" ]; then
             echo "没有残留资产。"

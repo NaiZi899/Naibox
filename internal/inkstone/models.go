@@ -8,7 +8,7 @@ package inkstone
 import (
 	"context"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // inkstoneModels 书生·端砚官方模型表（GET /v1/models 实测，10 个）。

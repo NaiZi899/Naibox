@@ -9,7 +9,7 @@
 - Windows 上开发完全可以；CI 跑在 Linux 上
 
 ```bash
-git clone https://github.com/NaiZi899/omni2api.git
+git clone https://github.com/NaiZi899/Naibox.git
 cd omni2api
 cp config.example.json config.json     # 填自己的 api_key；config.json 已被 .gitignore 忽略
 go build -o omni2api-server ./cmd/server

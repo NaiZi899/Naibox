@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/logbuf"
+	"github.com/NaiZi899/Naibox/internal/logbuf"
 )
 
 // Task 7：按上游分组（by_provider）。

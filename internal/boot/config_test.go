@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/loomy"
+	"github.com/NaiZi899/Naibox/internal/loomy"
 )
 
 func TestDefault(t *testing.T) {

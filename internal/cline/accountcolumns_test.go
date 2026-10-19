@@ -3,7 +3,7 @@ package cline
 import (
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestAccountColumnsDropsCheckin cline 的列集**不含** checkin。

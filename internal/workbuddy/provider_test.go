@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // Task 3a：把 workbuddy 上游适配成 gateway.Provider。

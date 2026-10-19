@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // loginSessionTTL 一次进行中的登录会话保留多久（等用户走完浏览器流程）。

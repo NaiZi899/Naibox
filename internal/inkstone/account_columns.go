@@ -5,7 +5,7 @@
 // 故不占 token_expiry 列（显示 — 没意义）。无签到/福利概念，故无 checkin/welfare 列。
 package inkstone
 
-import "github.com/NaiZi899/omni2api/internal/gateway"
+import "github.com/NaiZi899/Naibox/internal/gateway"
 
 // AccountColumns 实现 gateway.AccountColumnsExt。
 func (p *Provider) AccountColumns() []string {

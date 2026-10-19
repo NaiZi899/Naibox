@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // TestStreamGuardDefaultsAreSafe 守住"配置缺省方向必须更安全"。

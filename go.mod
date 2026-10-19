@@ -1,4 +1,4 @@
-module github.com/NaiZi899/omni2api
+module github.com/NaiZi899/Naibox
 
 go 1.22.5
 

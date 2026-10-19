@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // mkToken 造一个带 iat/exp 的 JWT（cline 的 token 形态是 `workos:<jwt>`）。

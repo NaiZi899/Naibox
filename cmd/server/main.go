@@ -13,7 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/NaiZi899/omni2api/internal/boot"
+	"github.com/NaiZi899/Naibox/internal/boot"
 )
 
 func main() {

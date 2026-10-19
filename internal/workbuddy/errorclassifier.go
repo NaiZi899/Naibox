@@ -35,8 +35,8 @@ package workbuddy
 // 与 errorclassifier_test.go 的镜像测试）。
 
 import (
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/upstream"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/upstream"
 )
 
 // 编译期断言（与 CredentialRefresher / CredentialLoader / AuthDirExt /

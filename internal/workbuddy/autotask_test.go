@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // TestAutoActionsTableComplete 动作表必须覆盖 17 个任务，且 TaskCode 无重复。

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // newQuotaServer 假余额上游（qoder：/sash/api/v2/me/usage 的 total）。

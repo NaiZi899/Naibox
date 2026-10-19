@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // schedule GET /admin/schedule —— 下一次唤醒时刻与当前时点设置。
