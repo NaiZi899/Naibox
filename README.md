@@ -9,13 +9,15 @@
   统一鉴权 · 账号池轮转 · 熔断与冷却 · 会话粘性 · 定时签到与续期 · 桌面版与控制台
 </p>
 
-> **关于名字**：界面与可执行文件的产品名是 **NaiBox**；仓库名、Go 模块路径、
-> `/healthz` 的 `service` 字段仍是 `omni2api`——模块路径改名会打断所有既有部署的
-> import 与数据目录约定，而 `service` 是桌面版判断"端口上那个是不是自己"的协议标识。
+> **关于名字**。界面、可执行文件、仓库和 Go 模块路径都叫 **NaiBox** / `Naibox`。
+> 有两处还留着旧的 `omni2api`，都是故意的。`/healthz` 回执里的 `service` 字段
+> 是桌面版判断"端口上那个是不是自己"的协议标识，改了会让新旧版本互相认不出；
+> `%APPDATA%\omni2api` 是数据目录，改了等于让所有升级的人找不到原有账号。
+> 从 v1.1 起这两个名字就没再跟着产品走，属于兼容性遗留。
 
 ## 这是什么
 
-**NaiBox 是一个多上游聚合反代网关**：把多个上游账号聚合成一个 OpenAI 兼容的
+**NaiBox 是一个多上游聚合反代网关**。它把多个上游账号聚合成一个 OpenAI 兼容的
 `base_url` + `api_key`。你的应用只认 OpenAI 协议，网关负责背后的上游选号、额度、
 签到、续期、冷却与排障。
 
@@ -34,8 +36,8 @@
                        └──► Jiyuan             基元律动（TokenRhythm）
 ```
 
-"加一个上游 = 加一个目录 + 实现一组接口 + 配置加一段，**核心零改动**"——这条判据
-由 `internal/gateway/arch_test.go` 的**可执行断言**守着（不是约定）：
+"加一个上游 = 加一个目录 + 实现一组接口 + 配置加一段，**核心零改动**"。这条判据
+由 `internal/gateway/arch_test.go` 的**可执行断言**守着，不是靠约定。
 
 - 核心包不得依赖任何具体上游
 - 上游之间不得互相依赖
@@ -55,12 +57,12 @@
 | 数据 | 当前工作目录下的 `config.json` / `auths` / `data` | `%APPDATA%\omni2api\` |
 | 典型场景 | 服务器 / Docker / 长期在线 | 个人电脑，双击即用 |
 
-桌面版**不是**另一套实现：它复用同一个 `boot.Run`，窗口只是 `Navigate` 到
+桌面版没有第二套实现，它复用同一个 `boot.Run`，窗口只是 `Navigate` 到
 `127.0.0.1:<port>/ui`。所以两者的账号池、配置、上游行为、HTTP 契约完全一致。
 
 ## 🖥 桌面版
 
-**数据与程序分离**：数据根固定在 `%APPDATA%\omni2api\`，程序目录可以随便删、
+**数据与程序分离**。数据根固定在 `%APPDATA%\omni2api\`，程序目录可以随便删、
 随便换版本。卸载/覆盖安装不影响账号。
 
 | 项 | 行为 |
@@ -73,18 +75,18 @@
 | 托盘菜单 | 打开控制台 / 在浏览器中打开 / 打开数据目录 / 查看今日日志 / 备份数据 / 开机自启 / 重启服务 / 退出 |
 | 兜底 | 系统缺 WebView2 Runtime 时自动回落「托盘 + 默认浏览器」，不会白屏 |
 
-几个刻意为之的细节：
+下面几个细节是刻意为之的。
 
 - **关窗不直接退出**是默认行为（首次会问一次），因为网关是"一直在跑"的东西，
-  点 X 就把账号池停掉是反直觉的。系统关机（`WM_QUERYENDSESSION`）永远放行——
-  拦关机会被强杀，`state.json` 来不及落盘。
+  点 X 就把账号池停掉是反直觉的。系统关机（`WM_QUERYENDSESSION`）永远放行，
+  因为拦关机会被强杀，`state.json` 来不及落盘。
 - **托盘图标必须给 ICO 内容，不能给 PNG**。`energye/systray` 在 Windows 上走
   `LoadImageW`，它只按 ICO/CUR 内容解析；喂 PNG 的结果是内部打一行
-  `systray error: unable to set icon` 就返回——不 panic、不报错、托盘直接没图标。
+  `systray error: unable to set icon` 就返回。不 panic、不报错，托盘直接没图标。
 - **窗口图标 ≠ 文件图标**。资源管理器读 exe 的 PE 资源，标题栏/任务栏/Alt-Tab 读
   窗口图标（`WM_SETICON`）。两者都要设，否则标题栏是 Windows 的默认空白图标。
-- **桌面形态下 `listen` 的空 host 会收敛到 `127.0.0.1`**：`":7863"` 在 Go 里等于
-  监听所有网卡，而 `/ui` 对回环来源会自动注入 `api_key`——绑通配等于同网段任何人
+- **桌面形态下 `listen` 的空 host 会收敛到 `127.0.0.1`**。`":7863"` 在 Go 里等于
+  监听所有网卡，而 `/ui` 对回环来源会自动注入 `api_key`。绑通配等于同网段任何人
   都能打开控制台。服务端形态不受影响（Docker 端口映射依赖通配）。
 
 ## 🐾 已接入上游
@@ -104,74 +106,102 @@
 | **Jiyuan**（基元律动 / TokenRhythm） | API Key（`sk-…`） | 模型目录（实时拉取，失败回落内置静态表）/ 批量导入（`sk_` 与 `sess_` 两种形态）/ 实时余额 |
 
 > ⚠ `inkstone` 与 `jiyuan` 的配置段**缺省即启用**（与其它的 opt-in 相反）。
-> 理由：它们加进代码时没同步进示例配置，而"段缺席 = 不加载"会让存量部署
+> 理由是它们加进代码时没同步进示例配置，而"段缺席 = 不加载"会让存量部署
 > 永远看不到这两个上游。它们的 Caps 只有 `chat|models|import`、没有签到/保活，
 > 所以"默认启用但没凭证"不产生任何周期请求，只是界面多一个空分组。
 > 想关掉就显式写 `"enabled": false`。
 
 ## 🚀 快速开始
 
-### A. 下载预编译二进制
+### A. 下载预编译包
 
-到 [Releases](../../releases) 下载（用 `SHA256SUMS.txt` 校验）：
+到 [Releases](../../releases) 取包。每版都附 `SHA256SUMS.txt`，建议先校验。
 
-**Windows 桌面版**（推荐个人使用）
-
-```
-NaiBox-windows-amd64.zip     →  NaiBox.exe + config.example.json + README.txt
+```bash
+sha256sum -c SHA256SUMS.txt
 ```
 
-解压双击即可，数据在 `%APPDATA%\omni2api\`。
-
-**服务端**（Linux / macOS / 需要对外提供服务时）
+**Windows 桌面版**，个人使用选这个。压缩包里有三样东西。
 
 ```
-omni2api-server-windows-amd64.zip
-omni2api-server-linux-amd64.tar.gz      omni2api-server-linux-arm64.tar.gz
-omni2api-server-darwin-amd64.tar.gz     omni2api-server-darwin-arm64.tar.gz
+NaiBox-windows-amd64.zip    →  NaiBox.exe + config.example.json + README.txt
 ```
 
-全部产物由 CI 构建（本机不手工上传），命名即上表。
+解压后双击 `NaiBox.exe`，窗口里直接就是控制台，不需要先准备配置文件（首次启动
+会用内嵌模板在 `%APPDATA%\omni2api\` 生成一份）。包目录可以随便删、随便换版本，
+账号数据不在里面。
+
+**服务端**，Linux / macOS，或者需要对外提供服务时用。
+
+```
+Naibox-server-windows-amd64.zip
+Naibox-server-linux-amd64.tar.gz      Naibox-server-linux-arm64.tar.gz
+Naibox-server-darwin-amd64.tar.gz     Naibox-server-darwin-arm64.tar.gz
+```
+
+包里有二进制和 `config.example.json`，Windows 包另外带 `start.bat`。所有包都由
+CI 构建，本机不手工上传。
+
+这一步最容易卡在配置上。直接跑起来的是一个**没有任何上游**的空网关，能打开
+界面但发不出请求。要先复制配置再改两处，一处填 `api_key`（调用方鉴权用），
+一处把要用的上游 `enabled` 改成 `true`。
 
 ```bash
 # Windows 服务端
-unzip omni2api-server-windows-amd64.zip
-cp config.example.json config.json     # 编辑：开上游、填 api_key
-./omni2api-server -config config.json
+unzip Naibox-server-windows-amd64.zip
+cd Naibox-server-windows-amd64
+cp config.example.json config.json
+# 编辑 config.json
+./Naibox-server -config config.json
 ```
 
-### B. 从源码构建
+看到 `omni2api listening on 127.0.0.1:7863` 就是起来了，浏览器打开
+`127.0.0.1:7863/ui` 进控制台。
+
+### B. 从源码构建服务端
+
+需要 Go 1.22 或更新（CI 用 1.22）。
 
 ```bash
-go build -o omni2api-server ./cmd/server    # Go ≥ 1.22（CI 用 1.22）
-./omni2api-server -config config.json
+go build -o Naibox-server ./cmd/server
+./Naibox-server -config config.json
 ```
 
-### C. 构建桌面版
+这样编出来的二进制和 Release 里那个功能相同，差别只在版本号停在开发期默认值。
+服务端只认 `-config` 一个参数，没有 `-version`；要确认版本请对照 tag 或看控制台。
+
+### C. 从源码构建桌面版
+
+Windows 上跑脚本，三步都在里面。
 
 ```powershell
-pwsh scripts/build-desktop.ps1     # 生成图标（纯 Go）→ 生成 rsrc.syso → 构建 -H windowsgui
+pwsh scripts/build-desktop.ps1
 ```
 
-不要直接 `go build ./cmd/desktop`——那样缺图标与 DPI manifest（链接器只收集
-参与构建的包目录里的 `.syso`，而它是构建期派生物、不入库）。
+它会先用 `tools/genicon` 把图标画成 ICO，再用 `rsrc` 打成 `rsrc.syso`，最后带
+`-H windowsgui` 链接，产物是 `dist/NaiBox.exe`。
+
+不要图省事直接 `go build ./cmd/desktop`。链接器只收集**参与构建的包目录里**的
+`.syso`，而它属于构建期派生物、不入库，所以那条命令出来的 exe 没有图标、也没有
+DPI 声明。程序能跑，只是任务栏里是个白框，高分屏上还会糊。脚本末尾会读 PE 头
+验证这两件事，你可以照着它的输出确认。
 
 ## 添加账号
 
-控制台「账号池」分组行点「＋ 添加账号」，各上游走自己的流程：
+控制台「账号池」分组行点「＋ 添加账号」，各上游走自己的流程。
 
 - **WorkBuddy / CodeArts / TRAE / LobsterAI / Qoder / Raccoon**：点「添加账号」后
   由网关用无痕窗口自动打开授权页（授权页里各有扫码 / 设备码 / 手机号）。
   窗口被关掉时可点「复制链接」粘贴到无痕/隐私窗口。Raccoon 还额外把防串号标识
   放进 `redirect` 的 query（`nonce`）而不是 `state`。
-- **Cline**：WorkOS 设备码轮询，不起本地端口——服务器部署也能用。
+- **Cline**：WorkOS 设备码轮询，不起本地端口，服务器部署也能用。
 - **Loomy**：输手机号 + 验证码登录；或「批量导入」粘贴 JSON；或把凭证放进
   `auths/loomy/loomy-<uid>.json` 后点「重载 auths」。
 - **InkStone / Jiyuan**：上游不提供可自动化的页内登录，只能**批量导入** Key
   （jiyuan 还支持 `sess_` 登录凭证，用于查实时余额）。
 
 > **关于无痕窗口**：默认给浏览器一份独立 profile（临时目录），本次授权从零 cookie
-> 开始——避免浏览器里已登录的账号把会话串到别的账号上。代价是需重新输入账号密码。
+> 开始，避免浏览器里已登录的账号把会话串到别的账号上。代价是需重新输入账号密码。
 
 ## 🖥 管理控制台
 
@@ -274,14 +304,14 @@ curl http://127.0.0.1:7863/v1/chat/completions \
 
 `supports_images`（能不能把图**发进去**）与 `capabilities:["image_generation"]`
 （能不能让上游**生图出来**）是**两个轴**，不是一回事。前者是**逐上游**的事实，
-不由模型名推断——同一个 `glm-5.2` 在 `workbuddy` 上可能是 `true`、在 `trae` 上 `false`。
+不由模型名推断。同一个 `glm-5.2` 在 `workbuddy` 上可能是 `true`、在 `trae` 上 `false`。
 
 ## 🛡 安全
 
 - 默认只绑本机；对外暴露请自行加反向代理与更严格的鉴权。
 - 凭证按上游分目录存于 `auths/`（已 gitignore）；控制台昵称自动打码。
 - `auths/`、`data/`、`config.json`、`logs/`、`.build/`、`dist/` 全部不入库。
-- 发布产物未做代码签名，双击时 SmartScreen 会提示"未知发布者"——这是未签名
+- 发布产物未做代码签名，双击时 SmartScreen 会提示"未知发布者"。这是未签名
   exe 的必然现象，不是中毒。校验请用 `SHA256SUMS.txt`。
 - 本项目面向**自有账号**的自动化管理与协议理解；请遵守各上游的服务条款与额度限制。
 
@@ -295,7 +325,7 @@ gofmt -l .                            # 格式检查
 
 > ⚠ Windows 上 `gofmt -l .` 会误报（CRLF 被当成格式问题）。本地判真实情况要先做
 > LF 归一化；CI（Linux）不受影响。`.gitattributes` 已对 `webui.html` / `favicon.svg` /
-> 内嵌的 `.md` 关掉换行转换——它们是被 `//go:embed` 逐字节内嵌的数据，
+> 内嵌的 `.md` 关掉换行转换，因为它们是被 `//go:embed` 逐字节内嵌的数据，
 > 两个平台的字节数不同会让产物不同构。
 
 - **架构**：`internal/gateway` 是唯一接缝（`Provider` 4 方法 + 若干可选扩展点：
@@ -303,7 +333,7 @@ gofmt -l .                            # 格式检查
   生图 / 对话工具 / 诊断端点…）。`internal/boot` 是装配层，`cmd/server` 与
   `cmd/desktop` 共用它。
 - **图标**：仓库里没有 `.ico` / `.png`。图形由 `internal/icon`（纯标准库）用代码画，
-  构建期 `tools/genicon` 生成 6 帧 ICO，运行时托盘调同一个包——
+  构建期 `tools/genicon` 生成 6 帧 ICO，运行时托盘调同一个包。
   `assets/icon/app.svg` 是设计规格，`internal/server/favicon.svg` 是同一套几何的站点图标。
 - **CI**（`.github/workflows/ci.yml`）：`go mod tidy` 检查 / build / vet / gofmt /
   全量测试，五项门禁。
@@ -327,7 +357,7 @@ go test ./... -count=1
   `internal/boot/boot.go` 里一行 `registry.Register(...)`；
   `internal/gateway/arch_test.go` 会验证包依赖方向没被破坏。
 - **新增上游时顺手改三处示例**：`config.example.json`、`internal/desktop/defaultconfig.example.json`、
-  本 README 的上游表格。漏掉前两处的表现是"代码有、成品里没有"——
+  本 README 的上游表格。漏掉前两处的表现是"代码有、成品里没有"，
   有 `internal/desktop/config_drift_test.go` 守着。
 - **提交信息**：`<type>(<scope>): <摘要>`，type 取 `feat` / `fix` / `docs` /
   `refactor` / `test` / `chore`。
