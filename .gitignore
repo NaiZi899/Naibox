@@ -4,6 +4,23 @@ data/
 *.key
 *.pem
 
+# 运行期状态文件（含账号活动，绝不进版本库）
+#
+# 上面 data/ 已经盖住「数据根 = ./data」这个默认布局，但数据根是可配的：
+# 用 `--data-dir .`（或 portable 模式）跑一次，这些文件就直接落在仓库根，
+# 一次 `git add -A` 就全带上去。所以按**文件名**再挡一层。
+#
+# request-log.jsonl 尤其危险：每行含 uid / 模型 / token 用量 / 上游标识，
+# 等于把账号活动全量公开。*（任意层级）而不是根锚定 —— 它也可能被指到子目录。
+*.jsonl
+# state.json 是账号池运行态（UID、冷却、额度、熔断计数）。
+# 根锚定：测试夹具里同名文件不该被误伤。
+/state.json
+# window.json 是桌面壳的窗口几何（含用户屏幕布局）。
+/window.json
+# 签到记录（含 uid 与奖励明细）。
+/checkin-log.json
+
 # Binaries (anchored to repo root only — bare "login"/"credit" would also ignore cmd/login/, cmd/credit/)
 /login
 /credit
