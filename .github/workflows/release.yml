@@ -316,13 +316,19 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      # fetch-depth: 0 是**必需**的，不是保守选择。
+      # fetch-depth: 0 是为了消除一处**依赖实现细节**的隐患。
       #
-      # 下面用 `gh release create --notes-from-tag` 取 Release 说明，而它是
-      # 读**本地 git** 的 annotated tag 对象（tag message 存在 tag 对象里，
-      # 不在 commit 里）。默认的浅克隆（fetch-depth: 1）拿不到它 ——
-      # 表现会是说明为空或 gh 直接报错，而这发生在"发版"这一步，
-      # 等到发现时 tag 已经推出去了。
+      # 下面用 `gh release create --notes-from-tag` 取 Release 说明，它读的是
+      # **本地 git 的 annotated tag 对象**（tag message 存在 tag 对象里，
+      # 不在 commit 里）。
+      #
+      # 实测：显式 fetch 了 tag ref 的浅克隆能读到 message（1384 字节）；
+      # 但 actions/checkout 在 tag 事件下的 fetch 策略依版本而变 —— 有的版本
+      # 只取 commit SHA 再 detached checkout，tag 对象就不在本地。那时
+      # `--notes-from-tag` 会拿到空说明或直接报错，而失败点在"发布"这一步，
+      # tag 已经推出去了。
+      #
+      # 拉全历史换取"一定读得到"，代价只是这个仓库的 clone 时间。
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
