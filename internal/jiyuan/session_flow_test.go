@@ -34,7 +34,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // fakeUpstream 一个可编排的假上游。
@@ -57,6 +57,12 @@ type fakeUpstream struct {
 	keyPrefixes map[string]string
 	// overrideUsage 若非空，`/api/usage-summary` 直接回它（用于测币种等边界）。
 	overrideUsage string
+	// keysStatus 非 0 时 `/api/api-keys` 直接回这个状态码（模拟上游 5xx/429）。
+	//
+	// 用来钉住一条**曾经把用户带偏**的分支：列表读失败时若把错误吞掉，
+	// 用户会看到「凭证有效、只是没有能配对的 key」，于是跑去补 key ——
+	// 实际该做的是等一会儿重试。
+	keysStatus int
 }
 
 func newFakeUpstream() *fakeUpstream {
@@ -98,6 +104,11 @@ func (f *fakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, `{"code":0,"message":"ok","data":{"balanceCny":"120.00000000","availableBalanceCny":"99.75000000","frozenBalanceCny":"20.25000000","expiringBalanceCny":"80.75000000","currency":"CNY"}}`)
 
 	case r.Method == http.MethodGet && r.URL.Path == "/api/api-keys":
+		if f.keysStatus != 0 {
+			w.WriteHeader(f.keysStatus)
+			writeJSON(w, `{"code":"UPSTREAM_ERROR","message":"上游暂时不可用"}`)
+			return
+		}
 		// **关键**：列表只给 maskedKey（上游事实），但给**未脱敏的 keyPrefix**
 		//（那是 session↔key 配对的唯一依据，见 import.go）。
 		var items []string
@@ -428,5 +439,120 @@ func TestFlowCreateRequiresAuthorization(t *testing.T) {
 	}
 	if f.creates != 1 {
 		t.Errorf("应创建 1 次，得到 %d", f.creates)
+	}
+}
+
+// TestFlowSessionRefreshesAutoNickname 挂 session 时刷新**自动派生**的昵称。
+//
+// 现象（改造前）：用「API Key」栏导入的号昵称是 uid 前 8 位，
+// 之后再贴 sess_ 导入，明明从 /api/me 拿到了账号名（demo-user），
+// 表格里却还是那串 uid —— 注释声称"昵称会被刷新"，实现里根本没有那一行。
+func TestFlowSessionRefreshesAutoNickname(t *testing.T) {
+	f := newFakeUpstream()
+	f.serve(t)
+
+	dir := t.TempDir()
+	const full = "sk_tr_EXAMP1_FAKE_FULL_KEY_FOR_TESTS"
+	// 用 API Key 栏导入的形态：昵称留空 → NewAuth 自动派生成 uid 前 8 位。
+	auto := NewAuth(full, "")
+	if auto.Nickname == "" || auto.Nickname != ShortUID(auto.UID) {
+		t.Fatalf("夹具前提不成立：自动昵称应等于 uid 前缀，得到 %q / uid=%q", auto.Nickname, auto.UID)
+	}
+	if err := writeAuth(t, dir, auto); err != nil {
+		t.Fatalf("写凭证: %v", err)
+	}
+	f.keys["demo-a"] = full
+	f.keyPrefixes["demo-a"] = full[:12]
+
+	p := New(Config{AuthDir: dir})
+	creds, err := p.ImportCredentials("sess_fake_session_value", importKindSession)
+	if err != nil {
+		t.Fatalf("应挂载成功: %v", err)
+	}
+	if len(creds) != 1 {
+		t.Fatalf("应挂载 1 份，得到 %d", len(creds))
+	}
+	if creds[0].Nickname != "demo-user" {
+		t.Errorf("自动派生的昵称应被上游账号名刷新，得到 %q", creds[0].Nickname)
+	}
+	// 落盘内容必须与回执一致（否则界面显示对了、磁盘还是旧的）。
+	if !strings.Contains(string(creds[0].Raw), "demo-user") {
+		t.Errorf("落盘凭证里应是刷新后的昵称:\n%s", string(creds[0].Raw))
+	}
+}
+
+// TestFlowSessionKeepsUserNickname 用户手打的标签**不**被上游账号名冲掉。
+//
+// 用户用 `<key> <标签>` 起的名字更贴近他自己的用法（"主力号" / "测试用"），
+// 拿账号名盖掉等于替他改写数据 —— 而这次改动只是为了补上"从没写过昵称"
+// 那个缺口，不该顺手扩大行为。
+func TestFlowSessionKeepsUserNickname(t *testing.T) {
+	f := newFakeUpstream()
+	f.serve(t)
+
+	dir := t.TempDir()
+	const full = "sk_tr_EXAMP1_FAKE_FULL_KEY_FOR_TESTS"
+	labeled := NewAuth(full, "主力号")
+	if err := writeAuth(t, dir, labeled); err != nil {
+		t.Fatalf("写凭证: %v", err)
+	}
+	f.keys["demo-a"] = full
+	f.keyPrefixes["demo-a"] = full[:12]
+
+	p := New(Config{AuthDir: dir})
+	creds, err := p.ImportCredentials("sess_fake_session_value", importKindSession)
+	if err != nil {
+		t.Fatalf("应挂载成功: %v", err)
+	}
+	if len(creds) != 1 {
+		t.Fatalf("应挂载 1 份，得到 %d", len(creds))
+	}
+	if creds[0].Nickname != "主力号" {
+		t.Errorf("用户标签不该被改写，得到 %q（期望 主力号）", creds[0].Nickname)
+	}
+}
+
+// TestFlowSessionListFailureIsReported 上游 Key 列表读失败必须**说出来**。
+//
+// # 这条守的是什么
+//
+// 改造前是 `entries, _ := fetchAPIKeyEntries(...)` —— 错误被吞掉之后，
+// 无论"上游 5xx 读不到"还是"读到了但一把都对不上"，用户看到的都是
+// 同一句话：「当前账号下的 key 与池里的凭证一把都没对上，二选一」。
+// 前者该做的是等一会儿重试，后者该做的是去复制完整 key —— 一句话把
+// 用户引到错的动作上，就是这条用例要防的回归。
+func TestFlowSessionListFailureIsReported(t *testing.T) {
+	f := newFakeUpstream()
+	f.keysStatus = http.StatusServiceUnavailable // 上游管理面挂了
+	f.serve(t)
+
+	dir := t.TempDir()
+	const full = "sk_tr_EXAMP1_FAKE_FULL_KEY_FOR_TESTS"
+	if err := writeAuth(t, dir, NewAuth(full, "已有账号")); err != nil {
+		t.Fatalf("写凭证: %v", err)
+	}
+	f.keys["demo-a"] = full
+	f.keyPrefixes["demo-a"] = full[:12]
+
+	p := New(Config{AuthDir: dir})
+	_, err := p.ImportCredentials("sess_fake_session_value", importKindSession)
+	if err == nil {
+		t.Fatal("列表读失败时必须有说明，不能静默成功")
+	}
+	if !gateway.IsImportNotice(err) {
+		t.Errorf("应仍是说明性结论（不是解析失败），得到: %T", err)
+	}
+	msg := err.Error()
+	// ① 必须点明"读不到"，而不是"对不上"。
+	if !strings.Contains(msg, "读上游 Key 列表失败") {
+		t.Errorf("应明确说'读不到 key 列表'，实际:\n%s", msg)
+	}
+	// ② 不能再说"一把都没对上" —— 那种情形下我们**根本不知道**对不对得上。
+	if strings.Contains(msg, "一把都没对上") {
+		t.Errorf("读失败时不得断言'一把都没对上'（这是把用户引向错的动作），实际:\n%s", msg)
+	}
+	// ③ 必须给出正确动作：重试。
+	if !strings.Contains(msg, "重试") {
+		t.Errorf("应提示稍后重试，实际:\n%s", msg)
 	}
 }

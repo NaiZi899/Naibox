@@ -30,7 +30,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // 导入形态 ID（与 ImportCredentialKinds 上报的一致）。
@@ -188,7 +188,11 @@ func (p *Provider) importViaSession(ctx context.Context, pasted string) ([]gatew
 		return nil, err
 	}
 	bal, balErr := fetchBalance(ctx, sess)
-	entries, _ := fetchAPIKeyEntries(ctx, sess)
+	// ⚠ 这里的错误**不能吞**（改造前是 `entries, _ :=`）：
+	// 吞掉之后，"上游 Key 列表读失败"会掉进下面"一把都没对上"那条说明里，
+	// 而那句话说的是"凭证有效、只是没有能配对的 key" —— 用户会跑去补 key，
+	// 实际该做的是等一会儿重试（上游 5xx / 429）。
+	entries, listErr := fetchAPIKeyEntries(ctx, sess)
 
 	// 上游形状若变了、真的开始下发完整 key，这里就自动能用（不必再改代码）。
 	if usable := filterUsableKeys(entries); len(usable) > 0 {
@@ -204,8 +208,14 @@ func (p *Provider) importViaSession(ctx context.Context, pasted string) ([]gatew
 		}
 	}
 
-	// 一把也对不上：如实说明，并给出两条可行动的出路。
-	desc := "登录凭证有效。\n" +
+	// 一把也对不上：如实说明，并给出可行动的出路。
+	//
+	// ⚠ 措辞纪律：「登录凭证有效」是 /api/me 与 /api/usage-summary 的成功，
+	// **不是**「导入完成」。改造前这句话开头就是"凭证有效"，后面跟着
+	// "无法凭空造出可用凭证"，用户读成"有效但拿不到东西"—— 于是来问
+	// "为什么显示有效却没有内容"。所以这里第一句就把口径说清：
+	// 这一栏**本来就不新增账号**，它是给已有 key 挂余额用的。
+	desc := "登录凭证有效，但这一栏**不新增账号**。\n" +
 		"  账号：" + firstNonEmpty(ident.Label, "未知") +
 		firstNonEmpty("\n  手机尾号："+ident.PhoneTail, "")
 	if balErr == nil {
@@ -214,12 +224,18 @@ func (p *Provider) importViaSession(ctx context.Context, pasted string) ([]gatew
 			desc += fmt.Sprintf("（其中 %.2f 即将过期）", bal.Expiring)
 		}
 	}
-	desc += "\n\n⚠ 上游只下发**脱敏** key（没有完整值），所以无法凭空造出可用凭证。\n" +
-		"这一栏的作用是：把登录凭证挂到**已用「API Key」栏导入过**的那把 key 上，\n" +
-		"从而使额度列能显示实时余额。\n" +
-		"当前账号下的 key 与池里的凭证**一把都没对上**，二选一：\n" +
-		"  1. 到 tokenrhythm.studio 的 API Key 页复制完整 sk_，用「API Key」栏导入，**再回到这一栏**贴登录凭证以启用余额；\n" +
-		"  2. 用「登录凭证（代开一把 Key 并入库）」栏，由网关替你在上游新建一把并直接入库。"
+	desc += "\n\n为什么：上游只下发**脱敏** key（没有完整值），所以贴 sess_ 换不出可用的 sk_。\n" +
+		"这一栏的作用是：把登录凭证挂到**已用「API Key」栏导进池子**的那把 key 上，\n" +
+		"使「额度」列能读到实时余额。"
+	if listErr != nil {
+		desc += "\n\n✗ 这次**读上游 Key 列表失败**：" + listErr.Error() +
+			"\n  所以现在分不清是「对不上」还是「读不到」。请稍后在同一栏重试一次；" +
+			"\n  若反复失败，说明上游管理面在拒这把登录凭证（与 key 无关，key 照常能推理）。"
+	} else {
+		desc += "\n\n当前账号下的 key 与池里的凭证**一把都没对上**，二选一：\n" +
+			"  1. 到 tokenrhythm.studio 的 API Key 页复制完整 sk_，用「API Key」栏导入，**再回到这一栏**贴登录凭证以启用余额；\n" +
+			"  2. 用「登录凭证（代开一把 Key 并入库）」栏，由网关替你在上游新建一把并直接入库。"
+	}
 	// 用 ImportNotice 而不是普通 error：这是一条**内容为真**的结论，
 	// 不是"你粘错了"。admin 层会原样展示它，不套「导入内容无法解析：」。
 	return nil, gateway.NewImportNotice(desc)
@@ -257,6 +273,18 @@ func (p *Provider) attachSessionToExisting(local []*Auth, entries []apiKey, iden
 		seen[a.UID] = true
 
 		// 刷新可读到的展示事实（都是上游权威值，不猜）。
+		//
+		// 昵称只在"还是自动派生值"时才覆盖：用户自己打的标签
+		//（`<key> <标签>` 那种）比账号名更贴近他的用法，不该被冲掉。
+		//
+		// ⚠ 改造前本函数**没有**写昵称，而上面 importViaSession 的注释
+		// 声称"该账号的昵称/手机尾号被刷新"—— 注释与实现分叉的后果是：
+		// 用登录凭证导入之后，表格「昵称」列仍然显示 uid 前 8 位（如 4a632f30），
+		// 而我们已经知道它叫什么。用户因此对不上"这是谁的号"。
+		if want := strings.TrimSpace(ident.Label); want != "" &&
+			(a.Nickname == "" || a.Nickname == ShortUID(a.UID)) {
+			a.Nickname = want
+		}
 		if ident.PhoneTail != "" {
 			a.PhoneTail = ident.PhoneTail
 		}

@@ -34,7 +34,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/NaiZi899/omni2api/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
 // importMaxBytes 请求体上限。
@@ -136,7 +136,19 @@ func (h *Handler) accountsImport(w http.ResponseWriter, r *http.Request) {
 		// 脱敏 key，所以"这一栏不导入任何账号"。套上"无法解析"会让一句
 		// 「凭证有效，账号 demo-user，余额 99.75」变成看起来像用户的错。
 		if gateway.IsImportNotice(err) {
-			writeError(w, http.StatusBadRequest, err.Error())
+			// 说明性结论（凭证有效但不导入）**不是失败**：不能回 4xx，也不能让
+			// 界面把它打红。改造前这里回 400，前端 catch 到就 toast「导入失败：
+			// 登录凭证有效……」—— 一句"有效"配一个红色失败提示，用户只能读成
+			// "凭证有效但拿不到内容"。现在改成 200 + notice 字段，由前端渲染成
+			// 中性信息弹窗（需要读完的结论，不该塞进 3 秒的 toast）。
+			//
+			// ok=false 仍然保留：确实没有导入任何东西，历史客户端据此也不会误判。
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":       false,
+				"imported": 0,
+				"failed":   0,
+				"notice":   err.Error(),
+			})
 			return
 		}
 		// 解析失败是**用户输入问题**（粘错了内容），不是服务端故障 ——
