@@ -18,7 +18,11 @@ import (
 )
 
 // Version 桌面壳版本（发布构建可用 -ldflags "-X .../desktop.Version=x.y.z" 覆盖）。
-var Version = "0.1.0"
+//
+// 这里的值是**开发期默认值**：release.yml 用 tag 名注入真实版本
+// （见该文件 Build desktop shell 一步）。两者不一致时以注入值为准 ——
+// 所以本地 go build 出来的二进制显示的是这个默认值，别拿它判断发布版本。
+var Version = "1.1.0"
 
 // defaultServiceName 配置里没写 service_name 时的身份标识。
 //

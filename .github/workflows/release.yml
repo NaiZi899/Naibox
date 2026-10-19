@@ -234,9 +234,30 @@ jobs:
         run: |
           # -H=windowsgui：把 PE 子系统设成 GUI，双击不弹黑色控制台窗口。
           # 代价是 stdout/stderr 不再挂控制台，日志得走文件/界面。
-          go build -trimpath -ldflags="-s -w -H=windowsgui" \
+          #
+          # -X 注入版本：desktop.Version 的默认值是开发期占位，真正的版本
+          # 来自 tag。不注入的话，"v1.1 的 Release"里跑着 -version 会打印
+          # 0.1.0 —— 用户据此判断升级有没有生效时会被误导。
+          # `${GITHUB_REF_NAME#v}` 去掉 v 前缀：tag 是 v1.1，版本号要 1.1。
+          go build -trimpath \
+            -ldflags="-s -w -H=windowsgui -X github.com/NaiZi899/Naibox/internal/desktop.Version=${GITHUB_REF_NAME#v}" \
             -o "dist/NaiBox.exe" ./cmd/desktop
           ls -la dist
+
+          # 立刻验证注入真的生效。
+          #
+          # 为什么不直接跑 dist/NaiBox.exe -version：GUI 子系统的 exe 在
+          # 这个 ubuntu runner 上根本跑不起来，而且它的 stdout 不挂控制台。
+          # 所以交叉编一个**同一条 -X** 的 linux 版来跑 —— 验证的是同一个
+          # 链接参数路径与同一个值，而 -X 路径写错时 go build 不报错（静默
+          # 不生效），正是需要这一步的原因。
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
+            -ldflags="-X github.com/NaiZi899/Naibox/internal/desktop.Version=${GITHUB_REF_NAME#v}" \
+            -o /tmp/vercheck ./cmd/desktop
+          echo "--- 注入后的版本 ---"
+          /tmp/vercheck -version
+          /tmp/vercheck -version | grep -q "${GITHUB_REF_NAME#v}" || {
+            echo "✗ 版本注入未生效：-X 路径可能写错（go build 对此不报错）"; exit 1; }
 
       # 光看 go build 返回 0 不够：-H=windowsgui 写错成别的形式、或被后面的
       # 链接参数覆盖，编译器都不会报错；.syso 没被链接进去同样不报错。
