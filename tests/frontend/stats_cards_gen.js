@@ -4,7 +4,14 @@ const html = fs.readFileSync((process.env.WB2API_REPO || __dirname + '/../..') +
 // 模块级常量：renderStats 用到 NODATA（"无数据"占位）。从源码取，避免两处漂移。
 const NODATA = /const NODATA = '([^']*)'/.exec(html)[1];
 const els = {};
-// style 必须存在：新的 renderStatsModels 会设 wrap.style.display
+// window 桩：renderStats 开头有一句 `window._statsCache = s`（供 renderCards
+// 读累计请求数）。Node 里没有 window，缺这个桩会在**第一行**就抛
+// `ReferenceError: window is not defined` —— 表现是整个套件直接崩在 setup 之前，
+// 而不是某条断言变红，所以它长期以"崩"的形式出现、没人认出是缺桩。
+//
+// 用普通对象而不是 globalThis：渲染逻辑只往里写一个属性再读，不需要浏览器语义。
+const window = {};
+// style 必须存在：renderStatsModels 会设 wrap.style.display
 function mkEl(id) { return { id, hidden: true, className: '', textContent: '', innerHTML: '', disabled: false, style: {} }; }
 for (const id of ['statsWindow','statsCards','statsModels','statsModelsWrap','statsCatalogHint']) els[id] = mkEl(id);
 const $ = id => els[id] || (els[id] = mkEl(id));
@@ -19,6 +26,11 @@ function cardValue(key) {
   if (i < 0) return null;
   const m = /<div class="v[^"]*">([^<]*)<\/div>/.exec(h.slice(i));
   return m ? m[1] : null;
+}
+// 卡片清单（按渲染顺序），供"删掉的卡不许回来 / 该有的必须在"两类断言共用。
+function cardKeys() {
+  const h = $('statsCards').innerHTML;
+  return [...h.matchAll(/data-stat-key="([^"]*)"/g)].map(m => m[1]);
 }
 
 function num(v) {
@@ -40,32 +52,12 @@ function fmtCount(v) {
     return n === null ? null : String(Math.round(n));
   }
 
-function fmtCredit(v) {
-    const n = numNonNeg(v);
-    if (n === null) return null;
-    if (n === 0) return '0';
-    return String(Number(n.toFixed(4)));
-  }
-
 function fmtTokens(v) {
     const n = numNonNeg(v);
     if (n === null) return null;
     if (n < 1000) return String(Math.round(n));
     if (n < 1000000) return (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'k';
     return (n / 1000000).toFixed(1) + 'M';
-  }
-
-function fmtRate(v) {
-    const n = num(v);
-    if (n === null || n < 0 || n > 1) return null;
-    return (n * 100).toFixed(1) + '%';
-  }
-
-function fmtBytes(n) {
-    if (!n || n < 0) return '0 B';
-    if (n < 1024) return n + ' B';
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-    return (n / 1024 / 1024).toFixed(1) + ' MiB';
   }
 
 function renderStatsModels(s) {
@@ -111,6 +103,30 @@ function renderStatsModels(s) {
     }).join('');
   }
 
+function statsCardsEntries(s) {
+    if (!s) return [];
+    const total = num(s.total);
+    const ok = num(s.ok);
+    const rate = total && ok !== null ? Math.round((ok / total) * 100) : null;
+    const inTok = numNonNeg(s.prompt_tokens);
+    const outTok = numNonNeg(s.tokens);
+    const sumTok = numNonNeg(s.total_tokens);
+    // 旧后端没有 total_tokens 时退回"输入+输出"；两者都缺才给 null（显示 —）。
+    const totalTokens = sumTok !== null ? sumTok
+      : (inTok === null && outTok === null ? null : (inTok || 0) + (outTok || 0));
+    return [
+      ['总请求', fmtCount(s.total), ''],
+      ['成功', fmtCount(s.ok), ok ? 'ok' : 'dim'],
+      ['失败', fmtCount(s.fail), num(s.fail) ? 'err' : 'dim'],
+      ['成功率', rate === null ? null : rate + '%', rate === null ? 'dim' : rate >= 95 ? 'ok' : rate >= 80 ? 'warn' : 'err'],
+      ['消耗 token', totalTokens ? fmtTokens(totalTokens) : null, totalTokens ? '' : 'dim'],
+      ['输入 token', fmtTokens(inTok), inTok ? '' : 'dim'],
+      ['输出 token', fmtTokens(outTok), outTok ? '' : 'dim'],
+      ['平均 TTFB', fmtCount(s.avg_ttfb_ms) === null ? null : s.avg_ttfb_ms + 'ms', ''],
+      ['平均总耗时', fmtCount(s.avg_total_ms) === null ? null : s.avg_total_ms + 'ms', ''],
+    ];
+  }
+
 function renderStats(s) {
     // 网关状态卡要读累计请求/成功率：存一份供 renderCards 使用
     //（renderCards 在 refresh 里先于 renderStats 调用）。
@@ -143,6 +159,16 @@ function renderStats(s) {
       win = '（未启用日志）';
     }
     if (s.error) win += ' · ' + esc(String(s.error));
+    // 输入侧覆盖率：prompt_tokens 是后加的字段，历史行没有它（反序列化得 0）。
+    // 不把这件事说出来，用户会在改完之后看到"输入 token 只有新数据那么多"，
+    // 再判一次"统计不准"。这里只在不完整时才提，完整时不占版面。
+    const covered = numNonNeg(s.prompt_covered);
+    const derived = numNonNeg(s.prompt_derived);
+    const totalN = numNonNeg(s.total);
+    if (covered !== null && totalN !== null && covered < totalN) {
+      win += ` · 输入侧覆盖 ${Math.round(covered)} 条`
+        + (derived ? `（其中 ${Math.round(derived)} 条由缓存明细反推）` : '');
+    }
     $('statsWindow').textContent = win;
 
     // 成功率：total 缺失或为 0 时不给数字（会得到 0/0 → NaN）。
@@ -157,11 +183,23 @@ function renderStats(s) {
     //
     // 「累计消耗」改成 token（用户本轮要求）：不同上游的 credit 单位不同
     //（积分/额度/点），加起来没有可比性；而 token 是跨上游统一的口径。
-    // 消耗 token = 输出 token + 推理 token（usage 里记录的只有这两个）。
+    //
+    // 「消耗 token」= 输入 + 输出（后端算好的 total_tokens）。
+    //
+    // # 这里修的是两处口径错误，方向相反但同源
+    //
+    // ① 曾经只统计输出侧：本网关跑的是 agentic 客户端，每轮回灌全量历史，
+    //    实测每请求平均 prompt ≈ 9 万、completion ≈ 1 千 —— 只看输出，
+    //    「消耗」只剩真实量的 1~2%，用户看到的就是"总量偏少"。
+    // ② 曾经写成 `tokens + think_tokens`：reasoning 是 completion 的**子集**
+    //    （completion_tokens_details.reasoning_tokens），加第二遍等于高报。
+    //    实测该口径整体高报 58%。
+    //
+    // 现在三个数都由后端给（prompt_tokens / tokens / total_tokens），
+    // 前端只做展示，不再自己拼"总量" —— 否则窗口切换时三块视图又会各算一遍。
     //
     // 计算抽成 statsCardsEntries：renderStats（整页渲染）与无感轮询
     // pollStatsCards（只改数值）共用同一份判据，杜绝两处漂移。
-    const totalTokens = (num(s.tokens) || 0) + (num(s.think_tokens) || 0);
 
     // card 统一渲染：v 为 null 表示缺数据 → 显示占位符 + dim 色。
     // data-stat-key 供无感轮询定位（见 pollStatsCards）。
@@ -176,34 +214,16 @@ function renderStats(s) {
 let fail = 0;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fail++; };
 
+// 夹具形状取自 /admin/stats 的真实响应（含本轮新增的三个 token 键）。
 const base = {
-  total: 743, ok: 700, fail: 43, avg_ttfb_ms: 120, avg_total_ms: 900, tokens: 12345,
+  total: 743, ok: 700, fail: 43, avg_ttfb_ms: 120, avg_total_ms: 900,
+  tokens: 12345, prompt_tokens: 900000, total_tokens: 912345,
   source: 'file', window_from: '2026-09-11T06:59:39+08:00',
-  file: { size: 262144, max_bytes: 8388608 },
   capacity: 500, held: 120, by_model: { 'deepseek-v4-flash': 12 },
 };
 
-// ---------- 1. 落盘占用只显示占用量 ----------
-console.log('\n[1] 落盘占用只显示占用量');
-resetEls(); renderStats({ ...base });
-const used = cardValue('落盘占用');
-ok(used === '256.0 KB', '只渲染占用量 256.0 KB（实际：' + used + '）');
-ok(!String(used).includes('/'), '不含分隔斜杠（不再出现「X / Y」）');
-ok(!String(used).includes('MiB'), '不出现上限 8.0 MiB');
-ok(!$('statsCards').innerHTML.includes('8388608'), '未把 max_bytes 的字节数渲染出来');
-
-// 换一个上限值，输出必须完全不变 —— 证明上限真的不参与渲染
-resetEls(); renderStats({ ...base, file: { size: 262144, max_bytes: 1 } });
-ok(cardValue('落盘占用') === '256.0 KB', '改动 max_bytes 不影响输出（上限确已脱离渲染）');
-
-// 未达 1 MiB / 超过 1 MiB 两种量级
-resetEls(); renderStats({ ...base, file: { size: 512, max_bytes: 8388608 } });
-ok(cardValue('落盘占用') === '512 B', '小于 1KB 时按字节显示');
-resetEls(); renderStats({ ...base, file: { size: 5 * 1024 * 1024, max_bytes: 8388608 } });
-ok(cardValue('落盘占用') === '5.0 MiB', '大于 1MiB 时按 MiB 显示');
-
-// ---------- 2. 窗口文案不再带起始时刻 ----------
-console.log('\n[2] 窗口文案只报条数');
+// ---------- 1. 窗口文案只报条数 ----------
+console.log('\n[1] 窗口文案只报条数');
 resetEls(); renderStats({ ...base });
 const w = $('statsWindow').textContent;
 ok(w === '（全部落盘历史，共 743 条）', '文案为「（全部落盘历史，共 743 条）」（实际：' + w + '）');
@@ -214,18 +234,51 @@ ok(!w.includes('起'), '不再出现「…起」这种以某时刻为边界的�
 resetEls(); renderStats({ ...base, window_from: '' });
 ok($('statsWindow').textContent === '（全部落盘历史，共 743 条）', 'window_from 为空时文案不变');
 
-// ---------- 3. 边界：内存来源保留分母，file 缺失不崩 ----------
-console.log('\n[3] 边界情况');
+// ---------- 2. 卡片清单符合当前产品 ----------
+console.log('\n[2] 卡片清单');
+resetEls(); renderStats({ ...base });
+const keys = cardKeys();
+// 已删除的卡不许悄悄回来：它们测的是"落盘上限/缓冲占用/缓存命中"这类排障细节，
+// 当初被移出首屏是为了让"网关有没有用起来"一眼可读。
+for (const gone of ['落盘占用', '缓冲占用', '缓存命中率', '推理 token']) {
+  ok(!keys.includes(gone), '已下线的卡片「' + gone + '」不该回到首屏（实际清单：' + keys.join(' / ') + '）');
+}
+// 该有的必须在 —— 少一张卡是静默的功能缺失，页面上只是"看起来简单了些"。
+for (const want of ['总请求', '成功', '失败', '成功率', '消耗 token', '输入 token', '输出 token', '平均 TTFB', '平均总耗时']) {
+  ok(keys.includes(want), '卡片「' + want + '」必须存在（实际清单：' + keys.join(' / ') + '）');
+}
+
+// ---------- 3. token 三卡的口径 ----------
+console.log('\n[3] token 三卡口径');
+resetEls(); renderStats({ ...base });
+ok(cardValue('输入 token') === '900k', '输入 token 读后端 prompt_tokens（实际：' + cardValue('输入 token') + '）');
+ok(cardValue('输出 token') === '12k', '输出 token 读后端 tokens（实际：' + cardValue('输出 token') + '）');
+ok(cardValue('消耗 token') === '912k', '消耗 token 读后端 total_tokens（实际：' + cardValue('消耗 token') + '）');
+
+// 口径的核心判据：**不得**出现 reasoning 双计。
+//
+// 反例形态是 tokens + think_tokens。给一个 think_tokens 远大于 tokens 的
+// 病态夹具：若页面把两者相加，"消耗"会变成一个离谱的大数。这里用
+// total_tokens 与"输入+输出"一致来反证它没被加第二遍。
+resetEls(); renderStats({ ...base, tokens: 1000, prompt_tokens: 5000, total_tokens: 6000, think_tokens: 800 });
+ok(cardValue('消耗 token') === '6.0k',
+  '消耗 token 严格等于 total_tokens（1000 输出 + 5000 输入 = 6000），reasoning 未被加第二遍（实际：' + cardValue('消耗 token') + '）');
+
+// 旧后端（没有 total_tokens）时退回"输入+输出"，而不是退回到 tokens+reasoning。
+resetEls(); renderStats({ ...base, tokens: 1000, prompt_tokens: 5000, total_tokens: undefined, think_tokens: 800 });
+ok(cardValue('消耗 token') === '6.0k',
+  '缺 total_tokens 时退回 输入+输出（实际：' + cardValue('消耗 token') + '）');
+
+// 三个数全缺 → 显示占位符，而不是 0（0 会被读成"这次真的没用量"）。
+resetEls(); renderStats({ ...base, tokens: undefined, prompt_tokens: undefined, total_tokens: undefined });
+ok(cardValue('消耗 token') === NODATA, '三个 token 值都缺时显示占位符 ' + NODATA + '（实际：' + cardValue('消耗 token') + '）');
+ok(cardValue('输入 token') === NODATA, '输入 token 缺失时显示占位符（实际：' + cardValue('输入 token') + '）');
+
+// ---------- 4. 边界：内存来源 / 空日志 / 病态 payload ----------
+console.log('\n[4] 边界情况');
 resetEls(); renderStats({ ...base, source: 'memory' });
-ok(cardValue('缓冲占用') === '120/500', '内存来源仍为 held/capacity（分母有意义，保留）');
 ok($('statsWindow').textContent === '（仅内存缓冲，进程启动至今，上限 500 条）', '内存来源窗口文案未受影响');
 
-resetEls(); renderStats({ ...base, file: undefined });
-const noFile = cardValue('落盘占用');
-ok(noFile !== null && !String(noFile).includes('undefined') && !String(noFile).includes('NaN'),
-  'source=file 但 file 缺失时回落为 held/capacity 而非 undefined（实际：' + noFile + '）');
-
-// 空日志
 resetEls(); renderStats({ ...base, total: 0, ok: 0, fail: 0, window_from: '' });
 ok($('statsWindow').textContent === '（落盘日志为空）', '总数为 0 时提示「落盘日志为空」');
 
@@ -235,7 +288,7 @@ ok($('statsWindow').textContent === '（落盘日志为空）', '总数为 0 时
 // （对象/数组/垃圾串），非空值会被串成 [object Object] 直接显示给用户。
 // 实测（穷举 15 组病态 payload）抓出：卡片区全部干净，唯独窗口文案漏了。
 // 现与卡片区共用 fmtCount。
-console.log('\n[3.5] 窗口文案的数字也要防御式');
+console.log('\n[4.5] 病态 payload 不许泄漏到界面');
 for (const [name, val] of [
   ['对象', {}], ['数组', [1, 2]], ['垃圾字符串', 'abc'],
   ['NaN', NaN], ['undefined', undefined], ['Infinity', Infinity],
@@ -251,17 +304,14 @@ for (const [name, val] of [
 // 正常值仍要如实显示
 resetEls(); renderStats({ ...base, total: 743 });
 ok($('statsWindow').textContent === '（全部落盘历史，共 743 条）', '正常数值仍如实显示');
-
-// 其它卡片不受影响
-resetEls(); renderStats({ ...base });
 ok(cardValue('总请求') === '743', '总请求仍正常');
 ok(cardValue('成功率') === '94%', '成功率仍正常（700/743≈94%）');
 
-// ---------- 4. 静态：不再有引用 max_bytes 的渲染代码 ----------
-console.log('\n[4] 静态检查');
-const statsFn = (html.slice(html.indexOf('function renderStats('), html.indexOf('function fmtBytes(')) );
-ok(!/max_bytes/.test(statsFn), 'renderStats 内已无 max_bytes 引用');
-ok(!/toLocaleString/.test(statsFn), 'renderStats 内已无日期格式化（起点回显已移除）');
+// ---------- 5. 静态：口径字段不许被前端自己拼 ----------
+console.log('\n[5] 静态检查');
+const src = (html.slice(html.indexOf('function statsCardsEntries('), html.indexOf('function renderStatsModels(')));
+ok(!/think_tokens/.test(src), 'statsCardsEntries 内不出现 think_tokens（reasoning 双计的指纹）');
+ok(/total_tokens/.test(src) && /prompt_tokens/.test(src), 'statsCardsEntries 读取后端 total_tokens / prompt_tokens');
 
 console.log(fail === 0 ? '\n=== 全部通过 ===' : '\n=== ' + fail + ' 项失败 ===');
 process.exit(fail ? 1 : 0);

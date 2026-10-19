@@ -43,7 +43,7 @@ const SUITES = [
   ['gen_pagesize.js',         'pagesize_gen.js'],
   ['gen_pagesize_persist.js', 'pagesize_persist_gen.js'],
   ['gen_settings_layout.js',  'settings_layout_gen.js'],
-  ['gen_stats_disk.js',       'stats_disk_gen.js'],
+  ['gen_stats_cards.js',      'stats_cards_gen.js'],
   ['gen_task8.js',            'task8_gen.js'],
   ['gen_tokps.js',            'tokps_gen.js'],
 ];
@@ -63,6 +63,12 @@ const PROBES = [
   // 自带变异验证（在临时副本上做，不动原仓库），所以它会**自己证明**
   // "删掉那一行会红"，而不只是声称如此。
   'verify_t4_t5_static.js',
+  // 账号状态列：陈旧错误快照不得冒充当前状态（已恢复 → 正常）。
+  //
+  // 只 grep 守不住：把比较方向写反、用 >= 把同一时刻算成已恢复，
+  // 文本都一样。所以这个探针把 statusCellHTML 抽出来用真实 shape 的
+  // fixtures 真跑，并自带变异验证（关掉恢复判据必须变红）。
+  'status_recovered_probe.js',
   // 截图工具（**不是断言套件**：它只拍图，不做判据）。
   //
   // 为什么不放进本脚本：它需要跑着的实例 + Chrome，且产物是 PNG ——
