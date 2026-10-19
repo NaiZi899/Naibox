@@ -25,7 +25,23 @@ import (
 type UsageExtras struct {
 	// Credit 本次请求实际消耗的额度，对应上游 usage.credit。
 	Credit float64
+	// PromptTokens 输入侧 token 总数，对应上游 usage.prompt_tokens。
+	//
+	// # 为什么必须单独记它（这是「用量统计偏少」的根因）
+	//
+	// 输入 token 与输出 token 完全不是一个量级：agentic 客户端每轮把整段
+	// 会话历史回灌，实测本机网关每请求平均 prompt 约 9 万、completion 约 1 千。
+	// 只统计 completion 会让面板上的「消耗」只剩真实量的 1~2%，
+	// 而且缺的这部分**无法从其它字段反推**（除非上游恰好给了 cache 明细）。
+	//
+	// 语义：这是**总**输入量（含命中缓存的部分），不是「未命中」那部分。
+	// 命中/未命中的拆分见下面两个字段；不要把 PromptTokens 与它们相加。
+	PromptTokens int
 	// ThinkTokens 推理（思维链）token 数。
+	//
+	// ⚠ 这是 completion_tokens 的**子集**（OpenAI / DeepSeek 语义：
+	// completion_tokens_details.reasoning_tokens 是明细）。任何「总消耗」
+	// 都不该把它再加一遍 —— 见 logbuf.Entry 的注释与前端统计卡的注释。
 	ThinkTokens int
 	// CacheHitTokens 命中 prompt 缓存的 token 数。
 	CacheHitTokens int
@@ -38,13 +54,20 @@ type UsageExtras struct {
 // 两处「双键名变体」的取值顺序（显式键优先，变体键兜底）：
 //
 //	ThinkTokens     : completion_thinking_tokens                → completion_tokens_details.reasoning_tokens
-//	CacheHitTokens  : prompt_cache_hit_tokens                   → cached_tokens
+//	CacheHitTokens  : prompt_cache_hit_tokens                   → prompt_tokens_details.cached_tokens
+//	                                                                → cached_tokens
 //
 // 之所以要兜底：上游在不同模型/接口形态下对同一个量挂了不同键名 ——
 // 推理 token 有时平铺在顶层，有时塞进 completion_tokens_details 子对象；
-// 缓存命中有时叫 prompt_cache_hit_tokens，有时是简写 cached_tokens。
-// 两个键同时存在时以**显式**那个为准（顶层具名键比子对象/简写更具体，
-// 也避免简写键被别处复用导致误读）。
+// 缓存命中有时叫 prompt_cache_hit_tokens，有时是 OpenAI 官方形态的
+// **嵌套** prompt_tokens_details.cached_tokens，还有极少数直接平铺成
+// cached_tokens。三者优先级按「越具体越优先」排：顶层具名键 > 子对象明细 >
+// 顶层简写键。
+//
+// ⚠ 曾经只兜底到顶层 cached_tokens，漏了官方那个嵌套形态 —— 于是像基元律动
+// 这类照抄 OpenAI 结构的上游（实测回执：`prompt_tokens_details.cached_tokens`）
+// 命中量恒为 0，面板的 cache_hit_rate 只反映另一家上游。这条是实测踩出来的，
+// 见 internal/wire/usage_test.go 的嵌套用例。
 //
 // **回退的判据是「键不存在」，不是「值为 0」** —— 这一点是评审指出的真缺陷：
 // 曾经写成 `if primary == 0 { 用 fallback }`，于是「合法地为 0」与「键不存在」
@@ -62,6 +85,7 @@ func ParseUsageExtras(usage map[string]any) UsageExtras {
 	}
 
 	out.Credit = usageFloat(usage["credit"])
+	out.PromptTokens = usageInt(usage["prompt_tokens"])
 
 	// 推理 token：顶层显式键**存在就认它**（哪怕为 0），只在它缺席时才看 details。
 	//
@@ -77,10 +101,18 @@ func ParseUsageExtras(usage map[string]any) UsageExtras {
 		}
 	}
 
-	// 缓存命中：同上，prompt_cache_hit_tokens 存在就认它，缺席才回落简写键。
+	// 缓存命中：prompt_cache_hit_tokens 存在就认它；缺席时依次回落到
+	// 官方嵌套形态（prompt_tokens_details.cached_tokens）和顶层简写（cached_tokens）。
+	// 判据仍是「键是否存在」，不是「值是否为 0」—— 见上面的讨论。
 	out.CacheHitTokens = usageInt(usage["prompt_cache_hit_tokens"])
 	if _, present := usage["prompt_cache_hit_tokens"]; !present {
-		out.CacheHitTokens = usageInt(usage["cached_tokens"])
+		// 先看官方嵌套形态；它缺席时才回落到顶层简写键。
+		// 用 nestedInt 而不是裸类型断言：nil map / 非对象 / 键缺失都必须安全。
+		if v, ok := nestedInt(usage, "prompt_tokens_details", "cached_tokens"); ok {
+			out.CacheHitTokens = v
+		} else {
+			out.CacheHitTokens = usageInt(usage["cached_tokens"])
+		}
 	}
 
 	out.CacheMissTokens = usageInt(usage["prompt_cache_miss_tokens"])
@@ -103,6 +135,27 @@ func ParseUsageExtras(usage map[string]any) UsageExtras {
 // 截断策略：乘法式转换用 float64 中间值，超过 int 范围的一律夹紧（见 clampToInt），
 // 不产生未定义行为。
 func UsageInt(v any) int { return usageInt(v) }
+
+// nestedInt 取 m[k1][k2] 的整数值，并报告该键路径**是否完整存在**。
+//
+// 之所以要单独的「存在性」返回值：本文件的取值纪律是「键缺席才回落，
+// 值为 0 也算有数据」。若只返回 int，嵌套键合法地为 0 时会被读成缺失，
+// 进而被顶层简写键覆盖 —— 那正是 usage.go 曾经修过一次的静默高报形态。
+//
+// 全程 comma-ok：m 为 nil、m[k1] 不是对象、m[k1][k2] 缺席，都返回 (0,false)。
+func nestedInt(m map[string]any, k1, k2 string) (int, bool) {
+	if m == nil {
+		return 0, false
+	}
+	inner, ok := m[k1].(map[string]any)
+	if !ok || inner == nil {
+		return 0, false
+	}
+	if _, ok := inner[k2]; !ok {
+		return 0, false
+	}
+	return usageInt(inner[k2]), true
+}
 
 // usageInt 是 UsageInt 的内部实现（见其文档）。
 func usageInt(v any) int {

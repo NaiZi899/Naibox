@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/auth"
 )
 
 // captureStdout 重定向 os.Stdout 并捕获 fn 期间的全部输出。
@@ -346,5 +346,84 @@ func TestHealthzDoesNotLogTableRow(t *testing.T) {
 	})
 	if strings.Contains(out, "| #") {
 		t.Errorf("healthz/models/status must not emit table rows:\n%s", out)
+	}
+}
+
+// TestLogChatRowRecordsPromptTokensWithoutCompletion 钉住"输入侧不被输出侧门控"。
+//
+// 旧实现把扩展字段整体挂在 `toks >= 0` 闸门下：上游只给了 prompt_tokens、
+// 没给 completion_tokens（或流被提早掐断只留下半截 usage）时，连能读的
+// 输入 token 一起丢。而输入侧才是用量的主体（实测约 90 倍于输出），
+// 这种丢法在面板上就是"总量偏少两个数量级"。
+//
+// 判据：
+//
+//	toks == -1（哨兵保留）→ 日志仍显示 tok=-
+//	PromptTokens > 0        → 该行仍然进了统计
+func TestLogChatRowRecordsPromptTokensWithoutCompletion(t *testing.T) {
+	withChatLog(t)
+	_, before := chatLogRing.Snapshot(0)
+	captureStdout(t, func() {
+		logChatRow(0, time.Second, "m", "stream", "u1", http.StatusOK, -1, map[string]any{
+			"prompt_tokens":         91234.0,
+			"prompt_tokens_details": map[string]any{"cached_tokens": 90000.0},
+		})
+	})
+	entries, _ := chatLogRing.Snapshot(before)
+	if len(entries) != 1 {
+		t.Fatalf("期望落 1 条，实际 %d 条", len(entries))
+	}
+	e := entries[0]
+	if e.Tokens != -1 {
+		t.Errorf("Tokens=%d，want -1（输出侧缺失的哨兵语义必须保持）", e.Tokens)
+	}
+	if e.PromptTokens != 91234 {
+		t.Errorf("PromptTokens=%d，want 91234（输入侧不该被 toks 哨兵门控）", e.PromptTokens)
+	}
+	if e.CacheHitTokens != 90000 {
+		t.Errorf("CacheHitTokens=%d，want 90000（嵌套 prompt_tokens_details.cached_tokens）", e.CacheHitTokens)
+	}
+}
+
+// sseNoUsage 一条**不带 usage** 的正常流（上游只给内容帧）。
+const sseNoUsage = "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"你好\"}}]}\n\n" +
+	"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+	"data: [DONE]\n\n"
+
+// TestChatLogsStreamWithoutUsageKeepsSentinel 末帧没有 usage 时必须保持 -1 哨兵。
+//
+// # 这条守的是一个被 `, _` 吃掉的真 bug
+//
+// 流式路径曾写 `st.toks, _ = stats.Tokens()`：没 usage 时 Tokens() 返回
+// (0,false)，忽略 ok 就把 **0** 写了进去 —— 日志显示 tok=0（"这次真的用了
+// 0 个 token"），而不是 tok=-（"上游没给"）。对聚合来说后者被排除、
+// 前者会进平均值与 tok/s，静默把「没有数据」当成「数据是 0」。
+//
+// 实测触发形态：一次 200 的流式请求记了 tokens=0，同账号的下一条正常记录
+// 是 648 —— 面板上的平均输出 token 被这种假 0 拉低。
+func TestChatLogsStreamWithoutUsageKeepsSentinel(t *testing.T) {
+	withChatLog(t)
+	up := newFakeUpstream(t, func(string) (int, string, bool) { return 200, sseNoUsage, true })
+	h := NewHandler(Config{
+		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
+		Upstream: up,
+	})
+	_, before := chatLogRing.Snapshot(0)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"glm-5.2","messages":[],"stream":true}`)))
+	if rec.Code != 200 {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
+	}
+	entries, _ := chatLogRing.Snapshot(before)
+	if len(entries) == 0 {
+		t.Fatal("没有落记录")
+	}
+	last := entries[len(entries)-1]
+	if last.Tokens != -1 {
+		t.Errorf("Tokens=%d，want -1 —— 上游没给 usage 时必须保持哨兵，不能写成 0（假 0 会污染平均值）", last.Tokens)
+	}
+	if last.PromptTokens != 0 {
+		t.Errorf("PromptTokens=%d，want 0（无 usage 就没有输入侧数据）", last.PromptTokens)
 	}
 }

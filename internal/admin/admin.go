@@ -34,14 +34,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NaiZi899/omni2api/internal/apikey"
-	"github.com/NaiZi899/omni2api/internal/auth"
-	"github.com/NaiZi899/omni2api/internal/checkinlog"
-	"github.com/NaiZi899/omni2api/internal/gateway"
-	"github.com/NaiZi899/omni2api/internal/logbuf"
-	"github.com/NaiZi899/omni2api/internal/oauth"
-	"github.com/NaiZi899/omni2api/internal/pool"
-	"github.com/NaiZi899/omni2api/internal/scheduler"
+	"github.com/NaiZi899/Naibox/internal/apikey"
+	"github.com/NaiZi899/Naibox/internal/auth"
+	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/gateway"
+	"github.com/NaiZi899/Naibox/internal/logbuf"
+	"github.com/NaiZi899/Naibox/internal/oauth"
+	"github.com/NaiZi899/Naibox/internal/pool"
+	"github.com/NaiZi899/Naibox/internal/scheduler"
 )
 
 // Config 管理台依赖。
@@ -2417,6 +2417,10 @@ type providerStat struct {
 	OK     int64   `json:"ok"`
 	Fail   int64   `json:"fail"`
 	Credit float64 `json:"credit"`
+	// PromptTokens 该上游的输入侧 token 累计。放在按上游的桶里，是因为
+	// 输入侧才是成本主体（实测约为输出的 90 倍），只按模型看会被头部模型
+	// 稀释掉"哪家上游在烧上下文"这件事。
+	PromptTokens int64 `json:"prompt_tokens"`
 }
 
 // unlabeledProvider 无 provider 标记的行（历史日志）归入这一桶。
@@ -2437,6 +2441,14 @@ func aggregateChatLog(items []logbuf.Entry) map[string]any {
 	var ttfbN int64
 	var credit float64
 	var thinkTokens, cacheHitTokens, cacheMissTokens int64
+	// promptTokens 输入侧总量；promptCovered 有多少行真的带了这个值；
+	// promptDerived 其中有多少行是从 cache 明细反推的（见下面的推导分支）。
+	//
+	// 为什么必须成对暴露：历史行（加字段之前落盘的）没有 prompt_tokens 键，
+	// 反序列化得 0，与"这次真的没有输入 token"不可区分。只给总量会让用户
+	// 在改完之后看到"输入 token 只有新数据那么多"，再次判成不准；
+	// 给出覆盖条数与推导条数，前端才能把这句话说清楚。
+	var promptTokens, promptCovered, promptDerived int64
 	var oldest, newest time.Time
 
 	for _, e := range items {
@@ -2478,6 +2490,31 @@ func aggregateChatLog(items []logbuf.Entry) map[string]any {
 		if e.ThinkTokens > 0 {
 			thinkTokens += int64(e.ThinkTokens)
 		}
+		// PromptTokens 与上面几个字段不同：它**没有哨兵**，0 既可能是"没给"
+		// 也可能是"真的 0"。所以除了累加，还要数覆盖条数，让缺口可见。
+		//
+		// 历史行的反推：加 prompt_tokens 字段之前落盘的行，输入侧只能从
+		// cache 明细里捞回来 —— DeepSeek 系上游的
+		// prompt_cache_hit_tokens + prompt_cache_miss_tokens **就是** prompt 总数
+		// （两者是同一口径的拆分，不是额外量）。只在 PromptTokens==0 时用它，
+		// 所以对新行不产生任何影响；对老行则把 392M 这类真实输入从"看不见"
+		// 变成"能看见，且标明是推导值"。
+		prompt := e.PromptTokens
+		derived := false
+		if prompt == 0 {
+			if s := e.CacheHitTokens + e.CacheMissTokens; s > 0 {
+				prompt = s
+				derived = true
+			}
+		}
+		if prompt > 0 {
+			promptTokens += int64(prompt)
+			promptCovered++
+			ps.PromptTokens += int64(prompt)
+			if derived {
+				promptDerived++
+			}
+		}
 		if e.CacheHitTokens > 0 {
 			cacheHitTokens += int64(e.CacheHitTokens)
 		}
@@ -2497,6 +2534,17 @@ func aggregateChatLog(items []logbuf.Entry) map[string]any {
 		}
 	}
 
+	// 三个 token 键的关系（写在这里而不是 map 里，避免注释打断 gofmt 的对齐）：
+	//
+	//	tokens         输出侧（completion）
+	//	prompt_tokens  输入侧（prompt，含命中缓存的部分）
+	//	total_tokens   输入 + 输出，与 OpenAI usage.total_tokens 同义
+	//
+	// 前端「消耗 token」卡直接读 total_tokens，**不要**再自己把 reasoning 加
+	// 一遍 —— reasoning 是 completion 的子集，加第二遍就是高报（实测 +58%）。
+	// prompt_covered 是带输入侧数据的行数（含从 cache 明细推导的历史行），
+	// prompt_derived 是其中推导得来的条数：覆盖率不足时前端据此说明
+	// "输入侧只覆盖 X/N 条"，避免新老行混算又被读成"统计不准"。
 	resp := map[string]any{
 		"total":             len(items),
 		"ok":                okN,
@@ -2505,6 +2553,10 @@ func aggregateChatLog(items []logbuf.Entry) map[string]any {
 		"by_status":         byStatus,
 		"by_uid":            byUID,
 		"tokens":            tokens,
+		"prompt_tokens":     promptTokens,
+		"prompt_covered":    promptCovered,
+		"prompt_derived":    promptDerived,
+		"total_tokens":      promptTokens + tokens,
 		"credit_total":      credit,
 		"think_tokens":      thinkTokens,
 		"cache_hit_tokens":  cacheHitTokens,
