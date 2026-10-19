@@ -316,7 +316,16 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
+      # fetch-depth: 0 是**必需**的，不是保守选择。
+      #
+      # 下面用 `gh release create --notes-from-tag` 取 Release 说明，而它是
+      # 读**本地 git** 的 annotated tag 对象（tag message 存在 tag 对象里，
+      # 不在 commit 里）。默认的浅克隆（fetch-depth: 1）拿不到它 ——
+      # 表现会是说明为空或 gh 直接报错，而这发生在"发版"这一步，
+      # 等到发现时 tag 已经推出去了。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -354,19 +363,36 @@ jobs:
             echo "$ASSETS" | xargs gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber
           else
             echo "Release $TAG 不存在，创建"
+            # 自证：tag message 非空。
+            #
+            # 一条空白的 Release 说明比没有更糟 —— 下载者会以为"这版没改动"。
+            # lightweight tag 上 gh 会回落到 commit message，但两者都可能为空
+            # （例如 `git tag v2.0` 后直接 push）。在这里断掉，代价是一次失败
+            # 的 job；漏过去则是一份无信息的发布页。
+            if ! git tag -l --format='%(contents)' "$TAG" | grep -q .; then
+              echo "✗ tag $TAG 没有 message —— Release 说明会为空。"
+              echo "  先写 message 再重发：git tag -f -a $TAG -F <notes-file> && git push -f origin $TAG"
+              exit 1
+            fi
             # 标题格式：`NaiBox <tag>`，**只这两段**。
             #
-            # ⚠ 不要写回 `omni2api $TAG`（历史遗留名）：
+            # 标题该是**可检索的标识**，说明留在 notes 里 —— 不要附加主题描述
+            # （曾出现 `— 上游 4 个 → 10 个 + …` 这种）。
             #
-            #	- 仓库与服务名都是 omni2api（/healthz 的 service 字段也是）
-            #	- "omni2api" 只是**上游 fork 来源**的名字，不是本项目名
+            # Release 说明来自 **annotated tag 的 message**（--notes-from-tag）：
             #
-            # 也不要附加主题描述（曾出现 `— 上游 4 个 → 10 个 + …` 这种）：
-            # 标题该是**可检索的标识**，说明留在 notes 里。
+            #   - 硬编码一句"自动构建产物…详见 README"对下载者没有任何信息量：
+            #     他要判断的是"这版改了什么、我该不该升、升级后会看到什么变化"。
+            #   - 打 tag 时写 message 是最自然的位置 —— 那一刻最清楚这批改动。
+            #   - lightweight tag（没有 message）时 gh 会回落到 commit message，
+            #     不至于产出空说明。
+            #
+            # ⚠ 所以发版流程是：**先把 tag message 写清楚**，再 push tag。
+            # 仓库里留了 docs/release-notes-v1.1.md 作为往期范例。
             echo "$ASSETS" | xargs gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "NaiBox $TAG" \
-              --notes "自动构建产物（Windows / Linux / macOS，amd64 + arm64；另含 Windows 桌面壳 NaiBox-windows-amd64.zip）。详见仓库 README。"
+              --notes-from-tag
           fi
 
       - name: Prune stale assets
