@@ -142,3 +142,24 @@ func yuanToFen(yuan float64) int64 {
 //
 // 不实现会在这里编译失败，而不是等到运行时"界面上额度一直空着"。
 var _ gateway.QuotaExt = (*Provider)(nil)
+
+// QuotaImpliesUsable 实现 gateway.QuotaUsabilityExt：本上游的余额是**直接门禁**。
+//
+// # 为什么基元律动可以这么答，而 workbuddy 不能
+//
+// 本上游的凭证是一把静态 key，没有 TTL、没有 refresh token、没有设备绑定，
+// 也没有"每日签到才保活"这类玩法。经实测确认，key 失效只有两种成因：
+//
+//	余额耗尽（402/403，错误分类器落到 ErrKindHardCredit）
+//	key 在上游被删（401，属于硬失效，与余额无关）
+//
+// 后者不会进 CoolHard 冷却（它是 key 失效，走另一条判定），所以"处于
+// CoolHard 冷却中 + 余额已恢复"这个组合，唯一的成因就是余额不足。
+// 这就是返回值可以为 true 的依据。
+//
+// ⚠ 若将来本上游加了 refresh token 或会话保活，这个返回值必须重新评估：
+// 那时"余额够"不再等于"号能用"，核心的解冻会变成持续重试。
+func (p *Provider) QuotaImpliesUsable() bool { return true }
+
+// compile-time 断言：Provider 实现可用性判定扩展点。
+var _ gateway.QuotaUsabilityExt = (*Provider)(nil)

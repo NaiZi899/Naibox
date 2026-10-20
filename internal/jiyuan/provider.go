@@ -49,6 +49,19 @@ type Config struct {
 	//
 	// 装配层（cmd/server）置 true —— 生产要的是"上游上了新模型能立刻看到"。
 	LiveModels bool
+	// MgmtBase 管理面（`/api/*`，余额所在）基址覆盖。空 = 官方域名。
+	//
+	// # 为什么与 BaseURL 分开
+	//
+	// 很多反代只转发 `/v1`（推理面），不转发 `/api`（管理面）。那种部署下
+	// 聊天走代理、余额必须直连官方域名。基址只有一个时只能二选一：
+	//
+	//	用代理 → 余额 404/401，界面恒显示 `—`，且**没有任何报错**
+	//	用官方 → 聊天绕过代理，代理等于白配
+	//
+	// 所以拆成两个。形态校验在装配层做（`http/https` + 主机名），
+	// 因为那里才知道"启动参数非法该不该拦"。空串走 DefaultMgmtBase。
+	MgmtBase string
 }
 
 // Provider 实现 gateway.Provider（及若干可选扩展点）。
@@ -66,6 +79,18 @@ func New(cfg Config) *Provider {
 	p := &Provider{cfg: cfg}
 	if strings.TrimSpace(p.cfg.BaseURL) == "" {
 		p.cfg.BaseURL = DefaultBaseURL
+	}
+	// 管理面基址：**只有非空时才设置**。
+	//
+	// ⚠ 这里不能无条件调 setMgmtBase(p.cfg.MgmtBase)：空串在该函数里会
+	// 回落成 DefaultMgmtBase，而 New 常被"已经指向本地上游"的调用方使用
+	// （测试就是），无条件设置会把它刚设好的地址冲掉 —— 表现是所有管理面
+	// 请求静默打到官方域名，用例报"凭证无效"而不是它真正要验的东西。
+	//
+	// 空 = 沿用当前值（进程启动时即 DefaultMgmtBase），与"留空用官方域名"
+	// 的配置语义一致。
+	if strings.TrimSpace(p.cfg.MgmtBase) != "" {
+		setMgmtBase(p.cfg.MgmtBase)
 	}
 	return p
 }
@@ -123,17 +148,24 @@ func (p *Provider) credential(uid string) (*Auth, bool) {
 // ID 实现 gateway.Provider。
 func (p *Provider) ID() string { return providerID }
 
-// Caps 声明能力：对话 + 动态模型目录 + 批量导入。
+// Caps 声明能力：对话 + 动态模型目录 + 额度探测 + 批量导入。
 //
-// ⚠ 不声明 CapQuotaProbe：它要求实现 AdminExt（管理端点 + 非空路由），
-// 而本上游**没有**可用的额度接口（余额只认 session cookie）。
-// 声明它是"假声明"——契约测试会要求 AdminExt，而实现了也没数据可返。
-// 这条踩过：inkstone 第一版声明了 CapQuotaProbe 但没实现 AdminExt，
-// 被 `RunProviderContract` 挡下。
+// # 为什么现在声明 CapQuotaProbe（改造前刻意不声明）
+//
+// 当时的理由是"本上游没有可用的额度接口，余额只认 session cookie"。
+// 那个理由在 quota_ext.go 落地后已经不成立：额度确实读得到，只是入口
+// 与推理面不同。
+//
+// ⚠ 但声明它有一条**硬前提**：契约要求同时实现 QuotaExt 与 AdminExt
+// （管理端点 + 非空路由）。只声明不实现会被 `RunProviderContract` 挡下 ——
+// inkstone 第一版就是这么被抓的。本包两者都有：
+//
+//	quota_ext.go    QuotaExt（读余额）
+//	adminroute.go   AdminExt（POST /admin/jiyuan/quota-probe）
 //
 // ⚠ 不声明 CapCheckin：基元律动没有每日签到玩法（不像 workbuddy/loomy）。
 func (p *Provider) Caps() gateway.Capability {
-	return gateway.CapChat | gateway.CapModels | gateway.CapImport
+	return gateway.CapChat | gateway.CapModels | gateway.CapQuotaProbe | gateway.CapImport
 }
 
 // compile-time: Provider 必须满足 gateway.Provider。

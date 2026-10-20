@@ -31,6 +31,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"sync"
 
 	"github.com/NaiZi899/Naibox/internal/gateway"
 	"github.com/NaiZi899/Naibox/internal/pool"
@@ -64,6 +65,43 @@ type quotaRefresher struct {
 	// 无法区分"这个上游只有 0 个账号"和"这个上游整片被跳过"。
 	// 后者只能靠 Skipped + 下面那条按 provider 去重的跳过日志来暴露。
 	Providers []string
+	// Revived 因余额恢复而被解除硬冷却的账号数。
+	//
+	// ⚠ 只有实现了 gateway.QuotaUsabilityExt 且返回 true 的上游才可能非零
+	//（目前只有 jiyuan）。其它上游恒为 0，不是"没解冻成功"。
+	Revived int
+}
+
+// quotaRefreshConcurrency 一轮额度刷新的并发上限。
+//
+// # 为什么是 4
+//
+// 这条链路是"每个账号打一次上游管理面"，而单次往返常在 200ms~2s。
+// 串行时整轮耗时 = 账号数 × 往返：25 个账号要十几秒，而 HTTP 端点
+// `/admin/accounts/quota/refresh` 是**同步**返回的，用户点一下要等十几秒。
+//
+// 并发 4 把 25 个账号压到 1~2 个往返的量级。不再往上加的理由是上游侧：
+// 同一个上游的管理面通常有速率限制，且这些请求带的是**同一个账号池**的
+// 凭证 —— 并发太高容易被判成扫描。
+const quotaRefreshConcurrency = 4
+
+// quotaTask 第一段解析出来的一个待办（纯内存，不含网络）。
+//
+// 之所以拆出这个结构：并发段只该做 IO，不该再碰池与注册表
+// （那些是有锁的共享状态，在 N 个 goroutine 里读会让锁竞争变成瓶颈）。
+type quotaTask struct {
+	uid      string
+	provider string
+	ext      gateway.QuotaExt
+	// usable 该上游是否"余额即门禁"（gateway.QuotaUsabilityExt）。
+	// 在第一段就查好，避免并发段重复做类型断言。
+	usable bool
+}
+
+// quotaTaskResult 单个任务的探测结果。
+type quotaTaskResult struct {
+	qv gateway.QuotaView
+	ok bool
 }
 
 // refreshQuotas 遍历池中所有账号，按各自的上游问额度并写回。
@@ -79,6 +117,16 @@ type quotaRefresher struct {
 // **跳过，并且不写池。** 账号保持 `HasData=false` → 界面显示 `—`。
 // 这正是用户要的"有什么显示什么，没有的话就不显示" ——
 // 不填 0（0 会被误读成"没有额度了"）。
+//
+// # 三段式（并发化的关键）
+//
+//	① 串行解析：uid → provider → 扩展点（纯内存）
+//	② 并发打上游（4 路）：只做 IO，结果按下标写回
+//	③ 串行收尾：写池、解冻、计数
+//
+// 这样锁只在 ①③ 里出现，②里没有任何共享状态。若把 ①②混在一个循环里，
+// `Pool.Status` 与 `Registry.All` 会被 4 个 goroutine 反复加锁，
+// 并发收益被自己吃回去。
 func (h *Handler) refreshQuotas(uids []string) quotaRefresher {
 	var out quotaRefresher
 	if h.cfg.Pool == nil || h.cfg.Registry == nil {
@@ -88,12 +136,19 @@ func (h *Handler) refreshQuotas(uids []string) quotaRefresher {
 	// provider → 该上游的额度扩展点。**只对实现了 QuotaExt 的上游建映射**，
 	// 没实现的天然不在表里 → 走"跳过"分支。
 	exts := map[string]gateway.QuotaExt{}
+	// provider → 余额是否直接决定可用性（QuotaUsabilityExt）。
+	usable := map[string]bool{}
 	for _, p := range h.cfg.Registry.All() {
 		if ext, ok := gateway.ExtOf[gateway.QuotaExt](p); ok {
 			exts[p.ID()] = ext
 		}
+		if u, ok := gateway.ExtOf[gateway.QuotaUsabilityExt](p); ok && u.QuotaImpliesUsable() {
+			usable[p.ID()] = true
+		}
 	}
 
+	// ---- ① 串行解析（纯内存）----
+	tasks := make([]quotaTask, 0, len(uids))
 	seen := map[string]bool{}
 	// loggedSkip 保证"某个上游没实现 QuotaExt"只打**一行**日志。
 	//
@@ -134,30 +189,117 @@ func (h *Handler) refreshQuotas(uids []string) quotaRefresher {
 			seen[provider] = true
 			out.Providers = append(out.Providers, provider)
 		}
+		tasks = append(tasks, quotaTask{
+			uid:      uid,
+			provider: provider,
+			ext:      ext,
+			usable:   usable[provider],
+		})
+	}
 
-		qv, ok := h.safeRefreshQuota(ext, uid)
-		if !ok {
+	// ---- ② 并发打上游 ----
+	results := make([]quotaTaskResult, len(tasks))
+	if len(tasks) > 0 {
+		sem := make(chan struct{}, quotaRefreshConcurrency)
+		var wg sync.WaitGroup
+		for i := range tasks {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				qv, ok := h.safeRefreshQuota(tasks[i].ext, tasks[i].uid)
+				results[i] = quotaTaskResult{qv: qv, ok: ok}
+			}(i)
+		}
+		wg.Wait()
+	}
+
+	// ---- ③ 串行收尾：写池 + 解冻（顺序与并发无关，结果可复现）----
+	for i, t := range tasks {
+		r := results[i]
+		if !r.ok {
 			out.Failed++
 			continue
 		}
-		if !qv.HasData {
+		if !r.qv.HasData {
 			// 上游如实回答"我不知道" —— **不写池**（写 0 就是造假）。
 			out.Unknown++
 			continue
 		}
-		h.cfg.Pool.SetQuota(uid, toPoolQuota(qv))
+		h.cfg.Pool.SetQuota(t.uid, toPoolQuota(r.qv))
 		out.Updated++
+		// 余额恢复了，且该上游的可用性由余额决定 → 解除"余额耗尽"型硬冷却。
+		//
+		// ⚠ 只调 ReviveHardCreditIfUsable，**不是** ClearCooldown：
+		// 后者会连熔断退避与软限流一起清掉，而周期刷新每 15 分钟跑一次，
+		// 那等于把正在吃 429 的号定期放回池子。余额只能证明"钱够"。
+		if t.usable && h.cfg.Pool.ReviveHardCreditIfUsable(t.uid) {
+			out.Revived++
+			log.Printf("admin: 额度已恢复，解除余额耗尽冷却 uid=%s provider=%s", t.uid, t.provider)
+		}
 	}
 
 	sort.Strings(out.Providers)
-	// 收尾汇总：一行看全四个计数。
+	// 收尾汇总：一行看全五个计数。
 	//
 	// ⚠ skipped 必须出现在这里。它和 unknown 是**完全不同**的东西：
 	// unknown 是上游如实回答"不知道"（正常），skipped 是"我们压根没问"
 	// （某个上游没接额度）。只报 unknown 会让后者伪装成前者。
-	log.Printf("admin: 额度刷新完成 updated=%d unknown=%d failed=%d skipped=%d providers=%v",
-		out.Updated, out.Unknown, out.Failed, out.Skipped, out.Providers)
+	log.Printf("admin: 额度刷新完成 updated=%d unknown=%d failed=%d skipped=%d revived=%d providers=%v",
+		out.Updated, out.Unknown, out.Failed, out.Skipped, out.Revived, out.Providers)
 	return out
+}
+
+// RefreshAllQuotas 刷新全池额度，供装配层的周期任务调用。
+//
+// # 与 HTTP 端点共用同一套逻辑
+//
+// 差别只在**入参怎么来**：端点按作用域（全池/单上游/单账号）筛，
+// 这里固定全池。跳过/并发/解冻的判据一字不差 —— 两条路径各写一遍
+// 必然漂移，而漂移的表现是"点按钮能刷出额度、等 15 分钟却不行"。
+//
+// # 为什么这里要预过滤（端点不做）
+//
+// 周期任务每 15 分钟跑一次，而端点只在用户点击时跑。两者对"噪音"的
+// 耐受度完全不同：
+//
+//	禁用账号        它们本来就不参与选号，每轮问一次纯属浪费上游配额
+//	无 QuotaExt 上游 每轮都会刷一行 skipped 日志 —— 15 分钟一条，一天 96 条，
+//	                真正的故障会被这个周期性噪音埋掉
+//
+// 端点上保留 skipped 计数是有价值的（用户点一下就想知道"为什么这个上游
+// 没额度"），周期任务上则是纯噪音。
+func (h *Handler) RefreshAllQuotas() quotaRefresher {
+	var out quotaRefresher
+	if h.cfg.Pool == nil || h.cfg.Registry == nil {
+		return out
+	}
+	// 先算出哪些上游实现了 QuotaExt，避免对整片没接额度的上游白跑一遍。
+	hasQuota := map[string]bool{}
+	for _, p := range h.cfg.Registry.All() {
+		if _, ok := gateway.ExtOf[gateway.QuotaExt](p); ok {
+			hasQuota[p.ID()] = true
+		}
+	}
+	all := h.cfg.Pool.List()
+	uids := make([]string, 0, len(all))
+	for _, st := range all {
+		if st.Disabled {
+			continue
+		}
+		if !hasQuota[h.providerOf(st)] {
+			continue
+		}
+		uids = append(uids, st.UID)
+	}
+	if len(uids) == 0 {
+		// 空池/全禁用/全没接额度：静默返回。
+		// 这里**必须**不打日志 —— 否则一个纯 workbuddy 部署会每 15 分钟
+		// 收到一条"额度刷新完成 updated=0 ..."，而它什么也没做错。
+		return out
+	}
+	return h.refreshQuotas(uids)
 }
 
 // safeRefreshQuota 调上游的 RefreshQuota，把 panic 兜住。
@@ -304,6 +446,12 @@ func (h *Handler) accountsQuotaRefresh(w http.ResponseWriter, r *http.Request) {
 		"failed":    res.Failed,
 		"skipped":   res.Skipped,
 		"providers": res.Providers,
+		// Revived 因余额恢复而解除硬冷却的账号数。
+		//
+		// 单独一个字段而不是并进 updated：两者含义完全不同 ——
+		// updated 是"读到了额度"，revived 是"这个号因此重新可用了"。
+		// 混在一起，用户无法判断充值到底有没有把号救回来。
+		"revived": res.Revived,
 		// Scope 告诉前端"这次刷的是哪一档"，回执文案据此措辞
 		//（"已刷新 3 个账号" vs "已刷新全部 12 个账号"）。
 		"scope": scope,

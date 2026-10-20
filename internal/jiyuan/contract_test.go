@@ -19,21 +19,27 @@ func TestContract(t *testing.T) {
 	gateway.RunProviderContract(t, NewProvider)
 }
 
-// TestCapsDeclareTheThreeWeUse 钉住能力位声明。
+// TestCapsDeclareTheFourWeUse 钉住能力位声明。
 //
-// 这条不是形式主义：多声明一个（比如 CapQuotaProbe）会让契约要求
-// AdminExt，而本上游没有可用的额度接口 —— 那时测试会红，
-// 而 `Caps()` 与实现的对应关系才是真正被测的东西。
-func TestCapsDeclareTheThreeWeUse(t *testing.T) {
+// 这条不是形式主义：多声明一个会让契约要求对应扩展点。以 CapQuotaProbe
+// 为例，它同时要求 QuotaExt 与 AdminExt —— 只声明不实现会被
+// `RunProviderContract` 挡下（inkstone 第一版就是这么被抓的）。
+//
+// ⚠ 本上游现在**声明** CapQuotaProbe（名额来源：quota_ext.go 的 QuotaExt
+// 与 adminroute.go 的 AdminExt 都已落地）。这条用例的作用因此反转成
+// 正向断言：少了它，界面上不会出现「额度」按钮，用户只能靠 curl 看余额。
+func TestCapsDeclareTheFourWeUse(t *testing.T) {
 	p := New(Config{})
 	caps := p.Caps()
-	for _, want := range []gateway.Capability{gateway.CapChat, gateway.CapModels, gateway.CapImport} {
+	for _, want := range []gateway.Capability{
+		gateway.CapChat, gateway.CapModels, gateway.CapQuotaProbe, gateway.CapImport,
+	} {
 		if !caps.Has(want) {
 			t.Errorf("Caps() 缺少 %v", want)
 		}
 	}
 	for _, unwanted := range []gateway.Capability{
-		gateway.CapQuotaProbe, gateway.CapCheckin, gateway.CapGrowth,
+		gateway.CapCheckin, gateway.CapGrowth,
 		gateway.CapTravel, gateway.CapWelfare, gateway.CapTasks, gateway.CapInvite,
 	} {
 		if caps.Has(unwanted) {

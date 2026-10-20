@@ -636,6 +636,9 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 			AuthDir:    cfg.JiyuanAuthDir,
 			BaseURL:    cfg.JiyuanBaseURL,
 			LiveModels: cfg.JiyuanLiveModels,
+			// 管理面基址（余额所在）。空 = 官方域名，与改造前逐字节一致。
+			// 形态校验已在 cfg.normalize 里做过（非法值进程起不来）。
+			MgmtBase: cfg.Jiyuan.MgmtBase,
 		})
 		// 凭证来源：pool.SecretOf 里的 *jiyuan.Auth（按 uid 取 key 用）。
 		jy.SetCredentialSource(func(uid string) (gateway.Credential, bool) {
@@ -1143,6 +1146,9 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 	// h 在 admin.New 的 Config 求值时尚未绑定，不能直接捕获，经此变量间接引用）。
 	var onRotate func(string) = func(string) {}
 
+	// adminHandler 单独持有：周期额度刷新任务需要调它的 RefreshAllQuotas，
+	// 而 server.Config.Admin 的类型是 http.Handler（接口会擦掉具体方法）。
+	var adminHandler *admin.Handler
 	h := server.NewHandler(server.Config{
 		Pool: p,
 		// ⚠ 两个注入是**成对**的，都为了同一个目标：让核心不认识
@@ -1207,74 +1213,77 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 		// 注册表 + 账号池在这一层合并成出口层要的那个小接口。
 		Provider:        registryRouter{reg: registry, p: p},
 		DefaultProvider: func() string { id, _ := registry.First(); return id }(),
-		Admin: admin.New(admin.Config{
-			Pool:    p,
-			OAuth:   oauth.New(cfg.OAuthBaseURL),
-			Log:     checkinLog,
-			Ring:    logRing,
-			AuthDir: cfg.AuthDir,
-			APIKeys: apiKeysStore, // /admin/apikeys 管理端点
-			APIKey:  cfg.APIKey,   // 管理钥匙掩码展示（与仪表盘统一）
-			// 轮换管理钥匙写回 config.json 的路径（回调经 onRotate 间接引用 h ——
-			// h 在此闭包求值时尚未绑定，不能直接捕获，见构造后的 onRotate 赋值）。
-			ConfigPath:      cfgPath,
-			OnAPIKeyRotated: func(newKey string) { onRotate(newKey) },
-			// 兼容扫描的父目录：迁移期凭证可能还在 `auths/` 根。
-			AuthsBase: cfg.AuthsBase,
-			// 核心调度视图 + 共享任务槽，供 /admin/schedule 与 /admin/task。
-			//
-			// 这两条端点读的是核心自己排的班，不表达任何上游身份 ——
-			// Task 3c 曾把它们放进 workbuddy，阶段 0 评审指出
-			// 第二个上游若不声明 CapCheckin 就没人服务它们。已移回核心。
-			//
-			// 任务槽与 workbuddy 指向**同一个** sharedTaskSlot：
-			// "同一时刻只允许一个全量任务"是进程级语义，不分上游。
-			Scheduler: adminSchedulerAdapter{s: sch, checkinOn: cfg.Schedule.CheckinEnabled, keepaliveOn: true},
-			TaskSlot:  adminTaskSlotAdapter{sharedTaskSlot},
-			// 缺省上游：/admin/providers 标出它，前端据此把它的模型按**裸名**展示
-			//（其余上游带前缀）。裸名向后兼容是硬要求，所以这个值必须与
-			// 出口层实际用的缺省上游一致。
-			DefaultProvider: defProvider,
-			// `AuthDir` 里的凭证属于 workbuddy（`auth.LoadDir` 只 glob
-			// `workbuddy*.json`）—— 必须**显式**声明，不能让 reload 靠
-			// "谁是默认上游"去猜。评审 F3：那在本部署里碰巧正确
-			//（workbuddy 恰好第一个注册），但默认上游一变就会误删别的上游账号。
-			ReloadProvider: workbuddy.ProviderID,
-			// 注册表：admin 遍历它，把每个上游通过 AdminExt 声明的管理端点挂上来。
-			// Task 3c 之后 22 个 workbuddy 端点就是这样挂的 ——
-			// 加新上游时 admin 包零改动（判据 1）。
-			Registry: registry,
-			// 控制台渲染契约里的服务名，与 /healthz 的 service 字段同源。
-			//
-			// admin 不得 import server（server 依赖 admin，反向会成环），
-			// 所以这个值必须在这里显式传进去。
-			// 用 cfg.ServiceName（可为空）→ server 内部再回落默认常量，
-			// 保证"配置没写"与"配置写了空串"行为一致。
-			ServiceName: firstNonEmpty(cfg.ServiceName, server.ServiceName),
-			// 上游设置项必须以**适配器**形式显式注入，不能靠从 Registry 里
-			// 断言 SettingsExt：上游的 SettingField 与 admin 的是两个类型
-			// （各自声明，互不 import），方法集精确匹配会静默失败
-			// —— 表现成设置页少几个键且没有任何报错。
-			SettingsExts:      []admin.SettingsExt{upSettings},
-			ResetModelsCache:  server.ResetModelsCache,
-			ModelCatalog:      server.ModelCatalogFor,
-			ModelCatalogState: modelCatalogState,
-			Settings: newSettingsStore(cfgPath, cfg, sch, upSettings, checkinLog, func(days int) {
-				if s := logRing.Sink(); s != nil {
-					s.SetKeepDays(days)
-				}
-			}),
-			StartedAt: time.Now(),
-			// 「添加账号」默认用**无痕窗口**打开授权页（用户要求）。
-			//
-			// 放在装配层而不是 admin 里直接 exec：admin 保持"可测、无副作用"，
-			// 而"怎么开浏览器"是部署环境的事（平台差异、独立 profile、
-			// 本机装了哪个浏览器）。见 internal/browseropen 的包注释。
-			//
-			// 返回 nil 表示本部署不自动开（配置关掉了，或本机没有
-			// 受支持的浏览器）—— admin 会退回"只回授权链接"的旧行为。
-			OpenAuthURL: loginBrowserOpener(cfg),
-		}),
+		Admin: func() http.Handler {
+			adminHandler = admin.New(admin.Config{
+				Pool:    p,
+				OAuth:   oauth.New(cfg.OAuthBaseURL),
+				Log:     checkinLog,
+				Ring:    logRing,
+				AuthDir: cfg.AuthDir,
+				APIKeys: apiKeysStore, // /admin/apikeys 管理端点
+				APIKey:  cfg.APIKey,   // 管理钥匙掩码展示（与仪表盘统一）
+				// 轮换管理钥匙写回 config.json 的路径（回调经 onRotate 间接引用 h ——
+				// h 在此闭包求值时尚未绑定，不能直接捕获，见构造后的 onRotate 赋值）。
+				ConfigPath:      cfgPath,
+				OnAPIKeyRotated: func(newKey string) { onRotate(newKey) },
+				// 兼容扫描的父目录：迁移期凭证可能还在 `auths/` 根。
+				AuthsBase: cfg.AuthsBase,
+				// 核心调度视图 + 共享任务槽，供 /admin/schedule 与 /admin/task。
+				//
+				// 这两条端点读的是核心自己排的班，不表达任何上游身份 ——
+				// Task 3c 曾把它们放进 workbuddy，阶段 0 评审指出
+				// 第二个上游若不声明 CapCheckin 就没人服务它们。已移回核心。
+				//
+				// 任务槽与 workbuddy 指向**同一个** sharedTaskSlot：
+				// "同一时刻只允许一个全量任务"是进程级语义，不分上游。
+				Scheduler: adminSchedulerAdapter{s: sch, checkinOn: cfg.Schedule.CheckinEnabled, keepaliveOn: true},
+				TaskSlot:  adminTaskSlotAdapter{sharedTaskSlot},
+				// 缺省上游：/admin/providers 标出它，前端据此把它的模型按**裸名**展示
+				//（其余上游带前缀）。裸名向后兼容是硬要求，所以这个值必须与
+				// 出口层实际用的缺省上游一致。
+				DefaultProvider: defProvider,
+				// `AuthDir` 里的凭证属于 workbuddy（`auth.LoadDir` 只 glob
+				// `workbuddy*.json`）—— 必须**显式**声明，不能让 reload 靠
+				// "谁是默认上游"去猜。评审 F3：那在本部署里碰巧正确
+				//（workbuddy 恰好第一个注册），但默认上游一变就会误删别的上游账号。
+				ReloadProvider: workbuddy.ProviderID,
+				// 注册表：admin 遍历它，把每个上游通过 AdminExt 声明的管理端点挂上来。
+				// Task 3c 之后 22 个 workbuddy 端点就是这样挂的 ——
+				// 加新上游时 admin 包零改动（判据 1）。
+				Registry: registry,
+				// 控制台渲染契约里的服务名，与 /healthz 的 service 字段同源。
+				//
+				// admin 不得 import server（server 依赖 admin，反向会成环），
+				// 所以这个值必须在这里显式传进去。
+				// 用 cfg.ServiceName（可为空）→ server 内部再回落默认常量，
+				// 保证"配置没写"与"配置写了空串"行为一致。
+				ServiceName: firstNonEmpty(cfg.ServiceName, server.ServiceName),
+				// 上游设置项必须以**适配器**形式显式注入，不能靠从 Registry 里
+				// 断言 SettingsExt：上游的 SettingField 与 admin 的是两个类型
+				// （各自声明，互不 import），方法集精确匹配会静默失败
+				// —— 表现成设置页少几个键且没有任何报错。
+				SettingsExts:      []admin.SettingsExt{upSettings},
+				ResetModelsCache:  server.ResetModelsCache,
+				ModelCatalog:      server.ModelCatalogFor,
+				ModelCatalogState: modelCatalogState,
+				Settings: newSettingsStore(cfgPath, cfg, sch, upSettings, checkinLog, func(days int) {
+					if s := logRing.Sink(); s != nil {
+						s.SetKeepDays(days)
+					}
+				}),
+				StartedAt: time.Now(),
+				// 「添加账号」默认用**无痕窗口**打开授权页（用户要求）。
+				//
+				// 放在装配层而不是 admin 里直接 exec：admin 保持"可测、无副作用"，
+				// 而"怎么开浏览器"是部署环境的事（平台差异、独立 profile、
+				// 本机装了哪个浏览器）。见 internal/browseropen 的包注释。
+				//
+				// 返回 nil 表示本部署不自动开（配置关掉了，或本机没有
+				// 受支持的浏览器）—— admin 会退回"只回授权链接"的旧行为。
+				OpenAuthURL: loginBrowserOpener(cfg),
+			})
+			return adminHandler
+		}(),
 	})
 
 	// 轮换管理钥匙：h 构造完成后把「更新内存」接上（闭包经 onRotate 间接引用）。
@@ -1297,6 +1306,29 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 		log.Printf("pool: 主动健康检查已开启（每 %v 探测冷却/熔断中的账号并提前恢复）", iv)
 	} else {
 		log.Printf("pool: 主动健康检查已关闭（pool.health_check_interval_seconds=0，冷却到期自然恢复）")
+	}
+	// 周期额度刷新（core 任务）：让余额从"上次有人点按钮时的快照"变成
+	// "会自己更新的值"，并让充值后自动解冻成为默认行为。
+	//
+	// 调度器语义是"从未跑过则立即跑"，所以**启动即刷一轮**，之后按间隔推进。
+	// 那正是想要的：重启后界面立刻有余额，而不是等 15 分钟。
+	if cfg.Pool.QuotaRefreshIntervalSeconds > 0 {
+		iv := time.Duration(cfg.Pool.QuotaRefreshIntervalSeconds) * time.Second
+		sch.AddJob("core", gateway.Job{
+			Name:     "quota-refresh",
+			Interval: iv,
+			Run: func(ctx context.Context) error {
+				// RefreshAllQuotas 内部已做预过滤（禁用账号 / 无 QuotaExt 上游），
+				// 并且在没有可刷账号时静默返回 —— 这里不重复判。
+				// 计数已在 admin 侧记日志，不再重复打印。
+				adminHandler.RefreshAllQuotas()
+				return nil
+			},
+		})
+		log.Printf("pool: 周期性额度刷新已开启（每 %v 遍历全池）", iv)
+	} else {
+		log.Printf("pool: 周期性额度刷新已关闭（pool.quota_refresh_interval_seconds=0）—— " +
+			"额度只在手动刷新时更新，充值后需自行清冷却")
 	}
 	// 核心调度循环：整点签到/保活 + 各上游通过 gateway.JobExt 注册的守卫任务
 	// （workbuddy 的成长/旅行守卫轮就在其中）。核心**不认识**具体任务名。

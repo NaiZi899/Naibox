@@ -212,3 +212,35 @@ func PerModelQuota(byModel map[string]int64) QuotaView {
 	}
 	return QuotaView{Kind: QuotaKindPerModel, ByModel: byModel, HasData: true}
 }
+
+// QuotaUsabilityExt 上游自报"余额是否直接决定这个账号能不能用"。
+//
+// # 为什么需要单独一个扩展点，而不是让核心猜
+//
+// 额度刷新成功后，"余额 > 0" 这件事的含义**因上游而异**：
+//
+//	jiyuan     静态 key + 余额唯一门禁 → 余额 > 0 就意味着这个号又能用了
+//	workbuddy  积分只是计费口径，凭证本身有独立生命周期（refresh token、
+//	           设备绑定、会话）→ 余额 > 0 完全不代表能用
+//
+// 核心无法从 QuotaView 里分辨这两种情况：两边都是
+// `{kind:credits, remaining:9975, has_data:true}`。让核心按"余额大于 0 就解冻"
+// 一刀切，会把 workbuddy 那种凭证已死的号反复放回池子（每轮刷新解冻一次），
+// 表现是持续 401 重试。
+//
+// 所以判据交回上游：**实现本接口且返回 true** 的上游，其账号才享受
+// "余额恢复即解冻"；不实现的，行为与改造前逐字节相同。
+//
+// # 为什么是静态判断（无参数）
+//
+// 它回答的是"这类上游的可用性模型是什么"，不是"这个号此刻能不能用"。
+// 后者要读凭证与会话状态，那是 QuotaExt 与 Provider 各自的事。
+// 无参数还带来一个好处：核心可以在遍历上游时**一次**问完并缓存，
+// 不必每个账号问一次。
+type QuotaUsabilityExt interface {
+	// QuotaImpliesUsable 余额是否是该上游可用性的**直接**门禁。
+	//
+	// 返回 true 的上游须保证：余额 > 0 时，账号不可用的原因里
+	// **没有**余额以外的因素。否则核心的解冻会制造稳定的重试风暴。
+	QuotaImpliesUsable() bool
+}
