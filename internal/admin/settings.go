@@ -72,6 +72,14 @@ type Settings struct {
 	UpstashURL           string `json:"upstash_url"`
 	SessionStickyEnabled bool   `json:"session_sticky_enabled"`
 	SessionStickyTTL     string `json:"session_sticky_ttl"`
+	// PromptMode / PromptFile 系统提示词的**配置意图**（config.json 的 prompt 段）。
+	//
+	// 与上面一批"需重启"的字段同一个理由：正文在启动时由 cfg.normalize()
+	// 一次性读进 cfg.PromptText，出站客户端拿的是那份快照。运行中改这里
+	// 只改文件与回显，不会让在途进程换上新的词 —— 所以回报 need_restart，
+	// 而不是假装已生效（那会变成"界面说生效了、实际没生效"）。
+	PromptMode string `json:"prompt_mode"`
+	PromptFile string `json:"prompt_file"`
 
 	// ---- 控制台展示（运行时生效，纯展示语义）----
 
@@ -87,6 +95,44 @@ type Settings struct {
 	ConfigPath string `json:"config_path"`
 	RedisMode  string `json:"redis_mode"`
 	APIKeySet  bool   `json:"api_key_set"`
+}
+
+// PromptStatus 当前**生效**的系统提示词状态（只读，PUT 补丁里不接受它）。
+//
+// # 为什么与 settings 里的 prompt_mode / prompt_file 并存
+//
+// 那两个是"下次启动会用哪个"（config.json 里的意图），这里是"此刻正在用哪个"
+// （启动时算出来的结果）。保存之后到下次重启之前，两者必然不一致 ——
+// 这正是需要同时展示的原因：只显示意图，用户会以为保存即生效；
+// 只显示实况，用户不知道自己刚才那次保存到底写没写进文件。
+type PromptStatus struct {
+	// Mode 此刻生效的模式。
+	//
+	// ⚠ 取自宿主的 PromptMode（启动时归一 + 环境变量覆盖之后的那个），
+	// **不是** Config.Prompt.Mode：后者只是 config.json 里的原始值，
+	// 保存后到下次启动前都不代表实况。两者混淆的后果是界面显示"已切到 append"
+	// 而出站仍在按 custom 走 —— 一个只能靠读日志才能发现的分歧。
+	Mode string `json:"mode"`
+	// Source 生效正文的来源："builtin"（内置默认）或 "file:<路径>"。
+	Source string `json:"source"`
+	// Bytes 生效提示词正文的字节数。
+	Bytes int `json:"bytes"`
+	// DegradedUntil 降级期结束时刻（RFC3339）；未降级为空串。
+	DegradedUntil string `json:"degraded_until"`
+	// Scope 这份提示词的作用范围，固定 "workbuddy"。
+	Scope string `json:"scope"`
+}
+
+// PromptStatusSource 可选的只读能力：把"此刻生效的提示词状态"报给设置页。
+//
+// # 为什么不塞进 SettingsStore
+//
+// SettingsStore 描述的是**可读写的字段表**（Snapshot/Apply 都是字段），
+// 而状态块的来源是宿主的内存态（已加载的正文、降级状态机），
+// 两者的装配时机与生命周期都不同。做成可选接口，没实现的宿主照样能跑 ——
+// 设置页少一个只读块，而不是整个设置页不可用。
+type PromptStatusSource interface {
+	PromptStatus() PromptStatus
 }
 
 // SettingsStore 由宿主（cmd/server）实现：提供当前生效设置、校验并持久化补丁。
@@ -211,6 +257,13 @@ func (h *Handler) settingsView() map[string]any {
 			out[f.Key] = f.Value
 		}
 	}
+	// 只读提示词状态块（JSON 键固定 prompt_status）。
+	//
+	// 只出现在下发方向：PUT 补丁里即使带上它也会被当成未知键忽略 ——
+	// admin.Settings 里没有这个字段，encoding/json 静默跳过，不会被误写进 config.json。
+	if ps, ok := h.cfg.Settings.(PromptStatusSource); ok {
+		out["prompt_status"] = ps.PromptStatus()
+	}
 	return out
 }
 
@@ -243,6 +296,9 @@ var restartRequiredFields = []string{
 	"upstash_url",
 	"session_sticky_enabled",
 	"session_sticky_ttl",
+	// 提示词：模式与文件都要重启才生效（正文在启动时加载，见 PromptMode 的注释）。
+	"prompt_mode",
+	"prompt_file",
 }
 
 // runtimeFields 返回通用段 + 上游段里"运行时生效"的键。

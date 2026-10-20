@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/NaiZi899/Naibox/internal/admin"
+	"github.com/NaiZi899/Naibox/internal/prompt"
 )
 
 // 复现并守住阶段 0 评审的 F1：**部分 PUT 不得覆盖未提交的配置**。
@@ -310,5 +311,165 @@ func TestHiddenProvidersAreCopied(t *testing.T) {
 	_ = append(got, "inkstone") // 典型误用：调用方在返回值上 append
 	if n := len(cfg.UI.HiddenProviders); n != 1 {
 		t.Fatalf("append 返回的切片污染了配置：cfg 现在有 %d 项", n)
+	}
+}
+
+// TestPromptSettingsRoundTrip 守「提示词模式 / 文件」这一对键的登记链路。
+//
+// 与 TestHiddenProvidersRoundTrip 同形（parse → applyToMemory → persist →
+// currentSettings），另外补两条只有这对键才有的约束：
+//   - 空模式**不许下发**（前端会把整份 settings 原样回灌，空串会撞上保存校验）；
+//   - applyToMemory 只改配置意图，**不得**动此刻生效的 PromptMode / PromptText。
+func TestPromptSettingsRoundTrip(t *testing.T) {
+	pfile := filepath.Join(t.TempDir(), "prompt.md")
+	if err := os.WriteFile(pfile, []byte("你是一个测试用的系统提示词。\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 配置文件里没写 prompt.mode（最常见的新装形态）：cfg.Prompt.Mode 为空，
+	// 但启动归一算出了生效值 custom。
+	cfg := &Config{}
+	cfg.PromptMode = prompt.ModeCustom
+	st := settingsStoreForTest(t, cfg)
+
+	// 0) 回显：空串必须回落成生效模式，否则下发什么就被回灌什么
+	if got := st.currentSettings().PromptMode; got != prompt.ModeCustom {
+		t.Fatalf("currentSettings().PromptMode = %q，want %q —— "+
+			"空串会被前端原样回灌，撞上保存校验的第一条", got, prompt.ModeCustom)
+	}
+
+	// 1) parse：json tag 对不上就会静默丢弃（这里同时守 tag 名）
+	patch, _ := json.Marshal(map[string]any{
+		"prompt_mode": prompt.ModeAppend,
+		"prompt_file": pfile,
+	})
+	p, err := st.parse(patch)
+	if err != nil {
+		t.Fatalf("parse 失败: %v", err)
+	}
+	if p.PromptMode != prompt.ModeAppend || p.PromptFile != pfile {
+		t.Fatalf("parse 后 = %q / %q，want %q / %q",
+			p.PromptMode, p.PromptFile, prompt.ModeAppend, pfile)
+	}
+
+	// 2) applyToMemory：写配置意图，但**不重载**生效值
+	st.applyToMemory(p)
+	if cfg.Prompt.Mode != prompt.ModeAppend || cfg.Prompt.File != pfile {
+		t.Fatalf("内存 cfg.Prompt = %q / %q，want %q / %q",
+			cfg.Prompt.Mode, cfg.Prompt.File, prompt.ModeAppend, pfile)
+	}
+	if cfg.PromptMode != prompt.ModeCustom {
+		t.Fatalf("applyToMemory 动了生效模式（%q）—— 语义是「保存后重启生效」，"+
+			"这里重载会让界面显示已生效而出站仍是旧词", cfg.PromptMode)
+	}
+
+	// 3) persist：config.json 的 prompt 段必须真的写进去（重启才不丢）
+	if err := st.persist(p); err != nil {
+		t.Fatalf("persist 失败: %v", err)
+	}
+	raw, err := os.ReadFile(st.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Prompt struct {
+			Mode string `json:"mode"`
+			File string `json:"file"`
+		} `json:"prompt"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("config.json 不是合法 JSON: %v", err)
+	}
+	if doc.Prompt.Mode != prompt.ModeAppend || doc.Prompt.File != pfile {
+		t.Fatalf("config.json 的 prompt 段 = %+v，want {append %s}", doc.Prompt, pfile)
+	}
+
+	// 4) currentSettings：读回路径与写对称（漏这处会让 Snapshot 永远显示旧模式）
+	if got := st.currentSettings(); got.PromptMode != prompt.ModeAppend || got.PromptFile != pfile {
+		t.Fatalf("currentSettings() = %q / %q，want %q / %q",
+			got.PromptMode, got.PromptFile, prompt.ModeAppend, pfile)
+	}
+}
+
+// TestValidatePromptSettings 三条保存时校验各拦一次（顺序 1→2→3）。
+//
+// 每一条都对应"重启才会炸"的错误：在这里放过，用户看到的是几小时后服务起不来，
+// 而真因藏在一次看起来成功的保存里。
+func TestValidatePromptSettings(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.md")
+	if err := os.WriteFile(good, []byte("正常提示词\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(dir, "empty.md")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fp := filepath.Join(dir, "fp.md")
+	// 11128 是脱敏表里唯一一条"裸数字即命中"的指纹（见 internal/wire/sanitize.go）。
+	if err := os.WriteFile(fp, []byte("错误码 11128 请重试\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	base := func() admin.Settings {
+		return admin.Settings{PromptMode: prompt.ModeCustom}
+	}
+
+	// 合法基线（空 file → 用内置默认）
+	if err := validatePromptSettings(base()); err != nil {
+		t.Fatalf("空文件的合法配置被判非法: %v", err)
+	}
+	// 合法：可读、非空、无指纹
+	ok := base()
+	ok.PromptFile = good
+	if err := validatePromptSettings(ok); err != nil {
+		t.Fatalf("合法文件被判非法: %v", err)
+	}
+
+	// 1) 模式三选一：空值与其他值都拒
+	for _, m := range []string{"", "custom ", "passthru", "REPLACE"} {
+		s := base()
+		s.PromptMode = m
+		if err := validatePromptSettings(s); err == nil {
+			t.Errorf("模式 %q 应被拒绝（空串会漂进 config.json）", m)
+		}
+	}
+	// append / passthrough 是合法的
+	for _, m := range []string{prompt.ModeAppend, prompt.ModePassthrough} {
+		s := base()
+		s.PromptMode = m
+		if err := validatePromptSettings(s); err != nil {
+			t.Errorf("模式 %q 应被接受: %v", m, err)
+		}
+	}
+
+	// 2) 文件不可读 / 空文件都拒
+	bad := base()
+	bad.PromptFile = filepath.Join(dir, "nope.md")
+	if err := validatePromptSettings(bad); err == nil {
+		t.Error("不可读的文件应被拒绝")
+	}
+	blank := base()
+	blank.PromptFile = empty
+	if err := validatePromptSettings(blank); err == nil {
+		t.Error("空文件应被拒绝（启动时同样会 fail fast）")
+	}
+
+	// 3) 正文含脱敏指纹串 → 拒
+	printed := base()
+	printed.PromptFile = fp
+	if err := validatePromptSettings(printed); err == nil {
+		t.Error("含指纹串的正文应被拒绝（否则界面看到的与上游收到的不是同一份）")
+	}
+
+	// 3b) passthrough 例外：它不发出这段文本，且是回滚通道的落点。
+	//
+	// 与启动期同一口径（config.go 在 passthrough 下只 warning）—— 两处不一致
+	// 会造出"能跑但存不下来"的怪状态。
+	rollback := base()
+	rollback.PromptMode = prompt.ModePassthrough
+	rollback.PromptFile = fp
+	if err := validatePromptSettings(rollback); err != nil {
+		t.Errorf("passthrough 下含指纹的文件应允许保存（回滚通道）: %v", err)
 	}
 }

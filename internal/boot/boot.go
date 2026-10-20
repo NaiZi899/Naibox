@@ -1270,7 +1270,7 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 					if s := logRing.Sink(); s != nil {
 						s.SetKeepDays(days)
 					}
-				}),
+				}, withPromptGate(promptGate)),
 				StartedAt: time.Now(),
 				// 「添加账号」默认用**无痕窗口**打开授权页（用户要求）。
 				//

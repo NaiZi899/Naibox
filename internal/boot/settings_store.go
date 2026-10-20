@@ -13,11 +13,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/NaiZi899/Naibox/internal/admin"
 	"github.com/NaiZi899/Naibox/internal/checkinlog"
+	"github.com/NaiZi899/Naibox/internal/prompt"
 	"github.com/NaiZi899/Naibox/internal/scheduler"
+	"github.com/NaiZi899/Naibox/internal/wire"
 	"github.com/NaiZi899/Naibox/internal/workbuddy"
 )
 
@@ -46,7 +49,17 @@ type settingsStore struct {
 	log *checkinlog.Log
 	// setLogKeepDays 调整落盘请求日志的保留天数（由 main 注入，避免这里依赖 logbuf）。
 	setLogKeepDays func(int)
+	// gate 提示词降级状态机（只读展示用：prompt_status.degraded_until）。
+	//
+	// nil = 未注入：状态块照常下发，只是 degraded_until 恒为空串 ——
+	// 与 prompt.Gate 的"调用方可能根本没被注入"约定一致（nil 的 Until() 返回零值）。
+	gate *prompt.Gate
 }
+
+// 编译期断言：设置页的只读状态块走的是**可选接口**（类型断言），
+// 方法名/签名一旦对不上，表现是"页面上少了一个块、没有任何报错"。
+// 把这条放在编译期，改坏了当场红。
+var _ admin.PromptStatusSource = (*settingsStore)(nil)
 
 // UpstreamSettings 上游专属设置在**宿主**这一侧需要的形状。
 //
@@ -93,6 +106,10 @@ func (s *settingsStore) Snapshot() admin.Settings {
 		UpstashURL:            c.Upstash.URL,
 		SessionStickyEnabled:  c.SessionSticky.Enabled,
 		SessionStickyTTL:      c.SessionSticky.TTL,
+		// 提示词段：回显 config.json 里的**意图**（下次启动生效的那个），
+		// 与此刻实际生效的 PromptMode / PromptText 刻意分开 —— 见 promptModeSetting。
+		PromptMode: s.promptModeSetting(),
+		PromptFile: c.Prompt.File,
 		// 拷贝一份：Snapshot 的返回值会被前端与测试持有，直接给切片等于把
 		// 内部状态的别名交出去（调用方 append 会改到配置）。
 		HiddenProviders: append([]string(nil), c.UI.HiddenProviders...),
@@ -102,6 +119,65 @@ func (s *settingsStore) Snapshot() admin.Settings {
 		ConfigPath: s.path,
 		APIKeySet:  c.APIKey != "",
 	}
+}
+
+// promptModeSetting 回显与回灌用的提示词模式值。
+//
+// 取值顺序：config.json 的原始值（cfg.Prompt.Mode）→ 此刻生效的 cfg.PromptMode
+// → 内置默认 custom。
+//
+// # 为什么不直接返回 cfg.Prompt.Mode
+//
+// 因为"空串"会立刻反噬：前端 collectSettings 把整份 settings 原样回传
+// （Object.assign({}, savedSettings)），所以下发什么就会被 PUT 回来什么。
+// 下发空串 → 回来空串 → 撞上保存校验的第一条（模式必须三选一）→ 用户改个
+// 日志保留天数都存不下来，而错误信息说的是 prompt.mode，看上去毫不相干。
+//
+// 回落到"此刻生效的模式"而不是硬写 custom：环境变量覆盖过（NAIBOX_PROMPT_MODE）
+// 或配置文件没写这一段时，用户在该行看到的就是真正在跑的那个值。
+func (s *settingsStore) promptModeSetting() string {
+	if m := strings.TrimSpace(s.cfg.Prompt.Mode); m != "" {
+		return m
+	}
+	if m := strings.TrimSpace(s.cfg.PromptMode); m != "" {
+		return m
+	}
+	return prompt.ModeCustom
+}
+
+// PromptStatus 实现 admin.PromptStatusSource：报**此刻生效**的提示词状态。
+//
+// 与 Snapshot 里的 prompt_mode / prompt_file 的区别见 admin.PromptStatus 的注释：
+// 那两个是配置意图，这里读的是启动时加载的结果（cfg.PromptMode / cfg.PromptText）。
+func (s *settingsStore) PromptStatus() admin.PromptStatus {
+	c := s.cfg
+	st := admin.PromptStatus{
+		// 生效模式（启动归一 + 环境变量覆盖之后的那个），不是配置里的原始值。
+		Mode:  c.PromptMode,
+		Scope: "workbuddy",
+		// 装载进内存的正文长度。passthrough 下这段正文不会出站使用，
+		// 但它确实是"网关手里那份"，界面据此判断文件读进来了没有。
+		Bytes: len(c.PromptText),
+	}
+	// 来源按装配时实际读的位置说：file 非空就是文件，否则内置默认。
+	// 用配置值而不是比对正文内容：正文可能与内置默认**逐字相同**（用户把它存成文件了），
+	// 那种情况下"看起来一样"不等于"同一个来源"。
+	if f := strings.TrimSpace(c.Prompt.File); f != "" {
+		st.Source = "file:" + f
+	} else {
+		st.Source = "builtin"
+	}
+	// 降级状态：Gate 未注入时留空串（nil 的 Until() 返回零值）。
+	//
+	// 额外判一次 Active()：Until() 在降级期走完后仍返回那个**过去的**时刻，
+	// 直接用会让界面长期写着"降级到昨天 00:00"。字段语义是"未降级 = 空串"，
+	// 所以以 Active() 为准，时间只用来展示。
+	if g := s.gate; g != nil {
+		if until := g.Until(); !until.IsZero() && g.Active() {
+			st.DegradedUntil = until.Format(time.RFC3339)
+		}
+	}
+	return st
 }
 
 // Apply 校验 → 写盘 → 应用运行时字段。
@@ -171,6 +247,8 @@ func (s *settingsStore) Apply(patch json.RawMessage) (applied, needRestart []str
 		"pool_max_in_flight", "pool_breaker_threshold", "pool_breaker_cooldown", "pool_breaker_cooldown_max",
 		"sanitize_blacklist_fingerprints", "upstash_url",
 		"session_sticky_enabled", "session_sticky_ttl",
+		// 提示词：正文在启动时加载（cfg.normalize），运行中改不了。
+		"prompt_mode", "prompt_file",
 	}
 	// 把新值同步进内存 cfg，让 Snapshot 显示的就是刚保存的值。
 	s.applyToMemory(p)
@@ -244,6 +322,8 @@ func (s *settingsStore) currentSettings() admin.Settings {
 		UpstashURL:            c.Upstash.URL,
 		SessionStickyEnabled:  c.SessionSticky.Enabled,
 		SessionStickyTTL:      c.SessionSticky.TTL,
+		PromptMode:            s.promptModeSetting(),
+		PromptFile:            c.Prompt.File,
 		HiddenProviders:       append([]string(nil), c.UI.HiddenProviders...),
 		CheckinEnabled:        c.Schedule.CheckinEnabled,
 		KeepaliveEnabled:      c.Schedule.KeepaliveEnabled,
@@ -274,6 +354,19 @@ func (s *settingsStore) applyToMemory(p admin.Settings) {
 	c.Upstash.URL = p.UpstashURL
 	c.SessionSticky.Enabled = p.SessionStickyEnabled
 	c.SessionSticky.TTL = p.SessionStickyTTL
+	// 提示词段：**只改配置意图，不重载生效正文**。
+	//
+	// 语义是"保存后重启生效"，所以这里刻意**不**动 cfg.PromptMode / cfg.PromptText ——
+	// 那两格是出站客户端此刻真正读的东西（启动时一次性装好）。
+	//
+	// # 为什么顺手重载是更差的选择
+	//
+	// 重载看着"更周到"，但它会让界面变成"已生效"，而出站是否真的换了词取决于
+	// 还有没有第二处缓存（出站客户端、降级期的 Gate、在途请求）。一旦真有出入，
+	// 排查时看到的两份事实互相矛盾 —— 比明确要求重启难查得多。
+	// 保持"文件变了、实况没变"这个单一事实，用户重启一次就对齐了。
+	c.Prompt.Mode = p.PromptMode
+	c.Prompt.File = p.PromptFile
 	// 展示过滤：同样拷贝，避免调用方后续修改切片时改到配置。
 	c.UI.HiddenProviders = append([]string(nil), p.HiddenProviders...)
 	c.Schedule.CheckinEnabled = p.CheckinEnabled
@@ -336,6 +429,55 @@ func validateSettings(p admin.Settings) error {
 	if p.CheckinLogKeepDays < 0 || p.RequestLogKeepDays < 0 {
 		return fmt.Errorf("日志保留天数不能为负")
 	}
+	// 提示词段的三条保存时校验（1→2→3，任何一条失败都不会走到 persist）。
+	return validatePromptSettings(p)
+}
+
+// validatePromptSettings 提示词段的保存时校验。
+//
+// # 为什么在保存时拦，而不是等下次重启
+//
+// 这三条对应的都是"重启才会炸"的错误：非法模式让进程起不来、文件不可读让
+// 进程起不来、正文含指纹串让进程起不来。等重启再报，用户看到的是"服务挂了"，
+// 而真因藏在一次几小时前的保存里 —— 中间这段正常运行的窗口会让人以为是别的东西。
+// 在这里拦住，错误直接显示在点保存的那只手上，config.json 一个字节都没动。
+//
+// # 校验顺序
+//
+//  1. 模式三选一（空值也拒：空串漂进 config.json 会被启动归一当成 custom，
+//     于是"我明明选了 append"变成一句无从对证的话）；
+//  2. 文件可读且非空；
+//  3. 最终正文不含脱敏指纹串（`passthrough` 除外，见下方注释）。
+//
+// 只在模式合法之后才去读文件：模式都不对的时候，"文件读不到"是个噪音错误。
+func validatePromptSettings(p admin.Settings) error {
+	switch p.PromptMode {
+	case prompt.ModeCustom, prompt.ModePassthrough, prompt.ModeAppend:
+		// 合法
+	default:
+		return fmt.Errorf("提示词模式 %q 非法：只接受 %q / %q / %q —— 已拒绝保存，config.json 未改动",
+			p.PromptMode, prompt.ModeCustom, prompt.ModePassthrough, prompt.ModeAppend)
+	}
+
+	// 生效正文：file 非空读文件，否则内置默认。
+	//
+	// 直接复用 prompt.Load，而不是在这里再写一遍"读文件 + 判空"：
+	// 保存期的判据必须与启动期**完全一致**，两份实现迟早漂移 ——
+	// 而漂移的表现是"保存时通过了、重启起不来"，正是本条校验要消灭的东西。
+	body, err := prompt.Load(p.PromptMode, p.PromptFile)
+	if err != nil {
+		return fmt.Errorf("提示词文件不可读或为空（%v）—— 已拒绝保存，config.json 未改动", err)
+	}
+	// 指纹这一条与**启动期同一口径**：passthrough 下不阻断。
+	//
+	// passthrough 根本不会把这段文本发出去（applyPrompt 原样返回，文件只被校验、
+	// 不被使用），所以"被 sanitize 改写"这个后果在它身上不成立；更要紧的是它正是
+	// NAIBOX_PROMPT_MODE 回滚通道的落点 —— 现场拿着一份含指纹的人格文件切过去止血，
+	// 若保存也被拒，人就被卡在半路上。启动期同样只 warning（见 config.go 的 normalize），
+	// 两处口径必须一致，否则"能跑但存不下来"会变成一个新的谜题。
+	if p.PromptMode != prompt.ModePassthrough && wire.HasFingerprint(body) {
+		return fmt.Errorf("提示词正文含脱敏指纹串，会在发出前被改写（界面看到的与实际发的不一致）—— 已拒绝保存")
+	}
 	return nil
 }
 
@@ -372,6 +514,11 @@ func (s *settingsStore) persist(p admin.Settings) error {
 		"keepalive_hours":   p.KeepaliveHours,
 	})
 	set("cooldown", map[string]any{"soft_rate": p.SoftRate})
+	// 提示词段：键名与 config.json 的 prompt 段结构一致（prompt: {mode, file}）。
+	set("prompt", map[string]any{
+		"mode": p.PromptMode,
+		"file": p.PromptFile,
+	})
 	set("upstream", map[string]any{
 		"timeout_seconds":           p.UpstreamTimeoutSec,
 		"header_timeout_seconds":    p.UpstreamHeaderTimeout,
@@ -423,12 +570,26 @@ func (s *settingsStore) persist(p admin.Settings) error {
 	return os.Rename(tmp, s.path)
 }
 
+// settingsStoreOption newSettingsStore 的可选装配参数。
+//
+// 用可变参数而不是加形参：调用点（boot.go）不必因为一个只读展示项而改签名，
+// 也就不会出现"为了一个 UI 字段改装配入口"的连锁改动。
+type settingsStoreOption func(*settingsStore)
+
+// withPromptGate 注入提示词降级状态机（只读展示用：prompt_status.degraded_until）。
+//
+// 不传也能跑：未注入时状态块照常下发，degraded_until 恒为空串 ——
+// 与 prompt.Gate 的 nil 语义一致，不假装"没降级"以外的任何事实。
+func withPromptGate(g *prompt.Gate) settingsStoreOption {
+	return func(s *settingsStore) { s.gate = g }
+}
+
 // newSettingsStore 组装宿主实现。
 //
 // up 是上游的设置扩展适配器（可为 nil —— 该上游没有专属设置）。
 func newSettingsStore(path string, cfg *Config, sch *scheduler.Scheduler, up UpstreamSettings,
-	log *checkinlog.Log, setLogKeepDays func(int)) admin.SettingsStore {
-	return &settingsStore{
+	log *checkinlog.Log, setLogKeepDays func(int), opts ...settingsStoreOption) admin.SettingsStore {
+	s := &settingsStore{
 		path:           path,
 		cfg:            cfg,
 		sch:            sch,
@@ -436,4 +597,8 @@ func newSettingsStore(path string, cfg *Config, sch *scheduler.Scheduler, up Ups
 		log:            log,
 		setLogKeepDays: setLogKeepDays,
 	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }

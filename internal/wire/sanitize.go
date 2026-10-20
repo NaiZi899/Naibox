@@ -134,6 +134,18 @@ func hasFingerprint(text string) bool {
 	return sanitizeHdrRe.MatchString(text)
 }
 
+// HasFingerprint 判断一段文本是否含脱敏指纹（即会不会被 sanitize 改写）。
+//
+// # 为什么要导出
+//
+// 系统提示词的**保存校验**需要它：如果用户填的提示词正文本身命中指纹表，
+// 那么注入后仍会被 sanitizeMessages 逐串改写（例如把裸 `11128` 改成 `11-128`），
+// 于是"界面里看到的提示词"和"上游实际收到的那段"不是同一份 —— 属于静默失败。
+// 在写入配置前拦住，是唯一能让用户当场看见问题的位置。
+//
+// 逻辑与内部预检完全同源（直接转发），不另开一份规则表。
+func HasFingerprint(text string) bool { return hasFingerprint(text) }
+
 // sanitizeContent 兼容字符串与多模态数组；只动 text part，image 等 part 不动。
 // 返回净化后的值及是否发生变化。
 func sanitizeContent(v any) (any, bool) {
