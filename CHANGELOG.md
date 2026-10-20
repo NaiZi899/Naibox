@@ -20,6 +20,50 @@
 > 也就是说：历史条目描述的事都发生过，但里面的路径/产物名要按上表换算，
 > 不要当成"现在仓库里还有这些文件"。
 
+## 未发布 — 系统提示词可运维化
+
+> 提示词此前只有"代码里有、config.json 能写、管理台完全看不到"的状态。这一版把它做成
+> 三模式可运维的一等功能：能选、能填、保存时拦住错配置、运行时看得见当前生效的是哪一份。
+
+### 新增 — `append` 模式
+
+`custom` 会把客户端 system 整段换掉（最能消指纹，但丢掉客户端人格），`passthrough`
+则一个字节都不动（撞审核只能等降级兜）。`append` 补上中间那条路：**保留客户端
+system/developer，在其后追加一条网关 system**。
+
+插入点是"开头连续 system/developer 块的末尾"，客户端没有 system 时插在 `messages[0]` 之前。
+实现上不重新 marshal 整份历史：外层用 `map[string]json.RawMessage`、messages 用
+`[]json.RawMessage` 承载，只序列化新插入的那一条，因此其余消息**字节不变**
+（否则数字字面量、`\u` 转义、键序全会被重排，上游前缀缓存也会整段失效）。
+已存在完全相同的 system 时原样返回，重复调用字节不变。
+
+### 新增 — 提示词策略收成一份真值表
+
+`internal/prompt/policy.go`：`Profile{Name,Mode,Text}` + `Inject(body, p, degraded)`。
+mode × 降级状态的组合从"调用方各写一遍 switch"收成一个纯函数，加模式不必再改出站客户端。
+降级期三种模式一律换成中性提示词 —— 保留的客户端 system 正是刚被拒的那段，继续送只会再撞一次。
+
+### 新增 — 管理台「设置 → 系统提示词」
+
+- 字段 `prompt_mode` / `prompt_file`（都进 `restart_required`，改完重启生效）
+- 只读状态 `prompt_status{mode,source,bytes,degraded_until,scope}`：`mode` 是**当前生效**值
+  （不是配置里待生效的值），`degraded_until` 只在降级期非空
+- 保存时三条校验，任一失败都不写盘：模式三值、文件可读且非空（复用 `prompt.Load`，
+  与启动期同源）、正文不含脱敏指纹（判据复用新导出的 `wire.HasFingerprint`）
+
+### 新增 — 启动期自检与回滚通道
+
+- `config.json` 的 `prompt.mode` 认 `append`；非法值启动即失败并列出三个合法值
+- 提示词正文命中脱敏指纹 → 启动失败（`passthrough` 除外：它不发出这段文本，
+  且是回滚通道的落点，这里 fail fast 等于把救火通道焊死）
+- `NAIBOX_PROMPT_MODE` 环境变量在 `applyEnv` 阶段覆盖模式（早于校验，非法值忽略并记一条日志）
+- `append` + `prompt.file` 为空时打一条 warning：会在客户端 system 之后再叠一份内置默认人格
+
+### 文档
+
+新增 `docs/system-prompt.md`：三层分工、三模式真值表、降级机制的代价、保存期/启动期校验、
+生效范围（当前仅 WorkBuddy 那条出站客户端）与排障表。
+
 ## 未发布 — 额度刷新闭环（基元律动）
 
 > 基元律动的余额从"只能靠 curl"变成"控制台有按钮、后台有周期刷新、充值后自动解冻"；
