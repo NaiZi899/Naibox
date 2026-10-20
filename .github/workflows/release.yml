@@ -396,7 +396,22 @@ jobs:
             # 又不受那条互斥限制。空的 message 上面已经拦过一次，这里再判一次
             # 文件非空，防止 `mktemp` 成功但内容为空时把空说明发出去。
             NOTES="$(mktemp)"
-            git tag -l --format='%(contents)' "$TAG" > "$NOTES"
+            # ⚠ 这里不能直接 `git tag -l --format='%(contents)'`：actions/checkout
+            # 对 tag 事件执行的是 `fetch +<commit>:refs/tags/<tag>`，把**提交**塞进
+            # 了 refs/tags 这个名字下。于是本地看起来是个 lightweight tag，
+            # `%(contents)` 回落成 commit message —— v1.2 首发的 Release 说明就是
+            # 这样变成提交信息的前半句（实测输出以 "fix(release): …" 开头）。
+            #
+            # 所以先按 tag 名显式取一次（这一步会连 tag 对象一起取回来），
+            # 取回来仍不是 tag 对象时，改走 GitHub API 读 tag 对象的 message。
+            git fetch --force --no-tags origin "refs/tags/$TAG:refs/tags/$TAG" >/dev/null 2>&1 || true
+            if [ "$(git cat-file -t "refs/tags/$TAG" 2>/dev/null)" = "tag" ]; then
+              git tag -l --format='%(contents)' "$TAG" > "$NOTES"
+            else
+              echo "本地 refs/tags/$TAG 不是 tag 对象，改从 GitHub API 读 tag message"
+              TAG_OBJ=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)
+              gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJ" --jq .message > "$NOTES"
+            fi
             if [ ! -s "$NOTES" ]; then
               echo "✗ 取出的 tag message 为空，拒绝创建无说明的 Release。"
               exit 1
