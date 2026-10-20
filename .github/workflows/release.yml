@@ -385,20 +385,26 @@ jobs:
             # 标题该是**可检索的标识**，说明留在 notes 里 —— 不要附加主题描述
             # （曾出现 `— 上游 4 个 → 10 个 + …` 这种）。
             #
-            # Release 说明来自 **annotated tag 的 message**（--notes-from-tag）：
+            # Release 说明来自 **annotated tag 的 message**，但**不能**直接用
+            # `--notes-from-tag`：gh 明确拒绝它与 `--repo` 同时出现
+            # （`using --notes-from-tag with --repo is not supported`，exit 123）。
+            # 1.1 那次成功是因为当时还没加 `--repo`；加上之后这条路径就成了
+            # "构建全绿、发布必红"的形状，且失败点在最后一步。
             #
-            #   - 硬编码一句"自动构建产物…详见 README"对下载者没有任何信息量：
-            #     他要判断的是"这版改了什么、我该不该升、升级后会看到什么变化"。
-            #   - 打 tag 时写 message 是最自然的位置 —— 那一刻最清楚这批改动。
-            #   - lightweight tag（没有 message）时 gh 会回落到 commit message，
-            #     不至于产出空说明。
-            #
-            # ⚠ 所以发版流程是：**先把 tag message 写清楚**，再 push tag。
-            # 仓库里留了 docs/release-notes-v1.1.md 作为往期范例。
+            # 所以改成自己把 tag message 落成文件再喂 `--notes-file`：
+            # 语义与 `--notes-from-tag` 等价（都读 tag 对象里的 message），
+            # 又不受那条互斥限制。空的 message 上面已经拦过一次，这里再判一次
+            # 文件非空，防止 `mktemp` 成功但内容为空时把空说明发出去。
+            NOTES="$(mktemp)"
+            git tag -l --format='%(contents)' "$TAG" > "$NOTES"
+            if [ ! -s "$NOTES" ]; then
+              echo "✗ 取出的 tag message 为空，拒绝创建无说明的 Release。"
+              exit 1
+            fi
             echo "$ASSETS" | xargs gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "NaiBox $TAG" \
-              --notes-from-tag
+              --notes-file "$NOTES"
           fi
 
       - name: Prune stale assets
