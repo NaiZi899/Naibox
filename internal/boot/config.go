@@ -3,6 +3,7 @@ package boot
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -1111,6 +1112,21 @@ func Default() *Config {
 // 走 LoadAt，两者共用同一条装配管线。
 func Load(path string) (*Config, error) { return LoadAt(path, "") }
 
+// ErrConfigNotFound 表示**配置文件本身**读不到（路径不存在）。
+//
+// # 为什么要单独一个哨兵，而不是让调用方去判 fs.ErrNotExist
+//
+// normalize 里也会读文件（`prompt.file`）。那个文件缺失时，错误链里同样带
+// fs.ErrNotExist —— 如果调用方用 errors.Is(err, fs.ErrNotExist) 判断"配置不存在"，
+// 就会把"提示词文件路径写错"误判成"config.json 不存在"，随后**整份配置被弃用**、
+// 用纯默认值启动：用户改的每一样东西都静默失效，日志还在讨论另一个文件。
+//
+// 2026-10-20 冒烟实测就是这一形状（`prompt.file` 指向不存在的路径时，启动日志报
+// 「config … 不存在，本次先用纯默认值启动」，而真实原因被吞掉）。
+//
+// 所以"配置在哪读失败"必须由 LoadAt 自己说清楚，而不是让调用方从通用文件错误里猜。
+var ErrConfigNotFound = errors.New("config file not found")
+
 // LoadAt 与 Load 相同，但把**相对**路径的数据落点重定位到 dataDir 下。
 //
 // dataDir 为空 = 与 Load 完全等价（cmd/server 走这条）。
@@ -1126,7 +1142,9 @@ func LoadAt(path, dataDir string) (*Config, error) {
 	if path != "" {
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("read config: %w", err)
+			// 只把"读配置文件"这一步包成哨兵：后面的 normalize 也会读文件
+			// （提示词人格），那些错误绝不能长得像"配置不存在"（见 ErrConfigNotFound）。
+			return nil, fmt.Errorf("%w: read config: %v", ErrConfigNotFound, err)
 		}
 		if err := json.Unmarshal(raw, c); err != nil {
 			return nil, fmt.Errorf("parse config: %w", err)

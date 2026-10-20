@@ -10,7 +10,6 @@ package boot
 import (
 	"context"
 	"errors"
-	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -98,11 +97,16 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 	if err != nil {
 		// 配置文件不存在时给一次机会用纯默认 + env。
 		//
-		// ⚠ 必须用 errors.Is(err, fs.ErrNotExist) 而不是 os.IsNotExist(err)：
-		// Load 把读取错误包成 "read config: %w"，Windows 下 os.IsNotExist 对
-		// 被包装的错误判不了（实测：空目录直接退出 "load config: read config:
-		// open config.json: ..."），优雅回落成了死代码。errors.Is 穿透包装链。
-		if errors.Is(err, fs.ErrNotExist) {
+		// ⚠ 判据是**自己的哨兵** ErrConfigNotFound，不是 fs.ErrNotExist：
+		// normalize 也会读文件（提示词人格），那个文件缺失时错误链里同样带
+		// fs.ErrNotExist。用后者判断的后果是"提示词路径写错"被当成"配置不存在"，
+		// 于是整份配置被弃用、按纯默认值启动 —— 用户改的全部静默失效，
+		// 而日志还在说 config.json 的事（2026-10-20 冒烟实测踩到）。
+		//
+		// 历史注记：这里早先用 os.IsNotExist，Windows 下对 `read config: %w`
+		// 包装链判不出来，优雅回落成了死代码；后来改成 errors.Is(err, fs.ErrNotExist)
+		// 才通，但那个判据仍然太宽（见上）。现在两者都由哨兵取代。
+		if errors.Is(err, ErrConfigNotFound) {
 			log.Printf("config %s 不存在：请从 Release/仓库复制 config.example.json 改为 config.json 后编辑"+
 				"（配置说明见 README）；本次先用纯默认值启动", cfgPath)
 			cfg, err = LoadAt("", opt.DataDir)
