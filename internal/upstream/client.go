@@ -363,19 +363,22 @@ func (c *Client) prepareBody(body []byte) []byte {
 
 // applyPrompt 按 PromptMode 与降级状态改写请求体里的系统提示词。
 //
-// # 四种组合
+// # 路由规则只有一份
 //
-//	mode=custom,      未降级 → 用 PromptText 替换 system/developer
-//	mode=custom,      降级中 → 用 prompt.Degraded 替换（比自定义人格更"无特征"）
-//	mode=passthrough, 未降级 → **原样返回**（保留客户端人格，一个字节都不动）
-//	mode=passthrough, 降级中 → 用 prompt.Degraded 替换
+// mode × 降级状态的组合已经收进 prompt.Inject（见 internal/prompt/policy.go
+// 的真值表）。本函数只负责两件**装配层**的事：把空 mode 归一成 custom、
+// 把空正文回落成内置默认 —— 然后交给那唯一的策略函数。
 //
-// # 为什么降级对一个"透传"模式也能改写
+// 之所以不在这里自己写 switch：早先 custom/passthrough 两态时各写一遍是可行的，
+// 一旦加上 append，"降级期 append 该怎么办"就会在调用方和提示词包各有一份答案，
+// 而这两份答案随后必然漂移。策略与装配分开，加模式就不再需要改这里。
 //
-// passthrough 的语义是"尊重客户端人格"，但**降级期的存在本身就说明**
-// 那份人格刚刚撞了内容策略。此时继续透传 = 继续撞 400。
-// 降级是用户通过配置**已经同意**的兜底路径（prompt 段落存在即代表同意），
-// 而不是我们擅自改写：它只在"客户端人格已被上游拒绝"这个前提下生效。
+// # append 在降级期为什么与 custom 同路
+//
+// append 的语义是"保留客户端 system，再叠一条网关 system"。降级期存在的前提
+// 正是那份**客户端 system 刚刚撞了内容策略**，此时叠加消不掉任何指纹，
+// 只会让请求体更长、命中逐字匹配表的面积更大。所以降级期一律整段换成
+// 中性提示词，三种模式在这里没有区别（理由详见 internal/prompt/policy.go）。
 //
 // # custom 模式下 PromptText 为空时回落内置默认
 //
@@ -389,19 +392,15 @@ func (c *Client) applyPrompt(body []byte) []byte {
 	if mode == "" {
 		mode = prompt.ModeCustom // 配置缺省 = custom
 	}
-	degraded := c.PromptGate.Active()
-
-	if mode == prompt.ModePassthrough && !degraded {
-		return body
-	}
 	text := c.PromptText
 	if text == "" {
 		text = prompt.Default()
 	}
-	if degraded {
-		text = prompt.Degraded
-	}
-	return prompt.Rewrite(body, text)
+	return prompt.Inject(body, prompt.Profile{
+		Name: "default",
+		Mode: mode,
+		Text: text,
+	}, c.PromptGate.Active())
 }
 
 // effortsSnapshot 返回 effort 能力缓存副本；nil 表示未知（透传不降级）。
