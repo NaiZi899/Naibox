@@ -272,13 +272,31 @@ curl http://127.0.0.1:7863/v1/images/generations \
 | `schedule.*` | — | 签到 / 保活 / 活跃上报（统一 30 分钟被动扫描） |
 | `session_sticky.*` | `enabled=true` `ttl=30m` | 同一会话固定同一账号 |
 | `upstream.*` | 内嵌默认 | 出站身份（UA / 客户端版本 / 设备 token / IP 透传）与超时 |
-| `prompt.*` | 内嵌默认 | 系统提示词（`custom` / `passthrough`） |
+| `prompt.*` | 内嵌默认 | 系统提示词（`custom` / `append` / `passthrough`），见 [docs/system-prompt.md](docs/system-prompt.md) |
 | `upstash.*` | — | 可选 Redis/Upstash 后端；不配则纯内存 |
 
 各上游都有自己的段（都支持 `enabled` / `auth_dir`，多数还有 `pool_accounts`）：
 
 `workbuddy` · `workbuddy_intl` · `codearts` · `loomy` · `trae` · `cline` ·
 `raccoon` · `lobsterai` · `qoder` · `inkstone` · `jiyuan`
+
+### 系统提示词
+
+网关在出站前改写 `system` / `developer` 消息，用来消灭客户端（Claude Code 等）注入的
+模板句——上游内容审核对它们做逐字匹配，命中就整单 400。三种模式：
+
+| `prompt.mode` | 未降级时 | 适合 |
+|---|---|---|
+| `custom`（默认） | 删掉客户端 system，换成网关自有提示词 | 最能消指纹，接受丢客户端人格 |
+| `append` | 保留客户端 system，在其后追加一条网关 system | 想留住客户端人格，接受残留指纹风险与双份 token |
+| `passthrough` | 一个字节都不动 | 完全信任客户端，撞审核时靠降级兜一次 |
+
+`prompt.file` 留空即用内置默认（约 2KB）；指了文件但不可读/为空，**启动直接失败**。
+管理台「设置 → 系统提示词」可选模式、填路径并看到当前生效的那份（重启生效）。
+`NAIBOX_PROMPT_MODE=passthrough` 是现场回滚通道，优先于 `config.json`。
+
+细节（三层分工、降级期为什么三种模式同路、保存期与启动期的校验差异、生效范围）见
+[docs/system-prompt.md](docs/system-prompt.md)。
 
 ## 🔌 API
 
