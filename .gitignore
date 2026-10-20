@@ -97,6 +97,9 @@ tasks/
 # 设计/计划文档（但 README.md 必须进版本库）
 *.md
 !README.md
+# AGENTS.md 是**给 agent 的项目约定**（仓库定位、验证方法、发布流程、踩过的坑），
+# 和 CONTRIBUTING 同级：它是交付物，不是过程文档。后续维护者接手时第一份该读的就是它。
+!AGENTS.md
 !SECURITY.md
 !CHANGELOG.md
 # 面向贡献者的规范文件同样是交付物 —— `*.md` 会连它们一起忽略，必须点名豁免。
