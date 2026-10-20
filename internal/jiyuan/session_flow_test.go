@@ -57,6 +57,11 @@ type fakeUpstream struct {
 	keyPrefixes map[string]string
 	// overrideUsage 若非空，`/api/usage-summary` 直接回它（用于测币种等边界）。
 	overrideUsage string
+	// balanceCalls 收到 `/api/usage-summary` 的次数。
+	//
+	// 用来证明"余额请求确实打到了这台假上游"—— 只看返回值区分不出
+	// "读到了余额"与"读的是另一台服务器（比如官方域名）"。
+	balanceCalls int
 	// keysStatus 非 0 时 `/api/api-keys` 直接回这个状态码（模拟上游 5xx/429）。
 	//
 	// 用来钉住一条**曾经把用户带偏**的分支：列表读失败时若把错误吞掉，
@@ -78,9 +83,9 @@ func (f *fakeUpstream) serve(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(srv.Close)
 
-	old := mgmtBase
-	mgmtBase = srv.URL
-	t.Cleanup(func() { mgmtBase = old })
+	old := currentMgmtBase()
+	setMgmtBase(srv.URL)
+	t.Cleanup(func() { setMgmtBase(old) })
 }
 
 func (f *fakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
@@ -90,23 +95,27 @@ func (f *fakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/me":
-		writeJSON(w, `{"code":0,"message":"ok","data":{"name":"demo-user","phoneMasked":"138****8000","status":"active"}}`)
+		writeJSONRaw(w, `{"code":0,"message":"ok","data":{"name":"demo-user","phoneMasked":"138****8000","status":"active"}}`)
 
 	case r.Method == http.MethodGet && r.URL.Path == "/api/usage-summary":
+		// 外层（handle 开头）已持 f.mu —— 这里**不能**再 Lock，
+		// sync.Mutex 不可重入，重入会把这个 handler 永久挂住（表现为
+		// httptest.Server 关闭时卡在 "blocked in Close"）。
+		f.balanceCalls++
 		if f.overrideUsage != "" {
-			writeJSON(w, f.overrideUsage)
+			writeJSONRaw(w, f.overrideUsage)
 			return
 		}
 		// ⚠ 刻意让 Total ≠ Available：真实账号里
 		// `balanceCny = available + frozen`，而**冻结的钱花不出去**。
 		// 若两者相等，测试就分不出"取 Available"与"取 Total"的差别
 		//（变异验证实测踩过：那种夹具下改错也全绿）。
-		writeJSON(w, `{"code":0,"message":"ok","data":{"balanceCny":"120.00000000","availableBalanceCny":"99.75000000","frozenBalanceCny":"20.25000000","expiringBalanceCny":"80.75000000","currency":"CNY"}}`)
+		writeJSONRaw(w, `{"code":0,"message":"ok","data":{"balanceCny":"120.00000000","availableBalanceCny":"99.75000000","frozenBalanceCny":"20.25000000","expiringBalanceCny":"80.75000000","currency":"CNY"}}`)
 
 	case r.Method == http.MethodGet && r.URL.Path == "/api/api-keys":
 		if f.keysStatus != 0 {
 			w.WriteHeader(f.keysStatus)
-			writeJSON(w, `{"code":"UPSTREAM_ERROR","message":"上游暂时不可用"}`)
+			writeJSONRaw(w, `{"code":"UPSTREAM_ERROR","message":"上游暂时不可用"}`)
 			return
 		}
 		// **关键**：列表只给 maskedKey（上游事实），但给**未脱敏的 keyPrefix**
@@ -120,14 +129,14 @@ func (f *fakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 			items = append(items, `{"id":"id-`+name+`","name":"`+name+`",`+
 				`"maskedKey":"sk_tr_XX****ZZ","keyPrefix":"`+prefix+`","status":"enabled"}`)
 		}
-		writeJSON(w, `{"code":0,"message":"ok","data":[`+strings.Join(items, ",")+`]}`)
+		writeJSONRaw(w, `{"code":0,"message":"ok","data":[`+strings.Join(items, ",")+`]}`)
 
 	case r.Method == http.MethodPost && r.URL.Path == "/api/api-keys":
 		// 真实上游要求写接口带 Authorization（否则 CSRF 403）——
 		// 假上游同样要求，这样"忘了带"会在这里暴露。
 		if r.Header.Get("Authorization") == "" {
 			w.WriteHeader(http.StatusForbidden)
-			writeJSON(w, `{"code":"CSRF_INVALID","message":"请求安全校验失败"}`)
+			writeJSONRaw(w, `{"code":"CSRF_INVALID","message":"请求安全校验失败"}`)
 			return
 		}
 		name := f.extractName(r)
@@ -138,12 +147,12 @@ func (f *fakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		// 前缀取前 12 位（与上游形状一致：`sk_tr_` + 6 位）。
 		f.keyPrefixes[name] = full[:12]
 		f.lastCreatedKey = full
-		writeJSON(w, `{"code":0,"message":"ok","data":{"id":"id-`+name+`","name":"`+name+`",`+
+		writeJSONRaw(w, `{"code":0,"message":"ok","data":{"id":"id-`+name+`","name":"`+name+`",`+
 			`"maskedKey":"sk_tr_FA****ALUE","status":"enabled","key":"`+full+`"}}`)
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
-		writeJSON(w, `{"code":"NOT_FOUND","message":"接口不存在"}`)
+		writeJSONRaw(w, `{"code":"NOT_FOUND","message":"接口不存在"}`)
 	}
 }
 
@@ -164,7 +173,7 @@ func (f *fakeUpstream) extractName(r *http.Request) string {
 	return rest
 }
 
-func writeJSON(w http.ResponseWriter, s string) {
+func writeJSONRaw(w http.ResponseWriter, s string) {
 	_, _ = w.Write([]byte(s))
 }
 
@@ -423,15 +432,15 @@ func TestFlowCreateRequiresAuthorization(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.Header.Get("Authorization") == "" {
 			w.WriteHeader(http.StatusForbidden)
-			writeJSON(w, `{"code":"CSRF_INVALID","message":"请求安全校验失败"}`)
+			writeJSONRaw(w, `{"code":"CSRF_INVALID","message":"请求安全校验失败"}`)
 			return
 		}
 		f.handle(w, r)
 	}))
 	t.Cleanup(srv.Close)
-	old := mgmtBase
-	mgmtBase = srv.URL
-	t.Cleanup(func() { mgmtBase = old })
+	old := currentMgmtBase()
+	setMgmtBase(srv.URL)
+	t.Cleanup(func() { setMgmtBase(old) })
 
 	p := New(Config{})
 	if _, err := p.ImportCredentials("sess_fake_session_value", importKindSessionCreate); err != nil {

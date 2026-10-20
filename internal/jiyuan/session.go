@@ -28,24 +28,55 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/NaiZi899/Naibox/internal/gateway"
 )
 
-// mgmtBase 管理面基址（`/api/*` 挂在这个域名下，与 /v1 同域）。
+// DefaultMgmtBase 官方管理面基址。
 //
-// ⚠ 这是 `var` 而不是 `const`，**唯一**理由是让包内测试能把它指向
-// httptest 服务器。原因值得写下来：
+// 管理面（`/api/*`，余额所在）与推理面（`/v1`）**同域但可分开指向**：
+// 很多反代只转发 `/v1`，此时聊天走代理、余额得直连官方域名。所以基址
+// 做成可配置（`jiyuan.mgmt_base`），留空即用本常量。
+const DefaultMgmtBase = "https://tokenrhythm.studio"
+
+// mgmtBase 当前生效的管理面基址。
 //
-// 本文件最初把业务字段读在 JSON **顶层**（真值在信封的 `data` 里），
-// 这个缺陷上线了 —— 根本原因是解析逻辑长在 `fetch*` 里、而 `fetch*`
-// 又要打真实网络，于是**没有任何测试能覆盖它**。变成 `var` 之后，
-// session_flow_test.go 能用本地假上游跑完整流程（信封 + POST + 重名检查），
-// 这类"字段读错层级"的问题在下一次提交时就会被拦下。
+// ⚠ 这里用「mu + 可写变量」而不是一个裸 var，是因为它现在**真的会被写**：
+// 装配层按 `jiyuan.mgmt_base` 设置它，而周期额度刷新会在多个 goroutine 上
+// 并发读（sessionDo）。原先那句"生产代码从不修改它"的前提已经不成立了。
 //
-// 生产代码**从不修改**它；测试也不并行跑，因此不存在数据竞争。
-var mgmtBase = "https://tokenrhythm.studio"
+// 读一律走 currentMgmtBase()。测试改用 setMgmtBase()，这样 -race 下
+// 也是干净的（直接赋值会绕过锁，在并发用例里就是数据竞争）。
+var (
+	mgmtBaseMu sync.RWMutex
+	mgmtBase   = DefaultMgmtBase
+)
+
+// setMgmtBase 设置管理面基址：去空白、去尾斜杠，空串回落官方域名。
+//
+// # 为什么这里也做归一（装配层已经校验过一次）
+//
+// 本文件的两个调用者（测试、装配层）都可能给出带尾斜杠的值。
+// `https://x/` + `/api/me` 会拼成 `https://x//api/me` —— 多数服务器能容忍，
+// 但抓包与日志里会持续看到双斜杠，排查时浪费时间。归一收在一处。
+func setMgmtBase(base string) {
+	s := strings.TrimRight(strings.TrimSpace(base), "/")
+	if s == "" {
+		s = DefaultMgmtBase
+	}
+	mgmtBaseMu.Lock()
+	mgmtBase = s
+	mgmtBaseMu.Unlock()
+}
+
+// currentMgmtBase 读当前生效的管理面基址（并发安全）。
+func currentMgmtBase() string {
+	mgmtBaseMu.RLock()
+	defer mgmtBaseMu.RUnlock()
+	return mgmtBase
+}
 
 // sessionTimeout 管理面单次请求上限（比推理短很多：这些是给人点的短操作）。
 const sessionTimeout = 25 * time.Second
@@ -329,7 +360,7 @@ func sessionDo(ctx context.Context, method, sess, path string, body []byte) ([]b
 	if len(body) > 0 {
 		rdr = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, mgmtBase+path, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, currentMgmtBase()+path, rdr)
 	if err != nil {
 		return nil, err
 	}

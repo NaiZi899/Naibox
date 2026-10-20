@@ -2316,6 +2316,64 @@ func (p *Pool) ClearCooldown(uid string) bool {
 	return true
 }
 
+// ReviveHardCreditIfUsable 余额恢复到正值时，解除"余额耗尽"型硬冷却。
+//
+// 返回是否真的解冻了（调用方据此记日志/计数）。
+//
+// # 为什么不能直接调 ClearCooldown
+//
+// ClearCooldown 会清掉**全部**运行态：冷却、熔断计数、指数退避进度、
+// 软限流 streak、会话失效进度。那是"人工宣布这个号没问题"的语义。
+//
+// 而周期额度刷新是**机器每 15 分钟跑一次**的。若拿它当 ClearCooldown：
+//
+//	一个正在吃 429 指数退避的号 → 每轮刷新被放回池子 → 立刻再吃 429
+//	→ 冷却被重置、退避永远长不起来 → 稳定的违规重试
+//
+// 余额只能证明"钱够"，不能证明"限流窗口过了"。所以本方法**只清与
+// 余额有关的三个字段**（until / coolKind / reason），熔断与软限流原样保留。
+//
+// # 判据
+//
+//	e.coolKind == CoolHard   只有余额/配额耗尽型冷却才是本方法的对象
+//	e.until 未到             已经到期的走自然恢复，不必在此抢跑
+//	quota > 0                余额必须真的恢复（Effective 取余量，0 表示仍空）
+func (p *Pool) ReviveHardCreditIfUsable(uid string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok || e == nil {
+		return false
+	}
+	// 只认 CoolHard。CoolSoft（429 限流）与熔断不在本方法的语义里。
+	if e.coolKind != CoolHard {
+		return false
+	}
+	// 已过期的不算"本次解冻"：那由 pick 的自然恢复处理，这里返回 false
+	// 以免调用方把"本来就该好了"记成"刷新救活了它"。
+	if !e.until.After(time.Now()) {
+		return false
+	}
+	// 余额必须为正。缺这条会把"真没钱的号"每轮解冻一次 —— 比不解冻更糟：
+	// 它会持续打上游、持续 402/403，而界面上余额明明显示 0。
+	if e.quota.HasData && e.quota.Effective() <= 0 {
+		return false
+	}
+	if !e.quota.HasData {
+		// 没有额度数据就没有"余额恢复"这个证据，不动。
+		return false
+	}
+	e.until = time.Time{}
+	// ⚠ 这里写 0 是沿用 ClearCooldown 的做法，而 CoolHard 的 iota 值**也是 0** ——
+	// 所以 coolKind 无法表达"无冷却"。真正决定 Cooling 的是 until（见 Status），
+	// 上面一行已经把它清零，这里只是一个不再被读取的残留标签。
+	// 谁若想按 coolKind 判断"还在不在冷却"，会得到错误答案。
+	e.coolKind = 0
+	e.reason = ""
+	p.dirty.Store(true)
+	return true
+}
+
 // Remove 把账号移出池并立即落盘（避免 state.json 里的残留让它在重启后复活）。
 // 返回账号是否存在。调用方若要同时删凭证文件，请自行删除后再调用本方法。
 func (p *Pool) Remove(uid string) bool {

@@ -61,22 +61,31 @@ func (p *Provider) ImportCredentialKinds() []gateway.ImportCredentialKind {
 		},
 		{
 			ID:    importKindSession,
-			Label: "登录凭证（启用余额查询）",
-			Hint: "贴 sess_ 开头的登录凭证，网关会读出账号名称、手机尾号与**实时余额**，" +
-				"并把凭证挂到该账号下**已导入的那把 key** 上（按 key 前缀配对）。" +
-				"挂上之后，账号池里的「额度」列就能显示实时余额。" +
-				"⚠ 上游只下发脱敏 key，所以这一栏**不会**新增任何 key；" +
-				"若池里还没有该账号的 key，请先用「API Key」栏导入，或用下面「代开一把」。" +
+			Label: "登录凭证（给已有 Key 补余额）",
+			// ⚠ 这里**不能**出现 Markdown 星号：Hint 会原样显示在控制台
+			// （前端只做 esc，不渲染 markdown）。改造前写了 `**实时余额**`，
+			// 用户看到的就是一对裸星号。
+			//
+			// ⚠ 也**不能**写"不会保存登录凭证"：这一栏必须把 session 写进
+			// 凭证文件，否则周期额度刷新读不到余额，额度列会一直是 `—`。
+			// 改造前界面上那句相反的承诺，让用户以为贴了不留痕。
+			Hint: "贴 sess_ 开头的登录凭证，网关会读出账号名称、手机尾号与实时余额，" +
+				"并把登录凭证保存到该账号的凭证文件里（这样后台每 15 分钟才能刷到最新余额）。\n" +
+				"它会把凭证挂到该账号下已导入的那把 key 上（按 key 前缀配对）。" +
+				"上游只下发脱敏 key，所以这一栏不会新增任何 key；若池里还没有该账号的 key，" +
+				"请先用「API Key」栏导入，或用下面「新建 Key 并入库」。\n" +
 				"获取：浏览器登录 tokenrhythm.studio → F12 → Application → Cookies → 复制 tr_session。",
 			Placeholder: "sess_…",
 			Secret:      true,
 		},
 		{
 			ID:    importKindSessionCreate,
-			Label: "登录凭证（代开一把 Key 并入库）",
-			Hint: "⚠ 会在你的 tokenrhythm.studio 账号里**真实新建**一把 API Key（名 omni2api，若已占用则自动加序号），" +
+			Label: "登录凭证（新建 Key 并入库）",
+			Hint: "会在你 tokenrhythm.studio 账号里真实新建一把 API Key（名 omni2api，若已占用则自动加序号），" +
 				"并占用该账号的 key 数量配额（上游上限 10 把）。完整 key 只在这一刻下发一次，" +
-				"网关会立刻存入账号池。只在你不方便自己去复制时使用。" +
+				"网关会立刻存入账号池。\n" +
+				"注意：这一栏只保存 key，不保存登录凭证，所以导入后额度是空的 —— " +
+				"想看余额，请在「给已有 Key 补余额」那一栏再贴一次同一个 sess_。\n" +
 				"获取：浏览器登录 tokenrhythm.studio → F12 → Application → Cookies → 复制 tr_session。",
 			Placeholder: "sess_…",
 			Secret:      true,
@@ -215,7 +224,7 @@ func (p *Provider) importViaSession(ctx context.Context, pasted string) ([]gatew
 	// "无法凭空造出可用凭证"，用户读成"有效但拿不到东西"—— 于是来问
 	// "为什么显示有效却没有内容"。所以这里第一句就把口径说清：
 	// 这一栏**本来就不新增账号**，它是给已有 key 挂余额用的。
-	desc := "登录凭证有效，但这一栏**不新增账号**。\n" +
+	desc := "登录凭证有效，但这一栏不新增账号。\n" +
 		"  账号：" + firstNonEmpty(ident.Label, "未知") +
 		firstNonEmpty("\n  手机尾号："+ident.PhoneTail, "")
 	if balErr == nil {
@@ -224,16 +233,16 @@ func (p *Provider) importViaSession(ctx context.Context, pasted string) ([]gatew
 			desc += fmt.Sprintf("（其中 %.2f 即将过期）", bal.Expiring)
 		}
 	}
-	desc += "\n\n为什么：上游只下发**脱敏** key（没有完整值），所以贴 sess_ 换不出可用的 sk_。\n" +
-		"这一栏的作用是：把登录凭证挂到**已用「API Key」栏导进池子**的那把 key 上，\n" +
+	desc += "\n\n为什么：上游只下发脱敏 key（没有完整值），所以贴 sess_ 换不出可用的 sk_。\n" +
+		"这一栏的作用是：把登录凭证挂到已用「API Key」栏导进池子的那把 key 上，\n" +
 		"使「额度」列能读到实时余额。"
 	if listErr != nil {
-		desc += "\n\n✗ 这次**读上游 Key 列表失败**：" + listErr.Error() +
+		desc += "\n\n✗ 这次读上游 Key 列表失败：" + listErr.Error() +
 			"\n  所以现在分不清是「对不上」还是「读不到」。请稍后在同一栏重试一次；" +
 			"\n  若反复失败，说明上游管理面在拒这把登录凭证（与 key 无关，key 照常能推理）。"
 	} else {
-		desc += "\n\n当前账号下的 key 与池里的凭证**一把都没对上**，二选一：\n" +
-			"  1. 到 tokenrhythm.studio 的 API Key 页复制完整 sk_，用「API Key」栏导入，**再回到这一栏**贴登录凭证以启用余额；\n" +
+		desc += "\n\n当前账号下的 key 与池里的凭证一把都没对上，二选一：\n" +
+			"  1. 到 tokenrhythm.studio 的 API Key 页复制完整 sk_，用「API Key」栏导入，再回到这一栏贴登录凭证以启用余额；\n" +
 			"  2. 用「登录凭证（代开一把 Key 并入库）」栏，由网关替你在上游新建一把并直接入库。"
 	}
 	// 用 ImportNotice 而不是普通 error：这是一条**内容为真**的结论，
@@ -580,7 +589,7 @@ func validateKey(key, where string) (string, error) {
 	case k == "":
 		return "", fmt.Errorf("%s 是空的", where)
 	case strings.HasPrefix(k, "sess_"):
-		return "", fmt.Errorf("%s 看起来是**登录凭证**（sess_…），不是 API Key —— "+
+		return "", fmt.Errorf("%s 看起来是登录凭证（sess_…），不是 API Key —— "+
 			"请把粘到「登录凭证」那一栏（它会自动列出该账号下的全部 key）；"+
 			"本栏要的是 sk_ 开头的 API Key", where)
 	case len(k) < 16:

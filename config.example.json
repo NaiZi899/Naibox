@@ -94,7 +94,8 @@
   "jiyuan": {
     "enabled": true,
     "auth_dir": "./auths/jiyuan",
-    "pool_accounts": true
+    "pool_accounts": true,
+    "mgmt_base": ""
   },
   "features": {
     "sanitize_blacklist_fingerprints": true
@@ -114,7 +115,8 @@
     "breaker_cooldown_max": "6h",
     "idle_weight_per_hour": 0.5,
     "idle_weight_max": 5.0,
-    "health_check_interval_seconds": 600
+    "health_check_interval_seconds": 600,
+    "quota_refresh_interval_seconds": 900
   },
   "session_sticky": {
     "enabled": true,

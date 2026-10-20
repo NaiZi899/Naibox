@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -349,6 +350,24 @@ type Config struct {
 		// 冷却/熔断中的账号，成功即提前恢复（额度"提前回血"的号不用干等）。
 		// 0 = 关闭主动探测（冷却到期自然恢复）。默认 600。
 		HealthCheckIntervalSeconds int `json:"health_check_interval_seconds"`
+		// QuotaRefreshIntervalSeconds 周期额度刷新间隔。默认 900（15 分钟），
+		// `0` = 关闭，负数 = 启动失败。
+		//
+		// # 为什么要默认开启
+		//
+		// 额度是"会自己变"的量：用户充值、上游赠送、跨月重置。不主动刷，
+		// 界面上的数字就是上次有人点按钮时的快照 —— 而"额度耗尽"型硬冷却
+		// 一旦进入，只有人工清冷却或等配额重置才出得来。默认开启让"充值后
+		// 自动恢复可用"成为默认行为。
+		//
+		// # 为什么是 900 秒而不是 60
+		//
+		// 每轮会对**每个账号**打一次上游管理面。25 个账号 / 15 分钟 ≈ 0.03 QPS，
+		// 对上游是可以忽略的量；压到 1 分钟就是 0.42 QPS，等于把额度接口
+		// 当成轮询接口用。对账"金额变了没有"这件事也不需要分钟内精度。
+		//
+		// 想立刻看最新余额可以点控制台的「刷新全部额度」，不走这条周期。
+		QuotaRefreshIntervalSeconds int `json:"quota_refresh_interval_seconds"`
 	} `json:"pool"`
 
 	SessionSticky struct {
@@ -828,6 +847,21 @@ type Config struct {
 		AuthDir string `json:"auth_dir"`
 		// BaseURL 推理端点基址覆盖（留空=https://tokenrhythm.studio/v1）。
 		BaseURL string `json:"base_url"`
+		// MgmtBase 管理面基址覆盖（`/api/*`，余额所在）。留空 = 官方域名。
+		//
+		// # 为什么要与 base_url 分开
+		//
+		// 很多反代只转发 `/v1`，不转发 `/api`。那种部署下聊天走代理、
+		// 余额必须直连官方域名。基址只有一个时只能二选一：
+		//
+		//	跟着 base_url 走代理 → 余额 404/401，界面恒显示 `—`，且无任何报错
+		//	跟着官方域名       → 聊天绕过代理，代理等于白配
+		//
+		// # 形态错误为什么要启动即失败
+		//
+		// 写错一个字符（`htps://x`）的表现是"余额永远未知"。那是一个
+		// **完全静默**的故障：没有报错、没有日志、账号看着正常。宁可起不来。
+		MgmtBase string `json:"mgmt_base"`
 		// PoolAccounts 是否并入核心账号池（默认 true）。
 		PoolAccounts *bool `json:"pool_accounts"`
 		// LiveModels 是否实时拉取上游模型目录（默认 true）。
@@ -1042,6 +1076,7 @@ func Default() *Config {
 	c.Pool.IdleWeightPerHour = 0.5
 	c.Pool.IdleWeightMax = 5.0
 	c.Pool.HealthCheckIntervalSeconds = 600
+	c.Pool.QuotaRefreshIntervalSeconds = 900
 	c.SessionSticky.Enabled = true
 	c.SessionSticky.TTL = "30m"
 	c.SessionSticky.GCInterval = "5m"
@@ -1203,6 +1238,26 @@ func (c *Config) normalize() error {
 	}
 	if c.Pool.BreakerThreshold <= 0 {
 		c.Pool.BreakerThreshold = 3
+	}
+	// 周期额度刷新：负数报错，0 合法（= 关闭）。
+	//
+	// ⚠ 不能像上面几项那样用 `<= 0 → 默认值`：`0` 在这里是一个**有意义的
+	// 配置**（用户显式关掉周期刷新）。把它当"未配置"回落成 900，等于
+	// 用户关不掉这个消息 —— 而"关不掉"会被当成 bug 报上来。
+	if c.Pool.QuotaRefreshIntervalSeconds < 0 {
+		return fmt.Errorf("pool.quota_refresh_interval_seconds=%d 非法：必须是 >= 0（0 = 关闭周期刷新）",
+			c.Pool.QuotaRefreshIntervalSeconds)
+	}
+	// 管理面基址：空 = 用官方域名；非空必须是 http/https 且带主机名。
+	//
+	// 归一化（去尾斜杠）在装配层传给上游前统一做，这里只做**校验 + 落回配置**，
+	// 让 `jiyuan.mgmt_base` 在日志与 /admin 配置回显里是用户实际生效的值。
+	if s := strings.TrimSpace(c.Jiyuan.MgmtBase); s != "" {
+		norm, err := normalizeBaseURL(s)
+		if err != nil {
+			return fmt.Errorf("jiyuan.mgmt_base=%q 非法: %w", c.Jiyuan.MgmtBase, err)
+		}
+		c.Jiyuan.MgmtBase = norm
 	}
 	if c.Pool.IdleWeightPerHour <= 0 {
 		c.Pool.IdleWeightPerHour = 0.5
@@ -1607,6 +1662,40 @@ func (c *Config) normalize() error {
 	c.QoderCNActive = c.QoderEnabled && boolOr(c.Qoder.CNEnabled, true)
 	c.QoderPoolAccounts = c.QoderEnabled && boolOr(c.Qoder.PoolAccounts, true)
 	return nil
+}
+
+// normalizeBaseURL 校验并归一一个基址（去空白、去尾斜杠）。
+//
+// # 为什么只接受 http / https
+//
+// 基址会拼成 `base + "/api/me"` 再交给 http.Client。允许无 scheme 的字符串
+// （如 `tokenrhythm.studio`）会得到 `unsupported protocol scheme`，而那个
+// 错误只出现在深层日志里 —— 用户看到的是"余额永远未知"。
+//
+// 非 http(s) 的 scheme（file:// 等）同理：请求根本不成立，但错误同样晚、
+// 同样不指向配置本身。所以宁可在启动时挡下来，并直接说明该写什么。
+//
+// # 为什么要求主机名
+//
+// `https://` 之后什么都没有在 URL 语法上是合法的（Parse 不报错），
+// 但请求会打到空主机。主机名检查把这类拼写失误拦在启动期。
+func normalizeBaseURL(raw string) (string, error) {
+	s := strings.TrimRight(strings.TrimSpace(raw), "/")
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("无法解析为 URL: %w", err)
+	}
+	switch u.Scheme {
+	case "http", "https":
+	case "":
+		return "", fmt.Errorf("缺少协议前缀，应写成 http:// 或 https:// 开头")
+	default:
+		return "", fmt.Errorf("协议 %q 不受支持，只接受 http / https", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("缺少主机名（%q 里没有域名或 IP）", s)
+	}
+	return s, nil
 }
 
 // boolOr 取 *bool 的值，nil 时返回默认值。

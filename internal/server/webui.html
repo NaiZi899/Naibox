@@ -4332,11 +4332,19 @@ let loginProvider = '';
       + `${esc(k.label || k.id)}</button>`).join(' ');
 
     const panelsHTML = kinds.map((k, i) => {
+      // secret 类的通用告知：只说"这串东西是什么级别"，**不替各栏下"会不会
+      // 落盘"的结论**。
+      //
+      // 这里曾经写「它不会被存进网关 —— 只用于这一次『列出 Key』」。
+      // 那句话对「新建 Key」栏成立，对「给已有 Key 补余额」栏**与事实相反**：
+      // 补余额必须把登录态写进凭证文件，否则周期刷新读不到余额（额度永远
+      // 显示 `—`）。一句反事实的安全承诺，比没有这句话更糟 —— 用户会据此
+      // 判断"贴了也不留痕"，而真相取决于他用的是哪一栏。
       const warn = k.secret
         ? '<div style="margin-top:8px;padding:8px 10px;border-radius:6px;background:rgba(220,120,40,.12);'
           + 'border:1px solid rgba(220,120,40,.4);font-size:12px;line-height:1.6">'
           + '⚠ 登录凭证等同你的登录态（可读取该账号下全部 Key 与余额）。'
-          + '它**不会**被存进网关 —— 只用于这一次「列出 Key」，落盘的是拉出来的 Key。</div>'
+          + '各栏对"是否保存"的做法不同，请按本栏上方的说明判断。</div>'
         : '';
       // 两种输入控件，按形态选：
       //
@@ -4353,7 +4361,7 @@ let loginProvider = '';
           + ` placeholder="${esc(k.placeholder || '')}" style="${fieldStyle}"></textarea>`;
       return `<div data-kind-panel="${esc(k.id)}" style="display:${i === 0 ? 'block' : 'none'}">`
         + field
-        + (k.hint ? `<div class="dim" style="margin-top:6px;font-size:12px;line-height:1.6">${esc(k.hint)}</div>` : '')
+        + (k.hint ? `<div class="dim" style="margin-top:6px;font-size:12px;line-height:1.6;white-space:pre-wrap">${esc(k.hint)}</div>` : '')
         + warn
         + `</div>`;
     }).join('');
