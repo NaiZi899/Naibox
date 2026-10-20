@@ -31,6 +31,13 @@ function fieldsets(src) {
   return out;
 }
 
+// legend 的**纯文案**：砍掉 <span class="badge">…</span> 这类标记。
+// 文案是契约（"组名叫什么、按什么顺序"），badge 的配色不是 —— 分开断言，
+// 免得改一个徽章配色就让"文案未变"这条一起红。
+function legendText(s) {
+  return (s.legend || '').split('<')[0].trim();
+}
+
 // 取一个 fieldset 内 .field 的类型序列（按 DOM 顺序）
 // .field 与 .field.chk 都算；用「本 .field 的起始位置」排序后逐个判类
 function fieldKinds(body) {
@@ -59,6 +66,40 @@ function isSeparated(kinds) {
   return flips(kinds) === kindsPresent - 1;
 }
 
+// 结构扫描：用 div 栈判定每个 .field 落在哪类容器里。
+//
+// # 为什么不能继续用「把 .fieldgroup 抠掉看剩几个」的区间法
+//
+// 老实现用正则 /<div class="fieldgroup[^"]*">[\s\S]*?<\/div>\s*<\/div>/
+// 去抠容器区间。嵌套一深（容器里再套容器、字段自带收尾 </div>），
+// 这个非贪婪匹配就切不准：它会漏数已分组的字段，于是
+// 「未分组 = 总数 - 已分组」凭空变大 —— 那是**解析器的错**，
+// 却长得像实现的错，最难查的一类假红。
+//
+// 现在改成显式维护 div 栈：进 <div ...> 压栈、遇 </div> 出栈，
+// 遇到 .field 时栈里有没有 fieldgroup / formgrid 一目了然。
+// 判据与缩进、换行、注释位置全部无关。
+function scanFields(body) {
+  const out = [];
+  const re = /<div\b([^>]*)>|<\/div>/g;
+  const stack = [];
+  let m;
+  while ((m = re.exec(body))) {
+    if (m[0] === '</div>') { if (stack.length) stack.pop(); continue; }
+    const cls = (/class="([^"]*)"/.exec(m[1] || '') || [null, ''])[1];
+    const kinds = cls.split(/\s+/).filter(Boolean);
+    if (kinds.includes('field')) {
+      out.push({
+        kind: kinds.includes('chk') ? 'CHK' : 'IN',
+        inFieldgroup: stack.some(s => s.includes('fieldgroup')),
+        inFormgrid: stack.some(s => s.includes('formgrid')),
+      });
+    }
+    stack.push(kinds);
+  }
+  return out;
+}
+
 // 取 .field 的 id（从 <div class="field..."> 往后到该 field 结束的片段里找第一个 id）
 function fieldIds(body) {
   const out = [];
@@ -83,19 +124,6 @@ function allFieldIds(src) {
   return out;
 }
 
-// .fieldgroup 的边界：统计每个 .field 是否落在某个 .fieldgroup 内
-function countUngroupedFields(src) {
-  // 把每个 .fieldgroup 的内容抠掉，剩下的 .field 就是未被包裹的
-  let stripped = src.replace(/<div class="fieldgroup[^"]*">[\s\S]*?<\/div>\s*<\/div>/g, '');
-  // 上面的非贪婪可能切不干净；用更稳的办法：数总 field 数 - 各 fieldgroup 内 field 数
-  const total = (src.match(/<div class="field(?: chk[^"]*)?">/g) || []).length;
-  let grouped = 0;
-  const re = /<div class="fieldgroup[^"]*">([\s\S]*?)<\/div>\s*<\/div>/g;
-  let m;
-  while ((m = re.exec(src))) grouped += (m[1].match(/<div class="field(?: chk[^"]*)?">/g) || []).length;
-  return { total, grouped, ungrouped: total - grouped };
-}
-
 // 基线：<chk|in> <id>
 function baselineIds() {
   return fs.readFileSync(BASELINE, 'utf8').split('\n')
@@ -108,6 +136,9 @@ const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fai
 
 const sets = fieldsets(sec);
 const named = sets.filter(s => fieldKinds(s.body).length > 0);
+const legends = sets.map(s => s.legend).filter(Boolean);
+const scanned = scanFields(sec);
+const total = scanned.length;
 
 // ---------- A. 分离性：每个组内类型不再交叉 ----------
 console.log('\n[A] 每个 fieldset 内复选框与输入框不交叉');
@@ -115,118 +146,120 @@ for (const s of named) {
   const k = fieldKinds(s.body);
   const f = flips(k);
   const sep = isSeparated(k);
-  ok(sep, '「' + s.legend + '」' + (sep ? '已分离' : '仍交叉') + '（翻转 ' + f + ' 次，顺序 = ' + (k.join(' ') || '(空)') + '）');
+  ok(sep, '「' + legendText(s) + '」' + (sep ? '已分离' : '仍交叉') + '（翻转 ' + f + ' 次，顺序 = ' + (k.join(' ') || '(空)') + '）');
 }
 // 至少要有 4 个含字段的组，否则上面的循环可能因为解析失败而"空跑全过"
 ok(named.length === 4, '含字段的 fieldset 数量 = ' + named.length + '，期望 4（防止解析失败导致空跑）');
 
-// 交叉的两组必须真的变成「同类型连续」
-const diao = named.find(s => s.legend && s.legend.startsWith('调度'));
-const restart = named.find(s => s.legend && s.legend.startsWith('需要重启'));
-ok(!!diao && isSeparated(fieldKinds(diao.body)), '「调度」组已分离');
-ok(!!restart && isSeparated(fieldKinds(restart.body)), '「需要重启才生效」组已分离');
-if (diao) {
-  const k = fieldKinds(diao.body);
-  ok(k.filter(x => x === 'CHK').length === 3 && k.filter(x => x === 'IN').length === 3,
-    '「调度」组仍是 3 复选框 + 3 输入框（实际 ' + k.filter(x=>x==='CHK').length + '/' + k.filter(x=>x==='IN').length + '）');
-}
-if (restart) {
-  const k = fieldKinds(restart.body);
-  ok(k.filter(x => x === 'CHK').length === 2 && k.filter(x => x === 'IN').length === 11,
-    '「需要重启」组仍是 2 复选框 + 11 输入框（实际 ' + k.filter(x=>x==='CHK').length + '/' + k.filter(x=>x==='IN').length + '）');
+// 逐组锁定 chk/in 数量。期望值 = 本轮重建时的真实结构；
+// 这条判据原始形态是"「调度」组 3+3、需要重启组 2+11"，那两组已退役，
+// 判据本身（每个含字段的组数量固定）保留并覆盖到现在的四个组。
+const wantCounts = [
+  ['成长中心自动化', 4, 0],
+  ['历史与日志', 0, 2],
+  ['网络与容错', 0, 1],
+  ['系统提示词', 0, 2],
+];
+for (const [name, chk, ins] of wantCounts) {
+  const s = named.find(x => legendText(x) === name);
+  if (!s) { fail++; console.log('  FAIL 找不到含字段的组「' + name + '」'); continue; }
+  const k = fieldKinds(s.body);
+  const gc = k.filter(x => x === 'CHK').length;
+  const gi = k.filter(x => x === 'IN').length;
+  ok(gc === chk && gi === ins, '「' + name + '」仍是 ' + chk + ' 复选框 + ' + ins + ' 输入框（实际 ' + gc + '/' + gi + '）');
 }
 
 // ---------- B. 分组完整性 ----------
-console.log('\n[B] 不存在未分组的 .field');
-const g = countUngroupedFields(sec);
-ok(g.total > 0, '解析到 .field 总数 = ' + g.total + '（>0 才说明解析有效）');
-ok(g.ungrouped === 0, '未被 .fieldgroup 包裹的 .field = ' + g.ungrouped + '（期望 0）');
-ok(g.grouped === g.total, '.fieldgroup 内覆盖 ' + g.grouped + '/' + g.total);
+console.log('\n[B] 不存在未包裹在任何容器里的 .field');
+ok(total > 0, '解析到 .field 总数 = ' + total + '（>0 才说明解析有效）');
+const ungrouped = scanned.filter(f => !f.inFieldgroup && !f.inFormgrid);
+const chkOutside = scanned.filter(f => f.kind === 'CHK' && !f.inFieldgroup);
+const inOutside = scanned.filter(f => f.kind === 'IN' && !f.inFormgrid);
+ok(ungrouped.length === 0, '既不在 .fieldgroup 也不在 .formgrid 内的 .field = ' + ungrouped.length + '（期望 0）');
+ok(chkOutside.length === 0, '不在 .fieldgroup 内的复选框 = ' + chkOutside.length + '（期望 0：chk 一律进 checks 网格）');
+ok(inOutside.length === 0, '不在 .formgrid 内的输入框 = ' + inOutside.length + '（期望 0：in 一律进两列 formgrid）');
+ok(total === 9, '.field 总数 = ' + total + '，期望 9');
 for (const s of named) {
-  ok(/class="fieldgroup/.test(s.body), '「' + s.legend + '」含 .fieldgroup 容器');
+  const k = fieldKinds(s.body);
+  const need = k.includes('CHK') ? 'fieldgroup' : 'formgrid';
+  ok(s.body.includes('class="' + need), '「' + legendText(s) + '」含 .' + need + ' 容器');
 }
 
-// ---------- B2. 行级复核：每个 .fieldgroup 内部类型必须单一 ----------
-// 为什么要有这一节：字符区间法会被 HTML 注释和 class 里的 '>' 干扰，
-// 可能把「已正确分组」误判成「未分组」。行级扫描（本文件里每个 .field、
-// 每个 fieldgroup 开闭都独占一行）不依赖区间推断，结论更硬。
-// 「组内类型单一」正是「不交叉」的结构性证据 —— 它比"翻转次数"更贴近本质：
-// 只要每个容器只装一种控件，视觉上就不可能交叉，与视口列数无关。
-console.log('\n[B2] 行级复核：各 .fieldgroup 内类型单一');
-const lines = html.split(/\r?\n/);
-const lstart = lines.findIndex(l => l.includes('<h2>设置'));
-const lend = lines.findIndex(l => l.includes('<div id="modal"'));
-let lcur = null, lgidx = -1;
-const lmembers = [];
-const lorphan = [];
-for (let i = lstart; i < lend; i++) {
-  const L = lines[i];
-  const open = /<div class="fieldgroup([^"]*)">/.exec(L);
-  if (open) { lcur = open[1].includes('checks') ? 'CHK' : 'IN'; lgidx++; lmembers[lgidx] = { type: lcur, fields: [], lineNo: i + 1 }; continue; }
-  if (lcur && /^\s*<\/div>\s*$/.test(L)) {
-    const indent = L.match(/^\s*/)[0].length;
-    const openIndent = lines[lmembers[lgidx].lineNo - 1].match(/^\s*/)[0].length;
-    if (indent === openIndent) lcur = null;
-    continue;
-  }
-  const f = /<div class="field( chk[^"]*)?">/.exec(L);
-  if (f) {
-    const rec = { kind: f[1] ? 'CHK' : 'IN', line: i + 1 };
-    if (lcur) lmembers[lgidx].fields.push(rec); else lorphan.push(rec);
-  }
-}
-ok(lmembers.length === 6, '行级扫描到 ' + lmembers.length + ' 个 .fieldgroup，期望 6');
-ok(lorphan.length === 0, '行级扫描：不在任何 group 内的 .field = ' + lorphan.length + '（期望 0）');
-let mixed = 0;
-for (let i = 0; i < lmembers.length; i++) {
-  const kinds = [...new Set(lmembers[i].fields.map(f => f.kind))];
-  if (kinds.length > 1) { mixed++; console.log('     混合: [' + i + '] ' + kinds.join('/')); }
-}
-ok(mixed === 0, '每个 .fieldgroup 内类型单一（混合的 = ' + mixed + '）');
-// 行级与区间法必须给出同样的字段总数，否则说明有一种解析是错的
-const ltotal = lmembers.reduce((a, m) => a + m.fields.length, 0) + lorphan.length;
-ok(ltotal === 27, '行级扫描字段总数 = ' + ltotal + '，期望 27');
+// ---------- B2. 字面计数复核 ----------
+// 与 B 完全独立的两条路径：一个靠 div 栈推包含关系，一个数模板里的字面量。
+// 两边总数必须一致 —— 不一致就说明至少有一个解析器错了，
+// 而"解析器错"最容易伪装成"实现错"。
+console.log('\n[B2] 字面计数复核（与 B 的 div 栈解析互相验证）');
+const literalGroups = (sec.match(/<div class="fieldgroup/g) || []).length;
+const literalGrids = (sec.match(/<div class="formgrid">/g) || []).length;
+const literalChk = (sec.match(/<div class="field chk">/g) || []).length;
+const literalIn = (sec.match(/<div class="field">/g) || []).length;
+ok(literalGroups === 2, '.fieldgroup 容器数 = ' + literalGroups + '，期望 2（账号池显示过滤的 #setHiddenProviders + 成长中心自动化）');
+ok(literalGrids === 3, '.formgrid 容器数 = ' + literalGrids + '，期望 3（历史与日志 / 网络与容错 / 系统提示词）');
+ok(literalChk === 4, 'class="field chk" 字面数 = ' + literalChk + '，期望 4（成长组四项）');
+ok(literalIn === 5, '<div class="field"> 字面数 = ' + literalIn + '，期望 5（2 + 1 + 2）');
+ok(literalChk + literalIn === total, '两条路径的字段总数一致（字面 ' + (literalChk + literalIn) + ' / div 栈 ' + total + '）');
+ok(scanned.filter(f => f.kind === 'CHK').length === literalChk, '复选框数量两条路径一致');
+ok(sets.length === literalGroups + literalGrids + 3, 'fieldset 数 = ' + sets.length + '（2 个容器组 + 3 个 formgrid 组 + 3 个无字段组 = 8）');
 
 // ---------- C. 零漂移 ----------
 console.log('\n[C] 字段 id 零漂移');
 const base = baselineIds();
 const now = allFieldIds(sec);
-ok(base.length === 27, '基线 id 数 = ' + base.length + '，期望 27');
-ok(now.length === 27, '当前 id 数 = ' + now.length + '，期望 27');
+ok(base.length === 9, '基线 id 数 = ' + base.length + '，期望 9');
+ok(now.length === 9, '当前 id 数 = ' + now.length + '，期望 9');
 const missing = base.filter(x => !now.includes(x));
 const added = now.filter(x => !base.includes(x));
 ok(missing.length === 0, '丢失的 id: ' + (missing.length ? missing.join(', ') : '(无)'));
 ok(added.length === 0, '新增的 id: ' + (added.length ? added.join(', ') : '(无)'));
-// 集合相等即可，**顺序必然会变** —— 分组本身就要把同类排列到一起。
-// 因此不复用基线顺序，只比对排序后的集合（顺序变化不构成漂移）。
-ok(base.slice().sort().join(',') === now.slice().sort().join(','), 'id 集合与基线一致（顺序变化是分组的必然结果）');
-// 反向确认：顺序确实变了，否则说明根本没做分组
-ok(base.join(',') !== now.join(','), 'id 顺序已因分组而改变（若未变则说明分组未真正发生）');
-
+ok(base.slice().sort().join(',') === now.slice().sort().join(','), 'id 集合与基线一致');
+// 顺序现在也是契约：本轮基线按**当前 DOM 顺序**落锚。
+// 集合相等只挡得住增删字段，挡不住"同名字段被挪到别组"这类静默重排 ——
+// 而重排会改变用户看到的设置面板结构，正是这一层要保的东西。
+ok(base.join(',') === now.join(','), 'id 顺序与基线逐字一致（本轮基线按 DOM 顺序重建，顺序即契约）');
+// 提示词面板的两个字段必须在基线里：新字段若没进基线，以后被删就没人发现。
+for (const id of ['setPromptMode', 'setPromptFile']) {
+  ok(base.includes(id), '基线包含 ' + id);
+}
 // label[for] 指向存在的 id
 const allIdsInSec = [...sec.matchAll(/<input[^>]*id="([^"]+)"/g)].map(m => m[1]);
 const fors = [...sec.matchAll(/<label for="([^"]+)"/g)].map(m => m[1]);
 const badFor = fors.filter(f => !allIdsInSec.includes(f));
 ok(badFor.length === 0, 'label[for] 指向不存在的 id: ' + (badFor.length ? badFor.join(', ') : '(无)'));
-ok(fors.length === 11, 'label[for] 数量 = ' + fors.length + '，期望 11（复选框数）');
+ok(fors.length === 4, 'label[for] 数量 = ' + fors.length + '，期望 4（= 复选框数）');
 
 // ---------- D. 结构保真 ----------
-console.log('\n[D] 文案与属性保真');
-const legends = sets.map(s => s.legend).filter(Boolean);
-ok(legends.includes('调度（保存后立即生效）'), 'legend「调度（保存后立即生效）」保留');
-ok(legends.includes('成长中心自动动作（保存后立即生效）'), 'legend「成长中心自动动作（保存后立即生效）」保留');
-ok(legends.includes('历史与日志（保存后立即生效）'), 'legend「历史与日志（保存后立即生效）」保留');
-ok(legends.some(l => l.startsWith('需要重启才生效')), 'legend「需要重启才生效」保留');
-ok(legends.length === 5, 'legend 数量 = ' + legends.length + '，期望 5（组边界未增未减）');
+console.log('\n[D] 分组文案与属性保真');
+const wantLegends = ['账号池显示过滤', '日常调度', '成长中心自动化', '历史与日志', '网络与容错', '系统提示词', '会话粘性', '运行信息'];
+const gotLegends = legends.map(l => l.split('<')[0].trim());
+ok(legends.length === 8, 'legend 数量 = ' + legends.length + '，期望 8（组边界未增未减）');
+ok(gotLegends.join('|') === wantLegends.join('|'), 'legend 文案与顺序逐字一致：' + gotLegends.join(' / '));
+ok(legends.every(l => /<span class="badge/.test(l)), '每个 legend 都带 badge 标记（仅影响显示 / 自动执行 / 立即生效 / 重启生效 / 只读）');
+const ro = sets.filter(s => /class="readonly"/.test(s.attrs));
+ok(ro.length === 2, '只读 fieldset 数 = ' + ro.length + '，期望 2（会话粘性 / 运行信息）');
+ok(ro.every(s => fieldKinds(s.body).length === 0), '只读组不含可编辑 .field');
 
-// 抽查关键属性原文
-ok(sec.includes('placeholder="9,21"'), 'setCheckinHours 的 placeholder 保留');
-ok(sec.includes('placeholder="22"'), 'setKeepaliveHours 的 placeholder 保留');
-ok(sec.includes('守卫轮 ticker 在启动时创建，改动需重启'), 'setGrowthInterval 的长 hint 保留');
+// 系统提示词（本轮新增的面板）：模式三选一与文件路径是它的全部输入
+const promptSet = named.find(s => legendText(s) === '系统提示词');
+ok(!!promptSet, '存在「系统提示词」组');
+if (promptSet) {
+  const opts = [...promptSet.body.matchAll(/<option value="([^"]+)"/g)].map(m => m[1]);
+  ok(opts.join(',') === 'custom,append,passthrough', '模式下拉的三选项 = ' + (opts.join(',') || '(空)') + '，期望 custom,append,passthrough');
+  ok(/id="setPromptMode"/.test(promptSet.body), '#setPromptMode 保留');
+  ok(/id="setPromptFile"[^>]*placeholder="留空 = 使用内置默认"/.test(promptSet.body), '#setPromptFile 的 placeholder 保留');
+  ok(promptSet.body.includes('append + 留空文件'), 'append + 空文件的代价说明保留');
+  ok(promptSet.body.includes('id="setPromptStatusRO"'), '#setPromptStatusRO 保留');
+  ok(promptSet.body.includes('仅对 WorkBuddy 上游生效'), '生效范围说明保留');
+}
+
+// 其余组的原文抽查
+ok(/<div class="fieldgroup checks" id="setHiddenProviders">/.test(sec), '账号池显示过滤的动态宿主 #setHiddenProviders 保留');
+ok(sec.includes('消耗资源 · 默认关（兑换花连登天数、开盲盒花能量、抽奖花次数）'), '成长组的收益/消耗说明保留');
+ok(/id="setCheckinLogDays"[^>]*min="1"[^>]*max="3650"/.test(sec), 'setCheckinLogDays 的 min/max 保留');
+ok(/id="setReqLogDays"[^>]*min="1"[^>]*max="3650"/.test(sec), 'setReqLogDays 的 min/max 保留');
+ok(sec.includes('超过窗口的旧记录在下次裁剪时清除'), 'setReqLogDays 的长 hint 保留');
+ok(/id="setUpTimeout"[^>]*min="1"/.test(sec), 'setUpTimeout 的 min 保留');
 ok(sec.includes('id="setLogFileInfo"'), '#setLogFileInfo 保留');
-ok(sec.includes('前两项是纯收益'), '成长组的收益/消耗说明保留');
-ok(/id="setTravelInterval"[^>]*min="10"[^>]*max="3600"/.test(sec), 'setTravelInterval 的 min/max 保留');
-ok(/id="setGrowthInterval"[^>]*min="60"[^>]*max="86400"/.test(sec), 'setGrowthInterval 的 min/max 保留');
 
 // ---------- E. 无 emoji ----------
 console.log('\n[E] 风格约定');

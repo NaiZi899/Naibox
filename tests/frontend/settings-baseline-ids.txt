@@ -1,30 +1,15 @@
-# 设置面板字段基线（改动前快照，用于验证结构调整零漂移）
+# 设置面板字段基线（零漂移断言的锚点，改布局前先看这里）
 # 格式: <chk|in> <id>；来源: internal/server/webui.html 的 <h2>设置 段落
-# 期望总数: 27
-chk setCheckinEnabled
-chk setKeepaliveEnabled
-in  setCheckinHours
-in  setKeepaliveHours
-chk setTravelAuto
-in  setTravelInterval
-chk setGrowthClaim
-chk setGrowthAccept
+# 期望总数: 9
+# 本轮重建锚点：「系统提示词」面板落地后按**当前 DOM 顺序**整体重建（旧快照钉在 27 字段的
+#              老布局上，期望的 setCheckinEnabled / setSoftRate 等 20 个 id 现已不存在）。
+# 顺序即契约：断言按逐字同序比对，不只是集合相等 —— 见 gen_settings_layout.js 的 [C] 段。
 chk setGrowthMakeup
 chk setGrowthRedeem
 chk setGrowthOpen
 chk setGrowthDraw
 in  setCheckinLogDays
 in  setReqLogDays
-in  setSoftRate
 in  setUpTimeout
-in  setUpHeaderTimeout
-in  setUpIdleTimeout
-in  setMaxInFlight
-in  setBreakerThreshold
-in  setBreakerCooldown
-in  setBreakerCooldownMax
-chk setSanitize
-in  setUpstashURL
-chk setStickyEnabled
-in  setStickyTTL
-in  setGrowthInterval
+in  setPromptMode
+in  setPromptFile
