@@ -22,7 +22,7 @@ import (
 // 这里的值是**开发期默认值**：release.yml 用 tag 名注入真实版本
 // （见该文件 Build desktop shell 一步）。两者不一致时以注入值为准 ——
 // 所以本地 go build 出来的二进制显示的是这个默认值，别拿它判断发布版本。
-var Version = "1.1.0"
+var Version = "1.2.0"
 
 // defaultServiceName 配置里没写 service_name 时的身份标识。
 //

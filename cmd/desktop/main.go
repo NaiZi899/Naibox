@@ -11,7 +11,7 @@
 // 代码里的 FreeConsole 只能把它收掉，仍会闪一下）：
 //
 //	GOOS=windows CGO_ENABLED=0 go build -trimpath ^
-//	  -ldflags "-s -w -H=windowsgui -X github.com/NaiZi899/Naibox/internal/desktop.Version=1.1.0" ^
+//	  -ldflags "-s -w -H=windowsgui -X github.com/NaiZi899/Naibox/internal/desktop.Version=1.2.0" ^
 //	  -o dist/omni2api-desktop.exe ./cmd/desktop
 //
 // 本仓库的验收命令刻意不带 -H windowsgui（见 task），构建照样通过；
