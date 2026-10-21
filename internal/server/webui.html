@@ -3787,13 +3787,25 @@ let loginProvider = '';
     clearTimeout(watchTask._hide);
     const el = $('gtask');
     const tick = async () => {
+      // 藏到托盘时不必轮询：desktop 会把 document.hidden 钉成 true 并派发
+      // visibilitychange（WebView2 的 SW_HIDE 自己不传播这个状态）。进度条
+      // 反正看不见，恢复显示后下一个 tick 自然接上。
+      if (document.hidden) return;
       let t;
       try { t = await admin('/admin/task'); } catch { return; }
       el.hidden = false;
       el.className = 'notice progress';
       if (t.running) {
         el.textContent = `${t.kind} 执行中… 已用 ${t.elapsed_sec || 0}s`;
-        refresh(); // 过程中也刷新表格，能实时看到额度/状态变化
+        // 只对齐数值（1 个本地请求、按单元格 diff）。
+        //
+        // ⚠ 不要改回 refresh()。整页刷新会重拉 manifest、模型目录（
+        // /admin/models/* 是本页最慢的两个端点）与本机登录探测；2 秒一轮
+        // 等于把上游目录接口打满，并让 /admin/client-login 变成每 3 秒一次
+        // 的进程探测 —— 在 -H windowsgui 的桌面壳里就是"终端窗口一直闪"
+        // （真实报障）。整页刷新留在收尾那一次。
+        pollPoolValues();
+        if (sectionActive('dashboard')) pollStatsCards();
         return;
       }
       if (t.kind) {
@@ -4755,6 +4767,10 @@ let loginProvider = '';
     // force=true：切到该标签页时**强制**刷新一次（5 秒轮询不再碰面板，
     // 所以"用户主动切过来"是拿到新数据的时机）。
     if (sec.dataset.provider) loadProviderPanel(sec.dataset.provider, sec.dataset.cap, true);
+    // 成长面板的明细节头要显示本机登录状态。那个查询在后端是一次进程探测，
+    // 所以只在面板真的被打开时拉一次 —— 整页 refresh 不再无条件拉它
+    //（见 growthPanelVisible 的注释）。
+    if (sec.querySelector && sec.querySelector('#growthGroups')) loadClientLogin();
     // 离开日志面板就断开长连接（切到 logs 时已在上面开好）。
     // 与"看不见的面板不产生流量"同一条纪律：断开的收益是服务端少一个
     // goroutine + 一条连接，而不是省客户端的 CPU。
@@ -4919,6 +4935,24 @@ let loginProvider = '';
   // refreshNavSections 重扫 section 列表（动态生成面板后必须调用）。
   function refreshNavSections() {
     navSections = Array.from(document.querySelectorAll('#content > section'));
+  }
+
+  // growthPanelVisible 报告「成长计划」面板是否正在显示。
+  //
+  // # 为什么需要它
+  //
+  // loadClientLogin 的结果只被成长面板的明细节头消费（renderGrowthGroups →
+  // clientLoginHTML），而它的后端实现要**探测客户端进程**：Windows 上曾经是
+  // 每次 spawn 一个 tasklist.exe —— 桌面壳是 -H windowsgui 子系统、没有控制台
+  // 可继承，于是每次探测都新建一个控制台窗口（真实报障：终端一直闪）。
+  //
+  // 所以它必须跟着面板可见性走，不能挂在整页 refresh 的主路径上。
+  // 用 DOM 找面板而不是写死 data-key：上游面板的 key 带上前缀
+  //（workbuddy:growth），写死会让"加一个新上游"这条判据静默失效。
+  function growthPanelVisible() {
+    const host = document.getElementById('growthGroups');
+    const sec = host && host.closest('section');
+    return !!sec && !sec.hidden && sec.classList.contains('active');
   }
 
   // sectionActive 报告某个 `data-key` 的面板当前是不是**正在显示**。
@@ -8721,8 +8755,12 @@ let multCatalogFailed = false;
     if (trendWindow.mode !== 'custom') {
       try { loadTrendSeries(); } catch { /* 趋势图非关键 */ }
     }
-    // 本地登录面板：失败不阻塞其它面板（客户端没装时该接口整体降级）。
-    try { await loadClientLogin(); } catch { /* 非关键 */ }
+    // 本地登录状态：只在成长面板可见时取。它驱动的是那块面板里的切换按钮，
+    // 而查询本身要探测客户端进程（Windows 上每次探测都可能是一个终端窗口，
+    // 见 growthPanelVisible）。失败不阻塞其它面板（客户端没装时整体降级）。
+    if (growthPanelVisible()) {
+      try { await loadClientLogin(); } catch { /* 非关键 */ }
+    }
     renderApi();
     // 记下摘要供调用方（顶部「立即刷新」）提示用；轮询调用方不看这个字段。
     refresh._last = { healthy: h.healthy || 0, total: h.total || 0 };
@@ -8937,6 +8975,9 @@ let multCatalogFailed = false;
         pollStatsCards();
         if (trendWindow.mode !== 'custom') loadTrendSeries();
       }
+      // 成长面板可见时补一次本机登录状态：用户退出客户端后，切换按钮要能
+      // 从「客户端运行中」恢复成可点。一次本地请求，30 秒一轮。
+      if (growthPanelVisible() && !document.hidden) loadClientLogin();
       pollAPIKeys();
     }, 30000);
 
