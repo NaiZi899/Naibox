@@ -75,7 +75,6 @@ func (p *Provider) Chat(ctx context.Context, cred gateway.Credential, body []byt
 	return gateway.ChatStream{Status: resp.StatusCode, Body: resp.Body}, nil
 }
 
-
 // forceStream 把请求体里的 stream 强制置为 true，其余字段原样保留。
 //
 // # 为什么不是字符串替换
