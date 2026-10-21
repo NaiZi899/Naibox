@@ -2,7 +2,7 @@
 //
 // # 它做什么
 //
-// 双击出窗口（内嵌 WebView2），托盘常驻，数据固定在 %APPDATA%\omni2api。
+// 双击出窗口（内嵌 WebView2），托盘常驻，数据固定在 %APPDATA%\NaiBox。
 // 装配逻辑一行都不在这里 —— 全部经 internal/boot.Run，与 cmd/server 同源。
 //
 // # 发布构建
@@ -31,7 +31,7 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "", "配置文件路径（默认 <数据根>\\config.json；显式指定时不迁移旧布局）")
-	dataDir := flag.String("data-dir", "", "数据根目录（默认 %APPDATA%\\omni2api；exe 同级有 portable.flag 时用 exe 目录）")
+	dataDir := flag.String("data-dir", "", "数据根目录（默认 %APPDATA%\\NaiBox；exe 同级有 portable.flag 时用 exe 目录）")
 	mode := flag.String("mode", "window", "window=内嵌窗口（WebView2 缺失时自动回落 browser）| browser=只用系统浏览器")
 	port := flag.Int("port", 0, "监听端口（默认 7863，被占用顺延到 7873，仍占用由系统分配）")
 	console := flag.Bool("console", false, "保留控制台窗口，并把日志同时打到 stderr")

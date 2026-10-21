@@ -13,6 +13,13 @@ import (
 	"time"
 )
 
+// legacyAppDirName 改名前的数据根目录名（%APPDATA%\omni2api）。
+//
+// 它只在**迁移来源**的位置出现，任何写入路径都不该再用它。仍然认它，
+// 是为了让上一版桌面版的用户升级时不丢账号 —— 账号、api_key、冷却状态
+// 全在那个目录里。
+const legacyAppDirName = "omni2api"
+
 // migratedMarkerName 迁移完成后写在**源目录**里的标记文件。
 //
 // 它不参与"要不要迁移"的判断（判断只看目标有没有 config.json），存在的
@@ -40,8 +47,8 @@ type MigrationResult struct {
 	Marker string
 }
 
-// MigrateLegacy 把旧布局（exe 同级或当前工作目录下的 config.json + auths + data）
-// 复制到数据根。
+// MigrateLegacy 把旧布局（改名前的 %APPDATA% 目录、exe 同级或当前工作目录下的
+// config.json + auths + data）复制到数据根。
 //
 // # 四个硬要求（顺序即决策顺序）
 //
@@ -71,10 +78,14 @@ func MigrateLegacy(l Layout, explicitConfig bool, logger *log.Logger) (Migration
 		return res, nil
 	}
 
-	src := findLegacyRoot(l.DataDir)
+	src, probed := findLegacyRoot(l)
 	if src == "" {
-		logger.Printf("迁移检查：%s、%s 都没有旧布局 config.json，按首次启动处理（数据根 %s）",
-			executableDir(), cwdOr("."), l.DataDir)
+		where := strings.Join(probed, "、")
+		if where == "" {
+			where = "没有可探测的候选目录"
+		}
+		logger.Printf("迁移检查：%s 都没有旧布局 config.json，按首次启动处理（数据根 %s）",
+			where, l.DataDir)
 		return res, nil
 	}
 
@@ -140,12 +151,33 @@ func MigrateLegacy(l Layout, explicitConfig bool, logger *log.Logger) (Migration
 	return res, nil
 }
 
-// findLegacyRoot 按 (b) exe 同级 → (c) 当前工作目录 的顺序找旧布局。
+// findLegacyRoot 按优先级找旧布局，返回命中的源目录与探测过的候选（供日志）。
 //
+// 候选顺序：改名前的 %APPDATA% 目录 → exe 同级 → 当前工作目录。
 // 跳过数据根本身：portable 形态下 exe 目录**就是**数据根，不能自己迁自己。
-func findLegacyRoot(dataDir string) string {
-	candidates := []string{executableDir(), cwdOr(".")}
+//
+// # 为什么第一候选是改名前的 %APPDATA% 目录
+//
+// 数据根从 %APPDATA%\omni2api 改名为 %APPDATA%\NaiBox 之后，上一版桌面版
+// 用户的账号、api_key、冷却状态全留在旧目录里。不认它，升级就等于清空
+// 账号池，而界面上不会报任何错 —— 只是池子空了。
+//
+// 它排在 exe 同级之前，因为它是**最近一代**的官方位置；exe 同级只是 v1.0
+// 时代"数据落在安装目录"的产物。两者都命中时按前者迁，后者的文件原样留着。
+//
+// 仅在数据根既不是 -data-dir 指定、也不是 portable 时才启用这条候选：
+// 用户或脚本明确指了目录，再往里面注入 %APPDATA% 的旧数据属于越界。
+func findLegacyRoot(l Layout) (src string, probed []string) {
+	candidates := make([]string, 0, 3)
+	if !l.Portable && !l.ExplicitDataDir {
+		if d := legacyAppDataRoot(); d != "" {
+			candidates = append(candidates, d)
+		}
+	}
+	candidates = append(candidates, executableDir(), cwdOr("."))
+
 	seen := map[string]bool{}
+	probed = make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		abs, err := filepath.Abs(c)
 		if err != nil {
@@ -157,14 +189,27 @@ func findLegacyRoot(dataDir string) string {
 			continue
 		}
 		seen[key] = true
-		if samePath(abs, dataDir) {
+		probed = append(probed, abs)
+		if samePath(abs, l.DataDir) {
 			continue
 		}
 		if fileExists(filepath.Join(abs, "config.json")) {
-			return abs
+			return abs, probed
 		}
 	}
-	return ""
+	return "", probed
+}
+
+// legacyAppDataRoot 改名前的数据根路径（%APPDATA%\omni2api）。
+//
+// 只算路径，不判存在性：是否存在由 findLegacyRoot 用 config.json 决定，
+// 一个空目录不该被当成"发现了旧布局"。
+func legacyAppDataRoot() string {
+	base, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(base) == "" {
+		return ""
+	}
+	return filepath.Join(base, legacyAppDirName)
 }
 
 // writeMigrationMarker 在源目录写 .migrated.bak。

@@ -333,3 +333,55 @@ func TestRuntimeFileRoundTripAndRemoveIsIdempotent(t *testing.T) {
 		t.Fatalf("原子写残留了 %s.tmp（Windows 上会被当成占用文件）", l.RuntimePath())
 	}
 }
+
+// TestDataRootDirNamesArePinnedLiterals 把两个目录名钉成字面量。
+//
+// 其它路径用例都拿 appDirName 常量做断言，等于"常量写什么就对什么"——
+// 把常量改回 omni2api 也照样全绿。旧名现在只剩"迁移来源"一个用途，
+// 所以这里直接拿字面量对：新名 NaiBox、旧名 omni2api、两者不等。
+func TestDataRootDirNamesArePinnedLiterals(t *testing.T) {
+	if appDirName != "NaiBox" {
+		t.Errorf("数据根目录名应为 NaiBox，实际 %q（产品名是 NaiBox，别跟 module 的小写 b）", appDirName)
+	}
+	if legacyAppDirName != "omni2api" {
+		t.Errorf("迁移来源目录名应为 omni2api，实际 %q —— 写错等于上一版的账号再也找不到", legacyAppDirName)
+	}
+	if appDirName == legacyAppDirName {
+		t.Errorf("新旧目录名相同（%q）：迁移会退化成自己迁自己", appDirName)
+	}
+}
+
+// TestResolveLayoutMarksExplicitDataDir 守 ExplicitDataDir 这道闸门。
+//
+// 它是"要不要去 %APPDATA% 翻旧数据"的唯一判据：显式 -data-dir 与默认分支
+// 必须给出不同值，否则用户指定的目录会被注入一份不相关的旧账号。
+func TestResolveLayoutMarksExplicitDataDir(t *testing.T) {
+	base := t.TempDir()
+	setUserConfigBase(t, base)
+
+	explicit, err := ResolveLayout(filepath.Join(base, "自定义 目录"), "")
+	if err != nil {
+		t.Fatalf("ResolveLayout 显式: %v", err)
+	}
+	if !explicit.ExplicitDataDir {
+		t.Errorf("-data-dir 指定时 ExplicitDataDir 应为 true")
+	}
+	if explicit.Portable {
+		t.Errorf("-data-dir 指定时不该标记 portable")
+	}
+
+	def, err := ResolveLayout("", "")
+	if err != nil {
+		t.Fatalf("ResolveLayout 默认: %v", err)
+	}
+	if def.ExplicitDataDir {
+		t.Errorf("默认分支的 ExplicitDataDir 应为 false（否则旧数据永远迁不过来）")
+	}
+	want := filepath.Join(base, "NaiBox")
+	if runtime.GOOS == "darwin" {
+		want = filepath.Join(base, "Library", "Application Support", "NaiBox")
+	}
+	if def.DataDir != want {
+		t.Errorf("默认数据根=%q want %q", def.DataDir, want)
+	}
+}

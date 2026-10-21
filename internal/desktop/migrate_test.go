@@ -446,3 +446,162 @@ func TestMigrateLegacyDoesNotCopyIntoItself(t *testing.T) {
 		t.Errorf("在数据根本身写了迁移标记 —— 用户会以为数据搬走了")
 	}
 }
+
+// TestMigrateLegacyFromRenamedAppDataRoot 守"改名后上一版用户的账号还在"。
+//
+// 数据根从 %APPDATA%\omni2api 改名成 %APPDATA%\NaiBox 之后，账号、api_key、
+// 冷却状态全留在旧目录里。findLegacyRoot 若不认它，升级后账号池直接是空的，
+// 日志只会说"按首次启动处理"，而用户的结论是"号被偷了"。
+//
+// 承重断言：Source 指向旧根、目标三样齐且逐字节一致、旧根一个文件都没少、
+// 旧根留下标记。
+func TestMigrateLegacyFromRenamedAppDataRoot(t *testing.T) {
+	base := t.TempDir()
+	setUserConfigBase(t, base) // %APPDATA% 指到临时目录，不碰真实用户数据
+	oldRoot := filepath.Join(base, legacyAppDirName)
+	want := legacySample()
+	writeTree(t, oldRoot, want)
+
+	empty := filepath.Join(t.TempDir(), "空 起始目录")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatalf("建空目录: %v", err)
+	}
+	chdirForTest(t, empty) // 抹掉 exe 同级与 cwd 两个候选的干扰
+
+	l, err := ResolveLayout("", "")
+	if err != nil {
+		t.Fatalf("ResolveLayout: %v", err)
+	}
+	wantRoot := filepath.Join(base, appDirName)
+	if l.DataDir != wantRoot {
+		t.Fatalf("默认数据根=%q want %q", l.DataDir, wantRoot)
+	}
+
+	res, err := MigrateLegacy(l, false, nil)
+	if err != nil {
+		t.Fatalf("MigrateLegacy: %v", err)
+	}
+	if !res.Migrated {
+		t.Fatalf("没有从改名前的 %s 迁移：%+v", oldRoot, res)
+	}
+	if filepath.Clean(res.Source) != filepath.Clean(oldRoot) {
+		t.Fatalf("Source=%q want %q", res.Source, oldRoot)
+	}
+	for rel, expect := range want {
+		got, err := os.ReadFile(filepath.Join(l.DataDir, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatalf("目标缺少 %s: %v", rel, err)
+		}
+		if !bytes.Equal(got, expect) {
+			t.Fatalf("%s 内容不一致（少一个字节的凭证就是无效凭证）:\n got=%q\nwant=%q", rel, got, expect)
+		}
+	}
+	// 旧目录原样保留：用户可能还要翻回去找东西，迁移是复制不是移动。
+	for rel, expect := range want {
+		got, err := os.ReadFile(filepath.Join(oldRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatalf("旧目录的 %s 不见了: %v", rel, err)
+		}
+		if !bytes.Equal(got, expect) {
+			t.Fatalf("旧目录的 %s 被改动", rel)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(oldRoot, migratedMarkerName)); err != nil {
+		t.Errorf("旧目录没有迁移标记（用户会在错的地方找账号）: %v", err)
+	}
+}
+
+// TestMigrateLegacyPrefersRenamedRootOverCwd 守候选顺序。
+//
+// 改名前的 %APPDATA% 目录是**上一版的官方位置**，exe 同级/cwd 只是 v1.0 时代
+// 数据落在安装目录的产物。两者都存在时按前者迁，否则用户会拿到一份年代更久
+// 的账号，还以为新版把最近的号弄丢了。
+func TestMigrateLegacyPrefersRenamedRootOverCwd(t *testing.T) {
+	base := t.TempDir()
+	setUserConfigBase(t, base)
+	oldRoot := filepath.Join(base, legacyAppDirName)
+	writeTree(t, oldRoot, map[string][]byte{
+		"config.json":  []byte(`{"api_key":"sk-from-renamed-root"}`),
+		"auths/a.json": []byte(`{"uid":"from-renamed-root"}`),
+	})
+
+	cwd := filepath.Join(t.TempDir(), "起点 目录")
+	writeTree(t, cwd, map[string][]byte{
+		"config.json":  []byte(`{"api_key":"sk-from-cwd"}`),
+		"auths/a.json": []byte(`{"uid":"from-cwd"}`),
+	})
+	chdirForTest(t, cwd)
+
+	l, err := ResolveLayout("", "")
+	if err != nil {
+		t.Fatalf("ResolveLayout: %v", err)
+	}
+	res, err := MigrateLegacy(l, false, nil)
+	if err != nil {
+		t.Fatalf("MigrateLegacy: %v", err)
+	}
+	if filepath.Clean(res.Source) != filepath.Clean(oldRoot) {
+		t.Fatalf("Source=%q，应优先取改名前的数据根 %q（cwd 的年代更久）", res.Source, oldRoot)
+	}
+	got, err := os.ReadFile(l.ConfigPath)
+	if err != nil {
+		t.Fatalf("读目标配置: %v", err)
+	}
+	if !bytes.Contains(got, []byte("sk-from-renamed-root")) {
+		t.Fatalf("迁过来的是 cwd 那份配置：%s", got)
+	}
+}
+
+// TestMigrateLegacySkipsRenamedRootUnlessDefaultLayout 守"越界注入"。
+//
+// 旧根只在数据根是默认位置时才允许当来源：
+//   - portable（数据跟着 exe 走）→ 注入 %APPDATA% 会让便携版变两套数据；
+//   - -data-dir 显式指定 → 用户自己指了目录，替他搬家属于越界。
+//
+// 两条都必须"不迁移、不写标记、旧根一个字节都不动"。
+func TestMigrateLegacySkipsRenamedRootUnlessDefaultLayout(t *testing.T) {
+	cases := []struct {
+		name   string
+		layout func(t *testing.T, cwd string) Layout
+	}{
+		{"portable", func(t *testing.T, cwd string) Layout {
+			return Layout{DataDir: cwd, Portable: true}
+		}},
+		{"explicit-data-dir", func(t *testing.T, cwd string) Layout {
+			l, err := ResolveLayout(cwd, "")
+			if err != nil {
+				t.Fatalf("ResolveLayout: %v", err)
+			}
+			if !l.ExplicitDataDir {
+				t.Fatalf("前提不满足：-data-dir 没被标记成显式")
+			}
+			return l
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			base := t.TempDir()
+			setUserConfigBase(t, base)
+			oldRoot := filepath.Join(base, legacyAppDirName)
+			writeTree(t, oldRoot, legacySample())
+
+			cwd := filepath.Join(t.TempDir(), "起始 目录")
+			if err := os.MkdirAll(cwd, 0o755); err != nil {
+				t.Fatalf("建目录: %v", err)
+			}
+			chdirForTest(t, cwd)
+			l := c.layout(t, cwd)
+
+			res, err := MigrateLegacy(l, false, nil)
+			if err != nil {
+				t.Fatalf("MigrateLegacy: %v", err)
+			}
+			if res.Attempted || res.Migrated {
+				t.Fatalf("%s 形态下不该从 %s 迁移：%+v", c.name, oldRoot, res)
+			}
+			if _, err := os.Stat(filepath.Join(oldRoot, migratedMarkerName)); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("没迁移却在旧根写了标记 —— 用户会以为数据搬走了")
+			}
+		})
+	}
+}

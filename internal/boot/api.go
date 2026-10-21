@@ -34,7 +34,7 @@ const (
 	// 监听地址取自配置、数据根是当前工作目录。
 	ModeServer Mode = iota
 	// ModeDesktop 由桌面壳驱动：监听地址可被 Port 覆盖（0 = 用配置值），
-	// 数据根由调用方给（通常是 %APPDATA%\omni2api）。
+	// 数据根由调用方给（通常是 %APPDATA%\NaiBox）。
 	ModeDesktop
 )
 

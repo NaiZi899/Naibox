@@ -1,4 +1,4 @@
-// Package desktop Windows 桌面壳：双击出窗口、托盘常驻、数据固定在 %APPDATA%\omni2api。
+// Package desktop Windows 桌面壳：双击出窗口、托盘常驻、数据固定在 %APPDATA%\NaiBox。
 //
 // # 为什么数据根不在 exe 旁边（本包存在的第一理由）
 //
@@ -9,8 +9,9 @@
 // "账号没了"。而"卸载重装/覆盖升级后账号消失"的根因同理：数据住在
 // 安装目录里，安装器清理/替换目录就把账号一起带走了。
 //
-// 所以桌面形态把数据根固定到 %APPDATA%\omni2api：exe 可以随意覆盖，
-// 数据不动。旧布局的救回由 migrate.go 负责（复制而不是移动）。
+// 所以桌面形态把数据根固定到 %APPDATA%\NaiBox：exe 可以随意覆盖，
+// 数据不动。旧布局的救回由 migrate.go 负责（复制而不是移动），它同时
+// 认三个来源：改名前的 %APPDATA%\omni2api、exe 同级、当前工作目录。
 //
 // # 分层
 //
@@ -43,8 +44,10 @@ import (
 var defaultConfigJSON []byte
 
 const (
-	// appDirName %APPDATA% 下的目录名。刻意与 module 名一致，便于用户找。
-	appDirName = "omni2api"
+	// appDirName %APPDATA% 下的目录名。跟**产品名**走，不跟 module 名走：
+	// module 是 github.com/NaiZi899/Naibox（小写 b），目录显示成 NaiBox。
+	// 改名前的目录名是 legacyAppDirName（见 migrate.go），由迁移负责兜底。
+	appDirName = "NaiBox"
 
 	// portableFlagName exe 同级存在该文件时，数据根回退到 exe 目录
 	// （绿色版/U 盘场景：用户明确要求"数据跟着 exe 走"）。
@@ -57,7 +60,7 @@ const (
 // 再做"相对谁"的二次推断，这正是"同一份配置在不同工作目录下指向不同
 // 数据"这个老问题的封堵点。
 type Layout struct {
-	// DataDir 数据根（%APPDATA%\omni2api）。
+	// DataDir 数据根（%APPDATA%\NaiBox）。
 	DataDir string
 	// ConfigPath 配置文件（默认 DataDir\config.json；-config 可指向别处）。
 	ConfigPath string
@@ -71,6 +74,11 @@ type Layout struct {
 	BackupDir string
 	// Portable 数据根是否因为 portable.flag 而落在 exe 目录。
 	Portable bool
+	// ExplicitDataDir 数据根是否来自 -data-dir 显式指定。
+	//
+	// 只有旧布局迁移读它：用户或脚本明确指了一个目录，再往里面注入
+	// %APPDATA% 下的旧数据属于越界。portable 形态同理（Portable 已覆盖）。
+	ExplicitDataDir bool
 }
 
 // ResolveLayout 决定数据根与配置文件路径。
@@ -78,7 +86,7 @@ type Layout struct {
 // 优先级（与 task 要求一致）：
 //  1. -data-dir 显式指定
 //  2. exe 同级 portable.flag → exe 目录
-//  3. %APPDATA%\omni2api
+//  3. %APPDATA%\NaiBox
 //
 // 配置文件不受 1/2 影响时固定为 <DataDir>\config.json；-config 显式指定
 // 时用它（此时不迁移旧布局，见 MigrateLegacy）。
@@ -88,10 +96,12 @@ func ResolveLayout(explicitDataDir, explicitConfig string) (Layout, error) {
 	var (
 		root     string
 		portable bool
+		explicit bool
 	)
 	switch {
 	case strings.TrimSpace(explicitDataDir) != "":
 		root = strings.TrimSpace(explicitDataDir)
+		explicit = true
 	case fileExists(filepath.Join(exeDir, portableFlagName)):
 		root, portable = exeDir, true
 	default:
@@ -110,13 +120,14 @@ func ResolveLayout(explicitDataDir, explicitConfig string) (Layout, error) {
 	}
 
 	l := Layout{
-		DataDir:    abs,
-		ConfigPath: filepath.Join(abs, "config.json"),
-		AuthDir:    filepath.Join(abs, "auths"),
-		DataSubDir: filepath.Join(abs, "data"),
-		LogDir:     filepath.Join(abs, "logs"),
-		BackupDir:  filepath.Join(abs, "backups"),
-		Portable:   portable,
+		DataDir:         abs,
+		ConfigPath:      filepath.Join(abs, "config.json"),
+		AuthDir:         filepath.Join(abs, "auths"),
+		DataSubDir:      filepath.Join(abs, "data"),
+		LogDir:          filepath.Join(abs, "logs"),
+		BackupDir:       filepath.Join(abs, "backups"),
+		Portable:        portable,
+		ExplicitDataDir: explicit,
 	}
 	if c := strings.TrimSpace(explicitConfig); c != "" {
 		absCfg, err := filepath.Abs(c)

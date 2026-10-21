@@ -23,7 +23,7 @@ GOOS=windows CGO_ENABLED=0 go build -trimpath \
 | flag | 默认 | 说明 |
 | --- | --- | --- |
 | `-config` | 空 | 配置文件路径。空 = `<数据根>\config.json`；显式指定时**不**迁移旧布局 |
-| `-data-dir` | 空 | 数据根。空 = `%APPDATA%\omni2api`（exe 同级有 `portable.flag` 时用 exe 目录） |
+| `-data-dir` | 空 | 数据根。空 = `%APPDATA%\NaiBox`（exe 同级有 `portable.flag` 时用 exe 目录） |
 | `-mode` | `window` | `window` 内嵌窗口 / `browser` 只用系统浏览器 |
 | `-port` | `0` | `0` = 7863 起顺延到 7873，仍占用则由系统分配 |
 | `-console` | `false` | 保留控制台，日志同时打到 stderr |
@@ -33,7 +33,7 @@ GOOS=windows CGO_ENABLED=0 go build -trimpath \
 ## 数据布局
 
 ```
-%APPDATA%\omni2api\
+%APPDATA%\NaiBox\
 ├─ config.json         首次启动生成（api_key 随机），也可由旧布局迁移而来
 ├─ auths\              账号凭证
 ├─ data\               state.json / apikeys.json / request-log.jsonl
@@ -49,11 +49,15 @@ GOOS=windows CGO_ENABLED=0 go build -trimpath \
 启动时按顺序探测：
 
 1. `-config` 显式指定 → 尊重用户，不迁移
-2. exe 同级 `config.json` → 迁移来源
-3. 当前工作目录 `config.json` → 迁移来源
-4. 都没有 → 生成默认配置
+2. `%APPDATA%\omni2api`（改名前的数据根）→ 迁移来源
+3. exe 同级 `config.json` → 迁移来源
+4. 当前工作目录 `config.json` → 迁移来源
+5. 都没有 → 生成默认配置
 
-命中 2/3 时把 `config.json` + `auths\` + `data\` **复制**到数据根（绝不移动），
+第 2 项只在数据根是**默认位置**时启用：`-data-dir` 显式指定或 `portable.flag`
+为真时跳过 —— 用户已经明确指了目录，再往里注入旧数据属于越界。
+
+命中 2/3/4 时把 `config.json` + `auths\` + `data\` **复制**到数据根（绝不移动），
 源目录完整保留并写入 `.migrated.bak`（记录来源、去向、复制清单）。
 目标已有同名文件时跳过、不覆盖 → 重复启动安全（幂等）。
 

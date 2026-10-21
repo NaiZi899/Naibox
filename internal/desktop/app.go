@@ -40,7 +40,7 @@ var ErrInstanceHandoff = errors.New("检测到已有实例，但无法唤醒")
 type Options struct {
 	// ConfigPath -config。空 = 数据根下的 config.json（且允许旧布局迁移）。
 	ConfigPath string
-	// DataDir -data-dir。空 = %APPDATA%\omni2api（或 portable.flag 的 exe 目录）。
+	// DataDir -data-dir。空 = %APPDATA%\NaiBox（或 portable.flag 的 exe 目录）。
 	DataDir string
 	// Mode "window" | "browser"。
 	Mode string

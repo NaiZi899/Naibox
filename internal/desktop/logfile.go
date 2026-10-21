@@ -24,7 +24,7 @@ const retainedLogDays = 7
 // 装配层的 17 处 log.Fatalf / 大量 log.Printf 都往标准库默认 logger 写。
 // 桌面形态没有可见控制台（-H windowsgui 或用户从资源管理器双击），
 // 日志如果只进 stderr 就等于**全部丢失** —— 出问题时用户手里没有任何
-// 可提供的信息。所以 stdout 必须接一个"写到 %APPDATA%\omni2api\logs"的
+// 可提供的信息。所以 stdout 必须接一个"写到 %APPDATA%\NaiBox\logs"的
 // 出口，并且保留"控制台看得见"这个能力（-console 调试时用）。
 //
 // 自己写而不是引第三方滚动库：需求只有"按日切 + 保留 N 天 + tee"，

@@ -40,7 +40,7 @@ NaiBox 是一个 Go 编写的本地 AI 网关，Windows 桌面版与 Linux/macOS
 | | 桌面版（Windows） | 服务端 |
 |---|---|---|
 | 适合 | 个人电脑，双击启动 | 服务器、NAS、长期在线 |
-| 数据 | `%APPDATA%\omni2api\` | 当前目录下的 `config.json`、`auths`、`data` |
+| 数据 | `%APPDATA%\NaiBox\` | 当前目录下的 `config.json`、`auths`、`data` |
 | 界面 | WebView2 窗口加托盘 | 浏览器打开 `/ui` |
 | 升级 | 替换 exe，数据不动 | 替换二进制，重启 |
 
