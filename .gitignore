@@ -62,24 +62,11 @@ backups/
 LOOP.md
 PLAN.md
 SPEC.md
-# docs/ 整体是过程产物（进度日志、探究草稿），不入库。
+# docs/ 是过程文档与架构说明，不进版本库。
 #
-# ⚠ 但**探究报告是交付物** —— 它记录了"上游有什么、我们怎么验证的"，
-# 是后续维护者唯一能查到的依据（代码注释里多处指向它）。
-# 所以这里用 `docs/*` 而不是 `docs/`：前者只忽略文件，
-# 允许下面用 `!` 把指定的报告重新包含进来。
-# （`docs/` 会连目录一起排除，那时内部文件**无法**用 `!` 挽回 —— git 的规则。）
-docs/*
-!docs/loomy-local-toolchain.md
-!docs/image-generation.md
-!docs/chat-tools.md
-# 桌面版手工验收矩阵是**交付物**：它是"数据会不会丢"这类问题的唯一
-# 可复现判定依据（谁在什么环境下该看到什么、失败看哪里）。
-!docs/desktop.md
-# 系统提示词的三模式语义同样是**交付物**：降级期为什么三种模式同路、保存期与启动期
-# 校验差在哪、"只在 WorkBuddy 生效"这条边界 —— 这些若只写在代码注释里，改 config.json
-# 的人永远看不到，而配错就是整条链路被拦。
-!docs/system-prompt.md
+# 2026-10 起的仓库口径：**只上传核心源码，文档只留根目录 README.md**。
+# 这些文件仍然留在本机磁盘上（照样能读、能改），只是不再进版本库。
+docs/
 
 # 运行期产物
 # logs/ 是 start.bat 与网关控制台写出的日志（含本机绝对路径、账号昵称、
@@ -94,31 +81,21 @@ tasks/
 # `git add -A` 会把整个团队工作区吞进提交。
 .task/
 
-# 设计/计划文档（但 README.md 必须进版本库）
+# 设计/计划/架构/变更文档：仓库只保留 README.md。
+# 其余 md（CHANGELOG、SECURITY、CONTRIBUTING、CODE_OF_CONDUCT、AGENTS、PR 模板、
+# docs 下的报告）一律不入库，文件本体留在本机。
 *.md
 !README.md
-# AGENTS.md 是**给 agent 的项目约定**（仓库定位、验证方法、发布流程、踩过的坑），
-# 和 CONTRIBUTING 同级：它是交付物，不是过程文档。后续维护者接手时第一份该读的就是它。
-!AGENTS.md
-!SECURITY.md
-!CHANGELOG.md
-# 面向贡献者的规范文件同样是交付物 —— `*.md` 会连它们一起忽略，必须点名豁免。
-!CONTRIBUTING.md
-!CODE_OF_CONDUCT.md
-!.github/PULL_REQUEST_TEMPLATE.md
-# 上游探究报告是**交付物**：它记录"上游有什么、怎么验证的"，
-# 是后续维护者唯一的依据（代码注释多处指向它）。
-# 注意：`*.md` 会连 docs/ 下的文件一起忽略，所以这里要点名豁免 ——
-# 上面对 docs/ 的 `docs/*` + `!docs/xxx.md` 是**不够的**（先命中哪条看顺序）。
-!docs/loomy-local-toolchain.md
-!docs/image-generation.md
-!docs/chat-tools.md
-# 桌面版手工验收矩阵：同样是交付物（「数据会不会丢」的唯一可复现判定依据）。
-# 必须放在 `*.md` **之后** —— gitignore 是"最后匹配者胜"，
-# 只在 docs/* 那组里豁免会被后面的 `*.md` 重新盖掉（我第一版就这么错了）。
-!docs/desktop.md
-# 系统提示词文档：同属交付物，必须放在 `*.md` **之后**才生效（同上）。
-!docs/system-prompt.md
+
+# 测试脚本与部署脚本：仓库只保留"能编译出产物"的核心源码。
+# 这些文件仍在本机磁盘上，CI 也不依赖它们（release.yml 的打包步骤是内联的，
+# 只取二进制、config.example.json 与 start.bat）。
+/tests/
+/scripts/
+/credit.sh
+/login.sh
+/restart-7863.sh
+/signin.sh
 
 # ⚠ 被 go:embed 内嵌的 md 必须**显式**豁免 —— 它不是文档，是编译输入。
 #
