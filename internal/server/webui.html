@@ -448,6 +448,18 @@
   .friend-card:hover{border-color:var(--acc)}
   .friend-name{font-size:13px;font-weight:600;color:var(--fg)}
   .friend-url{font-size:11px;color:var(--dim);font-family:var(--mono);word-break:break-all}
+  /* 关窗询问：页面内模态，保持与控制台同一套令牌（深浅色都跟随）。 */
+  .cmodal-mask{position:fixed;inset:0;z-index:90;display:flex;align-items:center;justify-content:center;
+    padding:24px;background:rgba(0,0,0,.42)}
+  .cmodal-mask[hidden]{display:none}
+  .cmodal-card{width:min(440px,100%);padding:20px 22px;background:var(--panel);
+    border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 48px rgba(0,0,0,.28)}
+  .cmodal-head{display:flex;align-items:flex-start;gap:14px}
+  .cmodal-icon{width:44px;height:44px;border-radius:12px;flex:none}
+  .cmodal-title{font-size:15px;font-weight:650;color:var(--fg)}
+  .cmodal-text{margin-top:6px;font-size:12px;line-height:1.7;color:var(--dim)}
+  .cmodal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px;flex-wrap:wrap}
+  .cmodal-note{margin-top:14px;font-size:11px;color:var(--dim)}
   fieldset{border:1px solid var(--line);border-radius:10px;padding:14px;margin:0 0 16px}
   legend{font-size:12px;color:var(--dim);padding:0 8px;letter-spacing:.4px}
   /* 设置页重设计（用户本轮要求）新增的呈现类：生效时机徽章 / 组内子块 / 信息条 */
@@ -1291,7 +1303,7 @@
   </section>
 
   <!-- 关于软件。
-       内容来自编译期嵌入的 about/about.json（服务端 /admin/about），
+       内容来自编译期嵌入的 internal/about/about.json（服务端 /admin/about），
        这里只负责排版；改介绍、项目地址或推荐项目不需要动这段 HTML。 -->
   <section data-key="about">
     <h2>关于软件</h2>
@@ -1325,7 +1337,7 @@
       <p class="info-line">
         每个 OpenAI 兼容端点注册成一个独立上游：模型名写 <code class="mono">id/模型</code>，前缀由网关自动加。
         凭证只落 <code class="mono">config.json</code>，页面只显示尾号（<code class="mono">key_tail</code>）。
-        <code class="mono">api_key</code> 与 <code class="mono">api_key_env</code> 二选一；
+        <code class="mono">api_key</code>、<code class="mono">api_keys</code> 与 <code class="mono">api_key_env</code> 三选一；
         <code class="mono">id</code> 必须匹配 <code class="mono">^[a-z][a-z0-9-]*$</code>；
         <code class="mono">base_url</code> 结尾不带 <code class="mono">/</code>。
       </p>
@@ -1369,6 +1381,11 @@
               <button type="button" id="cfKeyToggle">显示</button>
             </div>
             <span class="hint">只写进 config.json；列表与日志只显示尾号。<b>与下面的 api_key_env 二选一；编辑已有端点时留空 = 沿用原密钥。</b></span>
+          </div>
+          <div class="field wide">
+            <label for="cfKeys">多密钥（可选，一行一个）</label>
+            <textarea id="cfKeys" placeholder="留空 = 用上面的单 key&#10;sk-key-1&#10;sk-key-2"></textarea>
+            <span class="hint">填多行即多账号：每把 key 独立进池，轮转和故障转移都按账号走；与单 key、api_key_env 三选一。编辑已有端点时留空表示沿用原密钥。</span>
           </div>
           <div class="field">
             <label for="cfKeyEnv">api_key_env（可选）</label>
@@ -1507,6 +1524,27 @@
     </div>
   </div>
 </div>
+
+  <!-- 关窗询问（桌面版专用）：窗口过程通过 JS 唤起，用户选择后经
+       nbCloseChoice 回传。页面不可用时窗口过程会回退到原生 MessageBox。 -->
+  <div id="closeAsk" class="cmodal-mask" hidden>
+    <div class="cmodal-card" role="dialog" aria-modal="true"
+         aria-labelledby="closeAskTitle" aria-describedby="closeAskText">
+      <div class="cmodal-head">
+        <img class="cmodal-icon" src="/favicon.svg" alt="">
+        <div>
+          <div class="cmodal-title" id="closeAskTitle">要最小化到托盘吗？</div>
+          <div class="cmodal-text" id="closeAskText">隐藏窗口后网关继续在后台运行，可从托盘图标恢复。</div>
+        </div>
+      </div>
+      <div class="cmodal-actions">
+        <button type="button" id="closeAskCancel">取消</button>
+        <button type="button" id="closeAskQuit" style="color:var(--err)">退出程序</button>
+        <button type="button" id="closeAskHide" class="primary">最小化到托盘</button>
+      </div>
+      <div class="cmodal-note">这个选择可以在托盘菜单「关闭窗口时」里改。</div>
+    </div>
+  </div>
 
 <script>
 (() => {
@@ -5521,6 +5559,8 @@ let loginProvider = '';
     models_count: '模型数',
     shards: '分片数',
     key_tail: '密钥尾号',
+    key_tails: '密钥尾号',
+    key_count: '密钥数',
     probe: '最近探测',
     ok: '可用',
     at: '探测时刻',
@@ -5923,10 +5963,10 @@ let loginProvider = '';
     const setRO = (id, text) => { const el = $(id); if (el) el.textContent = text; };
     setRO('setKeepaliveRO',
       (s.keepalive_enabled ? '已启用' : '已禁用') + '（被动后台扫描：每天定时检查临近过期的 token 并自动刷新；' +
-      '如需调整请改 config.json 的 keepalive_enabled / keepalive_hours）');
+      '如需调整请改 config.json 的 keepalive_enabled / keepalive_hours，修改后需重启网关）');
     setRO('setSanitizeRO',
       (s.sanitize_blacklist_fingerprints ? '已启用' : '已禁用') + '（出站请求体指纹脱敏，安全加固项，默认开启；' +
-      '如需关闭请改 config.json 的 sanitize_blacklist_fingerprints）');
+      '如需关闭请改 config.json 的 sanitize_blacklist_fingerprints，修改后需重启网关）');
     setRO('setStickyRO',
       (s.session_sticky_enabled ? '已启用 · TTL ' + (s.session_sticky_ttl || '30m') : '已禁用') +
       '（当前正在使用，切换会中断在途会话；如需调整请改 config.json 后重启）');
@@ -5949,10 +5989,22 @@ let loginProvider = '';
       if (hint) {
         const pending = (s && s.prompt_mode) || '';
         const eff = (ps && ps.mode) || '';
+        const pendingFile = String((s && s.prompt_file) || '').trim();
+        const activeFile = (ps && String(ps.source || '').indexOf('file:') === 0)
+          ? String(ps.source).slice(5) : '';
+        const changes = [];
         if (pending && eff && pending !== eff) {
+          changes.push('模式已保存为「' + promptModeText(pending) + '」');
+        }
+        if (pendingFile !== activeFile) {
+          changes.push(pendingFile
+            ? '人格文件已改为「' + pendingFile + '」'
+            : '已改为使用内置人格');
+        }
+        if (changes.length) {
           hint.hidden = false;
-          hint.textContent = '模式已保存为「' + promptModeText(pending)
-            + '」，需重启应用后生效；当前仍按「' + promptModeText(eff) + '」转发。';
+          hint.textContent = changes.join('；') + '，需重启应用后生效；当前仍按「'
+            + promptModeText(eff) + '」转发。';
         } else {
           hint.hidden = true;
           hint.textContent = '';
@@ -6275,9 +6327,42 @@ let loginProvider = '';
     }
   }
 
+  // ---------------------------------------------------------------- 关窗询问
+  //
+  // 桌面版点 X 且设置是「每次询问」时，窗口过程 Eval __nbCloseAsk()。
+  // 这里只负责显示；选择结果通过 window.nbCloseChoice 交给 Go。
+  // 页面没加载好时窗口过程会回退原生 MessageBox，不会卡住关闭。
+  function __nbCloseAsk() {
+    const box = $('closeAsk');
+    if (!box) return false;
+    box.hidden = false;
+    // 告诉 Go 弹窗真的显示出来了，取消 2 秒后的原生兜底。
+    try { if (window.nbCloseShown) window.nbCloseShown(); } catch (e) { /* 桥接失败由 Go 兜底 */ }
+    const primary = $('closeAskHide');
+    if (primary) primary.focus();
+    return true;
+  }
+
+  function __nbCloseHide() {
+    const box = $('closeAsk');
+    if (box) box.hidden = true;
+  }
+
+  // 整个脚本包在 IIFE 里，函数声明不会自动挂到 window 上；
+  // 窗口过程 Eval 的正是这两个全局入口，必须显式导出。
+  window.__nbCloseAsk = __nbCloseAsk;
+  window.__nbCloseHide = __nbCloseHide;
+
+  async function nbClosePick(choice) {
+    __nbCloseHide();
+    try {
+      if (window.nbCloseChoice) await window.nbCloseChoice(choice);
+    } catch (e) { /* 窗口过程已回退时这里没有回调，忽略 */ }
+  }
+
   // ---------------------------------------------------------------- 关于软件
   //
-  // 数据来自 /admin/about（编译期嵌入 about/about.json）。
+  // 数据来自 /admin/about（编译期嵌入 internal/about/about.json）。
   // 外链交给 /admin/open-url 走系统浏览器：控制台是 WebView2，
   // 直接 target=_blank 有把页面导航走的风险。
   async function loadAbout() {
@@ -6437,6 +6522,10 @@ let loginProvider = '';
         `<button data-ctoggle="${escAttr(id)}">${on ? '停用' : '启用'}</button>`,
         `<button data-cdel="${escAttr(id)}" style="color:var(--err)">删除</button>`,
       ].join('');
+      const tails = Array.isArray(it.key_tails) ? it.key_tails.filter(Boolean) : (it.key_tail ? [it.key_tail] : []);
+      const tailText = tails.length
+        ? `键尾 ${tails.slice(0, 2).map(esc).join(' / ')}${tails.length > 2 ? ` +${tails.length - 2}` : ''}`
+        : '';
       return `<tr>
         <td>
           <div>${esc(it.name || id)}</div>
@@ -6444,7 +6533,7 @@ let loginProvider = '';
         </td>
         <td class="mono" style="white-space:normal;word-break:break-all;max-width:260px"
             title="${escAttr(it.base_url || '')}">${esc(it.base_url || '')}
-          ${it.key_tail ? `<div class="dim" style="font-size:11px">键尾 ${esc(it.key_tail)}</div>` : ''}
+          ${tailText ? `<div class="dim" style="font-size:11px">${tailText}</div>` : ''}
         </td>
         <td class="mono">${modelsCell}</td>
         <td title="${escAttr(probeFull)}">${probeCell}</td>
@@ -6476,6 +6565,8 @@ let loginProvider = '';
     // api_key 永远**不回填**：列表接口只给 key_tail，页面里没有明文。
     // 编辑已有端点时留空 = 沿用原密钥（宿主按 id 合并），新增时必填。
     val('cfKey', '');
+    // 多 key 同样不回填（列表只有尾号）；留空 = 沿用原密钥。
+    val('cfKeys', '');
     val('cfKeyEnv', it.api_key_env);
     val('cfChatPath', it.chat_path);
     val('cfModelsPath', it.models_path);
@@ -6579,6 +6670,7 @@ let loginProvider = '';
       base_url: val('cfBase').replace(/\/+$/, ''),
       // api_key **不 trim**：键里理论上不该有空白，但也不该由前端悄悄改写。
       api_key: raw('cfKey'),
+      api_keys: lines('cfKeys'),
       api_key_env: val('cfKeyEnv'),
       models: lines('cfModels'),
       chat_path: val('cfChatPath'),
@@ -6610,13 +6702,15 @@ let loginProvider = '';
     if (!s.enabled) return null;
     const hasKey = !!String(s.api_key || '').trim();
     const hasEnv = !!String(s.api_key_env || '').trim();
+    const keyCount = Array.isArray(s.api_keys) ? s.api_keys.filter(k => String(k || '').trim()).length : 0;
+    if (keyCount > 0 && (hasKey || hasEnv)) return '多密钥与单 key / api_key_env 只能填一种';
     if (hasKey && hasEnv) return 'api_key 与 api_key_env 只能填一个';
     // 编辑已有端点时不回填明文：留空表示"沿用原密钥"（后端按 id 合并）。
     // 判据必须同时要求"还是同一个 id"——改了 id 就没有可继承的对象了。
     const sameRow = !!(customEditing && customEditing === s.id);
     const prev = sameRow ? customItems.find(x => String(x.id) === s.id) : null;
-    const canInherit = !!(prev && (prev.key_tail || String(prev.api_key_env || '').trim()));
-    if (!hasKey && !hasEnv && !canInherit) return 'api_key 与 api_key_env 必填其一';
+    const canInherit = !!(prev && (prev.key_count > 0 || prev.key_tail || String(prev.api_key_env || '').trim()));
+    if (!hasKey && !hasEnv && keyCount === 0 && !canInherit) return 'api_key、api_keys 与 api_key_env 必填其一';
     return null;
   }
 
@@ -10143,6 +10237,19 @@ let multCatalogFailed = false;
     };
     installCustomUpstreamActions();
     installAboutActions();
+
+    // 关窗询问：按钮只在启动时绑一次（弹窗是静态 DOM，不重绘）。
+    $('closeAskHide').onclick = () => nbClosePick('hide');
+    $('closeAskQuit').onclick = () => nbClosePick('quit');
+    $('closeAskCancel').onclick = () => nbClosePick('cancel');
+    $('closeAsk').addEventListener('click', ev => {
+      if (ev.target === $('closeAsk')) nbClosePick('cancel');
+    });
+    document.addEventListener('keydown', ev => {
+      if ($('closeAsk').hidden) return;
+      if (ev.key === 'Escape') { ev.preventDefault(); nbClosePick('cancel'); }
+      else if (ev.key === 'Enter') { ev.preventDefault(); nbClosePick('hide'); }
+    });
 
     // 导航最后构建：此时所有 section 都已在 DOM 里。
     //

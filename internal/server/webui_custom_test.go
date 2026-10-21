@@ -121,6 +121,7 @@ func TestWebUICustomUpstreamsSection(t *testing.T) {
 		{`id="cfName"`, "显示名字段"},
 		{`id="cfBase"`, "基址字段"},
 		{`id="cfKey"`, "API Key 字段"},
+		{`id="cfKeys"`, "多密钥字段（一行一个）"},
 		{`id="cfKeyEnv"`, "api_key_env 字段（与 api_key 二选一的另一半）"},
 		{`id="cfModels"`, "模型列表 textarea（一行一个）"},
 		{`id="cfTimeout"`, "超时（秒）"},
