@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"reflect"
 )
 
 // Settings 设置页可读写的全部字段。
@@ -209,6 +210,10 @@ func (h *Handler) settingsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "设置解析失败: "+err.Error())
 		return
 	}
+	// 保存前的值。need_restart 必须是"这次真的改了的字段"，不能是后端
+	// 静态列出的全部重启项 —— 前端每次都会提交完整字段表，照抄静态清单会让
+	// 用户改一个日志保留天数也看到"16 项需重启"。
+	before := h.settingsView()
 	applied, needRestart, err := h.cfg.Settings.Apply(patch)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -216,6 +221,12 @@ func (h *Handler) settingsUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	// 上游专属字段：各自从完整补丁里挑出自己认得的键。
 	for _, ext := range h.settingsExts() {
+		// 先把该上游声明为"需重启"的键全部放进候选，下面按保存前后的值过滤。
+		for _, f := range ext.Fields() {
+			if f.RestartRequired && f.Key != "" {
+				needRestart = append(needRestart, f.Key)
+			}
+		}
 		upApplied, uerr := ext.ApplySettings(patch)
 		if uerr != nil {
 			// 上游拒绝时整次保存**已经落盘**（SettingsStore.Apply 已返回）。
@@ -227,6 +238,7 @@ func (h *Handler) settingsUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		applied = append(applied, upApplied...)
 	}
+	needRestart = changedKeys(needRestart, before, h.settingsView())
 	log.Printf("admin: 设置已保存，运行时生效=%v 需重启=%v", applied, needRestart)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"settings":     h.settingsView(),
@@ -234,6 +246,27 @@ func (h *Handler) settingsUpdate(w http.ResponseWriter, r *http.Request) {
 		"need_restart": needRestart,
 		"request_log":  h.requestLogStats(),
 	})
+}
+
+// changedKeys 只保留保存前后值真的变了的键。
+//
+// before/after 都是 settingsView() 的产物（同一形状的 map），因此可以直接
+// 比较。need_restart 的语义是"这次保存有哪些改动要重启才能生效"：
+// 前端每次提交完整字段表，若不比较值，静态清单会让每次保存都显示一堆
+// 与本次操作无关的重启项。
+func changedKeys(keys []string, before, after map[string]any) []string {
+	seen := make(map[string]bool, len(keys))
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if !reflect.DeepEqual(before[k], after[k]) {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // settingsView 把通用设置与各上游的设置项合并成一个 JSON 对象。
