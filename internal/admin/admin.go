@@ -110,6 +110,11 @@ type Config struct {
 	ModelCatalogState func() ModelCatalogState
 	// Settings 设置页的读写契约（由 cmd/server 实现并注入；nil = 关闭设置页）。
 	Settings SettingsStore
+	// CustomUpstreams 「自定义上游」配置的读写契约（由 cmd/server 注入；nil = 未接线）。
+	//
+	// 它操作的是 config.json 的 custom_upstreams 段，而不是某个上游的运行时状态，
+	// 所以放在核心而不是 Provider 的 AdminExt 里 —— 详见 customupstreams.go 的文件头。
+	CustomUpstreams CustomUpstreamStore
 	// BuildTime 进程启动时间，UI 用来算运行时长。
 	StartedAt time.Time
 
@@ -328,6 +333,12 @@ func New(cfg Config) *Handler {
 
 	h.register("GET /admin/settings", h.settings)
 	h.register("PUT /admin/settings", h.settingsUpdate)
+	// 自定义上游的配置管理（读 / 整体替换 / 探测草稿）。
+	//
+	// 与 settings 同一层：它们改的都是 config.json，不是某个上游的运行时状态。
+	h.register("GET /admin/custom-upstreams", h.customUpstreams)
+	h.register("PUT /admin/custom-upstreams", h.customUpstreamsUpdate)
+	h.register("POST /admin/custom-upstreams/test", h.customUpstreamsTest)
 
 	// 核心调度相关的两条只读端点。
 	//

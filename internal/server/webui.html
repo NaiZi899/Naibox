@@ -396,6 +396,34 @@
   .field.chk{flex-direction:row;align-items:center;gap:8px}
   .field.chk input{width:auto}
   .field.chk label{font-size:13px;color:var(--fg)}
+  /* ---- 自定义上游：表格下方的内联编辑器 ----
+     为什么需要这几条，而不全复用现成类：
+       · `section>h2` 只命中**面板**标题。编辑器头是面板内部的表单头，
+         也不该把那条选择器放宽成"section 里任意 h2"（会连带改掉将来
+         任何嵌套标题的排版）。所以这里各自显式声明，数值与 section>h2 一致
+         —— 同一个控制台里"分区标题"只应该有一种样子。
+       · `.fieldgroup` 在设置页是**单列**（那是有意的：一列一条更好读）。
+         编辑器有 14 个字段，单列会拉出一条很长的表单，所以只在编辑器内换成
+         自适应栅格；全局 .fieldgroup 一个字都不动。 */
+  .ceditor{border-top:1px solid var(--line)}
+  .ceditor>h2{margin:0;padding:11px 16px;font-size:12px;font-weight:650;letter-spacing:.6px;
+    color:var(--dim);border-bottom:1px solid var(--line);
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .ceditor>h2 b{color:var(--fg);font-size:13px;letter-spacing:0}
+  .ceditor .fieldgroup{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+    gap:12px 16px}
+  .ceditor .field.wide{grid-column:1/-1}
+  .ceditor .foot{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    padding:12px 16px;border-top:1px solid var(--line);background:var(--panel2)}
+  /* 表格「操作」列的多个按钮：inline-flex 排开，行高不被按钮自身的内边距撑高 */
+  .row-actions{display:inline-flex;gap:4px;flex-wrap:wrap}
+  .row-actions button{padding:2px 8px;font-size:11px;font-weight:400}
+  /* API Key 的显示/隐藏按钮贴在输入框右侧：不额外占一列，两者关系也更明确 */
+  .keyfield{position:relative}
+  .keyfield input{width:100%;padding-right:58px;font-family:var(--mono);font-size:12px}
+  .keyfield button{position:absolute;right:4px;top:50%;transform:translateY(-50%);
+    padding:2px 8px;font-size:11px;background:transparent;border-color:transparent;color:var(--dim)}
+  .keyfield button:hover{color:var(--acc);border-color:transparent}
   fieldset{border:1px solid var(--line);border-radius:10px;padding:14px;margin:0 0 16px}
   legend{font-size:12px;color:var(--dim);padding:0 8px;letter-spacing:.4px}
   /* 设置页重设计（用户本轮要求）新增的呈现类：生效时机徽章 / 组内子块 / 信息条 */
@@ -1235,6 +1263,141 @@
         <legend>运行信息 <span class="badge badge--ro">只读</span></legend>
         <dl id="setReadonly"></dl>
       </fieldset>
+    </div>
+  </section>
+
+  <!-- 自定义上游（自定义 OpenAI 兼容端点）的管理页。
+       #
+       # 为什么它是**独立的 section**，而不是「设置」里的一块
+       「设置」的保存是逐字段 patch，这里的保存是**整表覆盖**（PUT 全量 items）。
+       两种"保存"的语义混在一页，会让人以为「保存设置」也会把上游表一起写掉 ——
+       而它不会。分开之后各自的按钮语义就自明了。
+       #
+       # 导航
+       导航由 `#content > section[data-key]` 自动生成（buildNav 的通用组），
+       所以这里**只**是一个普通 section：它落在「通用」组里，不另开分组。
+       ⚠ data-key 必须在 —— showPanel 就是按它分派加载的。
+       #
+       # 已知的既有行为（本轮不改，只记录）
+       #content 上挂着 `input → markDirty(true)`，所以在这里打字会让「设置」
+       标题出现「（有未保存的修改）」。聊天面板的输入框早就是这个表现 ——
+       同一个共享监听器的既有副作用，本轮不动它（会扩散到设置页）。 -->
+  <section data-key="custom-upstreams">
+    <h2>自定义上游 <span class="dim" style="font-weight:400;text-transform:none">保存后需重启网关</span>
+      <span class="spacer"></span>
+      <button id="btnCustomAdd" style="padding:3px 10px;font-size:12px">新增上游</button>
+    </h2>
+    <div class="body">
+      <p class="info-line">
+        每个 OpenAI 兼容端点注册成一个独立上游：模型名写 <code class="mono">id/模型</code>，前缀由网关自动加。
+        凭证只落 <code class="mono">config.json</code>，页面只显示尾号（<code class="mono">key_tail</code>）。
+        <code class="mono">api_key</code> 与 <code class="mono">api_key_env</code> 二选一；
+        <code class="mono">id</code> 必须匹配 <code class="mono">^[a-z][a-z0-9-]*$</code>；
+        <code class="mono">base_url</code> 结尾不带 <code class="mono">/</code>。
+      </p>
+      <table>
+        <thead><tr>
+          <th>名称 / ID</th><th>基址</th><th>模型</th><th>最近探测</th><th>状态</th><th>操作</th>
+        </tr></thead>
+        <!-- 加载中 / 空态 / 读取失败三种占位行都由 renderCustomUpstreams 写进来。
+             colspan 与上面 6 个表头对齐 —— 改列数时两处都要改。 -->
+        <tbody id="customRows"><tr><td colspan="6" class="dim">加载中…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- 编辑器：新增与编辑**共用同一块**（点行内「编辑」把该行填进来）。
+         默认 hidden；显隐由 openCustomEditor / closeCustomEditor 控制。
+         放在 section 内部而不是弹窗里：字段多且需要对照上表，
+         弹窗会把表格遮住，反而更难看懂"我在改哪一行"。 -->
+    <div class="ceditor" id="customEditor" hidden>
+      <h2><b id="customEditorTitle">新增上游</b><span>保存后写入 config.json，重启网关生效</span></h2>
+      <div class="body">
+        <div class="fieldgroup">
+          <div class="field">
+            <label for="cfId">ID</label>
+            <input type="text" id="cfId" placeholder="my-openai" spellcheck="false">
+            <span class="hint">小写字母开头，只含字母、数字与连字符（<code class="mono">^[a-z][a-z0-9-]*$</code>）。它会成为模型前缀 <code class="mono">id/模型</code>，创建后不建议改。</span>
+          </div>
+          <div class="field">
+            <label for="cfName">显示名</label>
+            <input type="text" id="cfName" placeholder="我的 OpenAI 反代">
+            <span class="hint">左侧导航与面板标题里显示的名字。留空则用 ID。</span>
+          </div>
+          <div class="field wide">
+            <label for="cfBase">基址 base_url</label>
+            <input type="text" id="cfBase" placeholder="https://api.example.com/v1" spellcheck="false">
+            <span class="hint">只写到版本段，<b>结尾不要带 <code class="mono">/</code></b>：网关会自己拼 <code class="mono">/chat/completions</code> 与 <code class="mono">/models</code>。</span>
+          </div>
+          <div class="field">
+            <label for="cfKey">API Key</label>
+            <div class="keyfield">
+              <input type="password" id="cfKey" placeholder="sk-…" spellcheck="false">
+              <button type="button" id="cfKeyToggle">显示</button>
+            </div>
+            <span class="hint">只写进 config.json；列表与日志只显示尾号。<b>与下面的 api_key_env 二选一；编辑已有端点时留空 = 沿用原密钥。</b></span>
+          </div>
+          <div class="field">
+            <label for="cfKeyEnv">api_key_env（可选）</label>
+            <input type="text" id="cfKeyEnv" placeholder="MY_UPSTREAM_KEY" spellcheck="false">
+            <span class="hint">从环境变量读 key，适合容器部署。填了它就不填上面的 api_key。</span>
+          </div>
+          <div class="field wide">
+            <label for="cfModels">模型列表（可选，一行一个）</label>
+            <textarea id="cfModels" placeholder="留空 = 实时拉取 /models&#10;gpt-4o-mini&#10;deepseek-chat"></textarea>
+            <span class="hint">填了就用这份静态目录（探测失败也能列出模型）；留空则由网关定时拉取并缓存。</span>
+          </div>
+          <div class="field">
+            <label for="cfModelsPath">models_path（可选）</label>
+            <input type="text" id="cfModelsPath" placeholder="/models" spellcheck="false">
+            <span class="hint">留空 = 默认 <code class="mono">/models</code>。</span>
+          </div>
+          <div class="field">
+            <label for="cfChatPath">chat_path（可选）</label>
+            <input type="text" id="cfChatPath" placeholder="/chat/completions" spellcheck="false">
+            <span class="hint">留空 = 默认 <code class="mono">/chat/completions</code>。</span>
+          </div>
+          <div class="field">
+            <label for="cfTimeout">超时（秒，timeout_seconds）</label>
+            <input type="number" id="cfTimeout" min="5" max="600" value="120">
+            <span class="hint">5–600 秒，约束建连与探测；流式请求不设整体超时。</span>
+          </div>
+          <div class="field">
+            <label for="cfShards">分片数（shards）</label>
+            <input type="number" id="cfShards" min="1" max="8" value="1">
+            <span class="hint">1–8，默认 1。每个分片是一个合成账号，各自吃满 <code class="mono">max_in_flight</code> 的在途名额；并发不够时再调大。</span>
+          </div>
+          <div class="field">
+            <label for="cfAuthHeader">鉴权头 auth_header</label>
+            <input type="text" id="cfAuthHeader" placeholder="Authorization" spellcheck="false">
+            <span class="hint">留空 = 默认 <code class="mono">Authorization</code>。</span>
+          </div>
+          <div class="field">
+            <label for="cfAuthScheme">鉴权方案 auth_scheme</label>
+            <input type="text" id="cfAuthScheme" placeholder="Bearer" spellcheck="false">
+            <span class="hint">留空 = 默认 <code class="mono">Bearer</code>（与 key 之间自动补一个空格）。裸 key 形态（配置里显式写空串）会原样保留，不需要在这里改。</span>
+          </div>
+          <div class="field wide">
+            <label for="cfHeaders">附加请求头（可选，一行一条 Key: Value）</label>
+            <textarea id="cfHeaders" placeholder="X-Title: NaiBox&#10;X-Provider-Priority: 1"></textarea>
+            <span class="hint">每行一条 <code class="mono">Key: Value</code>。解析不了的行会当场报出是第几行，不会被静默丢掉。</span>
+          </div>
+          <div class="field chk">
+            <input type="checkbox" id="cfInsecure">
+            <label for="cfInsecure">跳过 TLS 证书校验（insecure_skip_verify）</label>
+          </div>
+          <div class="field chk">
+            <input type="checkbox" id="cfEnabled" checked>
+            <label for="cfEnabled">启用这个上游</label>
+          </div>
+        </div>
+      </div>
+      <div class="foot">
+        <span class="dim" style="font-size:11px">保存不会中断正在跑的请求；新配置在下次启动时生效。</span>
+        <span class="spacer"></span>
+        <button id="customTest" style="padding:3px 10px;font-size:12px">测试连通性</button>
+        <button id="customSave" class="primary" style="padding:3px 12px;font-size:12px">保存</button>
+        <button id="customCancel" style="padding:3px 10px;font-size:12px">取消</button>
+      </div>
     </div>
   </section>
 
@@ -4751,6 +4914,12 @@ let loginProvider = '';
     }
     if (key === 'settings') loadSettings();
     if (key === 'apikeys') loadAPIKeys();
+    // 自定义上游：**按需**拉（不进 boot）。
+    //
+    // 理由与 stats/series、日志同一条纪律：看不见的面板不产生流量。
+    // 这块数据来自 config.json 的 custom_upstreams，只有用户真的打开这个
+    // 面板时才需要 —— 首屏就拉等于让每个会话多付一次读取。
+    if (key === 'custom-upstreams') loadCustomUpstreams();
     // 仪表盘的统计卡片与趋势图：30s 轮询现在**只在仪表盘可见时**跑
     //（见 boot 里那个定时器），所以切回来必须立刻补一次，
     // 否则用户看到的是上次离开时的旧数。
@@ -5310,6 +5479,14 @@ let loginProvider = '';
     benefitUnit: '单位',
     claimable: '可领取',
     type: '类型',
+    // 自定义上游的端点信息（通用面板直接铺这段 JSON，未命中的键会原样显示）。
+    base_url: '基址',
+    models_source: '模型来源',
+    models_count: '模型数',
+    shards: '分片数',
+    key_tail: '密钥尾号',
+    probe: '最近探测',
+    latency_ms: '延迟（ms）',
   };
 
   // kvLabel 取字段的中文名；查不到返回原 key。
@@ -6055,6 +6232,439 @@ let loginProvider = '';
     } finally {
       btn.disabled = false;
     }
+  }
+
+  // ---------------------------------------------------------------- 自定义上游
+  //
+  // 这一段是「自定义上游」（OpenAI 兼容端点）的管理页。
+  //
+  // # 契约（后端并行开发中，前端按约定写）
+  //
+  //   GET  /admin/custom-upstreams
+  //        -> {items:[{id,name,base_url,enabled,models_count,shards,key_tail,
+  //                    probe:{ok,status,latency_ms,models_count,error,at}}]}
+  //   PUT  /admin/custom-upstreams   body {items:[spec]}
+  //        -> {saved:true, need_restart:["custom_upstreams"], items:[…]}
+  //   POST /admin/custom-upstreams/test   body <一个 spec>
+  //        -> {ok,status,latency_ms,models_count,error}
+  //
+  // # 三条不可越过的纪律
+  //
+  //   1. **PUT 是整表覆盖**：任何一行的改动都要把完整 items 提交回去，
+  //      所以下面每个写操作都从 customItems（服务端最近一次给的列表）复制。
+  //      "只想改一行就只提交一行"在这里是错的 —— 后端会把其余项当成被删除。
+  //   2. **key 只出现在两处**：编辑器的输入框、PUT 的请求体。
+  //      渲染只用服务端给的 key_tail；收起编辑器时把输入框清空。
+  //   3. **没有 `provider === 'xxx'` 这种分支**：这是通用端点，
+  //      它不认识任何上游名字 —— 与 buildProviderPanels 同一条判据。
+  let customItems = [];       // 服务端最近一次下发的列表
+  let customEditing = null;   // 正在编辑的 id（null = 新增）
+  // customRawAuthScheme 记录"正在编辑的这一条本来就是裸 key 形态"。
+  //
+  // auth_scheme 在后端是 *string 三态：不写 = Bearer、写空串 = 裸 key、
+  // 写别的 = 自定义方案。文本框分不清"没写"与"写了空串"，所以用这个标志
+  // 把原始状态带过来：留空且原本是裸 key 时继续提交空串，否则**省略字段**
+  // （省略才会走默认 Bearer）。漏掉这一层，编辑一次就把鉴权前缀改掉了。
+  let customRawAuthScheme = false;
+
+  // escAttr 在 esc 之上补掉引号。
+  //
+  // 本文件的 esc() 只转 & < >：对**文本内容**够用，但塞进 title="…" 这类
+  // 属性时，一个引号就能截断属性（后面的内容变成裸文本）。探测错误文本正是
+  // 外部可控的（上游回什么都可能），所以这里不赌。
+  // 不改全局 esc —— 它被几百处文本内容依赖，改动面远大于收益。
+  const escAttr = s => esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  // shorten 把长文本截到 n 个字符（表格里只放得下这么宽，完整版进 title）。
+  function shorten(s, n) {
+    const t = String(s == null ? '' : s);
+    return t.length > n ? t.slice(0, n - 1) + '…' : t;
+  }
+
+  async function loadCustomUpstreams() {
+    const host = $('customRows');
+    if (!host) return;
+    try {
+      const d = await admin('/admin/custom-upstreams');
+      customItems = (d && d.items) || [];
+      renderCustomUpstreams(customItems);
+    } catch (e) {
+      // 端点还没上线（后端并行开发）时这条分支就是常态。错误必须**写在表格里**，
+      // 不是只在 5 秒就消失的 toast 里 —— 用户切回这个面板时得看到"为什么是空的"。
+      host.innerHTML = `<tr><td colspan="6" class="err">读取失败：${esc((e && e.message) || e)}</td></tr>`;
+    }
+  }
+
+  function renderCustomUpstreams(items) {
+    const host = $('customRows');
+    if (!host) return;
+    const list = items || [];
+    if (!list.length) {
+      host.innerHTML = '<tr><td colspan="6" class="dim">还没有自定义上游 —— 点右上角「新增上游」加一个 OpenAI 兼容端点。</td></tr>';
+      return;
+    }
+    host.innerHTML = list.map(it => {
+      const id = String(it.id || '');
+      const pr = it.probe || {};
+      // 「没探测过」「探测成功」「探测失败」是三种状态，**不能合并**：
+      // 把"没探测过"渲染成失败，会让人去查一个根本没跑过的端点。
+      const probed = !!(pr.at || pr.status || pr.error);
+      const probeCell = !probed
+        ? '<span class="dim">未探测</span>'
+        : (pr.ok
+            ? `<span class="pill ok">${esc(pr.status || 200)}</span>`
+              + (pr.latency_ms != null ? ` <span class="dim">${esc(pr.latency_ms)} ms</span>` : '')
+            : `<span class="pill err">失败</span> <span class="dim">${esc(shorten(pr.error || '未知原因', 32))}</span>`);
+      // title 给完整版：表格里只放得下一小段，而排障要看的正是完整错误。
+      const probeFull = [
+        pr.error ? String(pr.error) : '',
+        pr.status ? ('HTTP ' + pr.status) : '',
+        pr.models_count != null ? (pr.models_count + ' 个模型') : '',
+        pr.latency_ms != null ? (pr.latency_ms + ' ms') : '',
+        pr.at ? ('最近探测 ' + pr.at) : '',
+      ].filter(Boolean).join(' · ');
+      // 状态胶囊：**停用优先**。停用的端点即使上次探测失败也不标红 ——
+      // 它本来就不该再被探测，红色会把人引到错误的方向。
+      const on = !!it.enabled;
+      const statePill = !on
+        ? '<span class="pill dim">已停用</span>'
+        : (probed && !pr.ok ? '<span class="pill err">启用 · 探测失败</span>'
+                            : '<span class="pill ok">启用</span>');
+      const n = Number(it.models_count || 0);
+      const shards = Number(it.shards || 0);
+      // 模型列：只有数字与来源线索。**不列具体模型名** ——
+      // 列表接口只给数量（models 明细要打开编辑器/探测才拿得到），
+      // 在这里编一份模型清单就等于伪造数据。
+      const modelsCell = (n > 0 ? String(n) : '<span class="dim">—</span>')
+        + (shards > 1 ? ` <span class="dim">· ${esc(shards)} 分片</span>` : '');
+      const ops = [
+        `<button data-cedit="${escAttr(id)}">编辑</button>`,
+        `<button data-ctest="${escAttr(id)}">测试</button>`,
+        `<button data-ctoggle="${escAttr(id)}">${on ? '停用' : '启用'}</button>`,
+        `<button data-cdel="${escAttr(id)}" style="color:var(--err)">删除</button>`,
+      ].join('');
+      return `<tr>
+        <td>
+          <div>${esc(it.name || id)}</div>
+          <div class="dim" style="font-size:11px;font-family:var(--mono)">${esc(id)}</div>
+        </td>
+        <td class="mono" style="white-space:normal;word-break:break-all;max-width:260px"
+            title="${escAttr(it.base_url || '')}">${esc(it.base_url || '')}
+          ${it.key_tail ? `<div class="dim" style="font-size:11px">键尾 ${esc(it.key_tail)}</div>` : ''}
+        </td>
+        <td class="mono">${modelsCell}</td>
+        <td title="${escAttr(probeFull)}">${probeCell}</td>
+        <td>${statePill}</td>
+        <td><div class="row-actions">${ops}</div></td>
+      </tr>`;
+    }).join('');
+  }
+
+  // headersToText 把 headers 对象翻成"一行一条 Key: Value"（编辑器里的文本形态）。
+  function headersToText(h) {
+    if (!h || typeof h !== 'object') return '';
+    return Object.keys(h).map(k => `${k}: ${h[k]}`).join('\n');
+  }
+
+  function openCustomEditor(item) {
+    const box = $('customEditor');
+    if (!box) return;
+    const it = item || {};
+    // 记住"正在编辑谁"。存 id 而不是存整条 item：编辑期间列表可能被刷新，
+    // 到时候要判断的是"这一行还在不在"，而不是回放一份快照。
+    customEditing = item ? String(it.id || '') : null;
+    customRawAuthScheme = !!(item && typeof it.auth_scheme === 'string' && it.auth_scheme === '');
+    const val = (id, v) => { const el = $(id); if (el) el.value = (v == null ? '' : String(v)); };
+    const chk = (id, v) => { const el = $(id); if (el) el.checked = !!v; };
+    val('cfId', it.id);
+    val('cfName', it.name);
+    val('cfBase', it.base_url);
+    // api_key 永远**不回填**：列表接口只给 key_tail，页面里没有明文。
+    // 编辑已有端点时留空 = 沿用原密钥（宿主按 id 合并），新增时必填。
+    val('cfKey', '');
+    val('cfKeyEnv', it.api_key_env);
+    val('cfChatPath', it.chat_path);
+    val('cfModelsPath', it.models_path);
+    val('cfTimeout', it.timeout_seconds != null ? it.timeout_seconds : 120);
+    val('cfShards', it.shards != null ? it.shards : 1);
+    val('cfAuthHeader', it.auth_header);
+    val('cfAuthScheme', it.auth_scheme);
+    val('cfModels', Array.isArray(it.models) ? it.models.join('\n') : '');
+    val('cfHeaders', headersToText(it.headers));
+    chk('cfInsecure', it.insecure_skip_verify);
+    // 新增时默认启用（与 mockup 一致）；编辑时照抄该行的 enabled。
+    chk('cfEnabled', item ? !!it.enabled : true);
+    const t = $('customEditorTitle');
+    if (t) t.textContent = item ? ('编辑：' + (it.name || it.id || '')) : '新增上游';
+    box.hidden = false;
+    // 滚到编辑器。**不用 scrollIntoView**：它会连带滚动最近的可滚动祖先，
+    // 在本页（window 滚动 + 侧栏 sticky）里把表头一起推走，落点常常看不到标题。
+    const y = box.getBoundingClientRect().top + window.scrollY - 80;
+    window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+  }
+
+  function closeCustomEditor() {
+    const box = $('customEditor');
+    if (!box) return;
+    box.hidden = true;
+    customEditing = null;
+    // 收起编辑器 = 把输入框里那份明文 key 一起清掉。
+    // 列表接口本来就不给明文，这条是为了"用户刚填进去的那一份"：
+    // 收起之后 DOM 里不该还留着一把能用的 key。
+    const k = $('cfKey');
+    if (k) { k.value = ''; k.type = 'password'; }
+    const tg = $('cfKeyToggle');
+    if (tg) tg.textContent = '显示';
+  }
+
+  // customSpecFromItem 把列表里的一行转成 spec。
+  //
+  // 两处用它：行内「测试」、以及「停用/启用/删除」的整表覆盖。
+  //
+  // ⚠ 列表视图没有 api_key 明文，发出去的是空 key —— 宿主会按 id 从已存
+  // 配置里沿用（见 boot/customstore.go 的 inheritKeys）。没有这层合并，
+  // "停用一个端点"会顺带把它自己的密钥抹掉。
+  function customSpecFromItem(it) {
+    const o = it || {};
+    const num = (v, def) => (v == null || v === '' ? def : Number(v));
+    const spec = {
+      id: String(o.id || ''),
+      name: String(o.name || o.id || ''),
+      enabled: !!o.enabled,
+      base_url: String(o.base_url || ''),
+      api_key: '',
+      api_key_env: String(o.api_key_env || ''),
+      models: Array.isArray(o.models) ? o.models.slice() : [],
+      chat_path: String(o.chat_path || ''),
+      models_path: String(o.models_path || ''),
+      auth_header: String(o.auth_header || ''),
+      headers: Object.assign({}, o.headers || {}),
+      timeout_seconds: num(o.timeout_seconds, 120),
+      shards: num(o.shards, 1),
+      insecure_skip_verify: !!o.insecure_skip_verify,
+    };
+    // 三态：字符串（含空串）原样回传；字段缺席 = 没配过 → 省略（走 Bearer）。
+    if (typeof o.auth_scheme === 'string') spec.auth_scheme = o.auth_scheme;
+    return spec;
+  }
+
+  // collectCustomSpec 从编辑器读出一个完整 spec（null = 解析失败，已 toast）。
+  function collectCustomSpec() {
+    const raw = id => { const el = $(id); return el ? String(el.value == null ? '' : el.value) : ''; };
+    const val = id => raw(id).trim();
+    // 数字：空 = 用默认值；非数字（number 输入框里仍可能出现的垃圾）也退回默认；
+    // 越界钳到区间内 —— 前端不该把 30000 秒这种值发出去换一个 400。
+    const num = (id, def, lo, hi) => {
+      const s = val(id);
+      if (s === '') return def;
+      const x = Number(s);
+      if (!isFinite(x)) return def;
+      return Math.min(hi, Math.max(lo, Math.round(x)));
+    };
+    // 多行文本 → 数组：去掉空行与首尾空白（多敲一个回车不该多出一个空模型名）。
+    const lines = id => raw(id).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    // 附加请求头：每行 "Key: Value"。解析失败要**当场说清是第几行** ——
+    // 静默丢掉一行会让请求少一个头，而上游的报错离那一行十万八千里。
+    const headers = {};
+    const hLines = lines('cfHeaders');
+    for (let i = 0; i < hLines.length; i++) {
+      const line = hLines[i];
+      const at = line.indexOf(':');
+      if (at <= 0) {
+        toast(`附加请求头第 ${i + 1} 行不是「Key: Value」：${line}`, true);
+        return null;
+      }
+      headers[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+    }
+    const spec = {
+      id: val('cfId'),
+      name: val('cfName') || val('cfId'),
+      enabled: !!($('cfEnabled') && $('cfEnabled').checked),
+      // 尾斜杠在这里去掉，而不是报错让人重填：后端要求 base_url 不带尾斜杠，
+      // 为一个肉眼看不见的 `/` 卡住保存没有意义（提示已经写在字段下面）。
+      base_url: val('cfBase').replace(/\/+$/, ''),
+      // api_key **不 trim**：键里理论上不该有空白，但也不该由前端悄悄改写。
+      api_key: raw('cfKey'),
+      api_key_env: val('cfKeyEnv'),
+      models: lines('cfModels'),
+      chat_path: val('cfChatPath'),
+      models_path: val('cfModelsPath'),
+      auth_header: val('cfAuthHeader'),
+      headers: headers,
+      timeout_seconds: num('cfTimeout', 120, 5, 600),
+      shards: num('cfShards', 1, 1, 8),
+      insecure_skip_verify: !!($('cfInsecure') && $('cfInsecure').checked),
+    };
+    // auth_scheme 三态：填了值就带上；留空时，只有"原本就是裸 key"才提交空串，
+    // 其余一律**省略** —— 省略 = 后端默认 Bearer，提交空串 = 关掉前缀。
+    const scheme = val('cfAuthScheme');
+    if (scheme) spec.auth_scheme = scheme;
+    else if (customRawAuthScheme) spec.auth_scheme = '';
+    return spec;
+  }
+
+  // customSpecError 把契约里的硬规则做成一句可读的错误（null = 通过）。
+  //
+  // 这是**投影**不是发明：id 正则、api_key / api_key_env 二选一 ——
+  // 两条都由后端定义。放前端只为少一次 400 往返；服务端仍然会（也该）自己校验。
+  function customSpecError(s) {
+    if (!s.id) return '上游 ID 必填';
+    if (!/^[a-z][a-z0-9-]*$/.test(s.id)) return 'ID 只能小写字母开头，后面只跟小写字母、数字或连字符';
+    if (!s.base_url) return '基址 base_url 必填';
+    // 停用的条目后端不注册、不入池，密钥可以留空（先占位、以后再启用）。
+    // 启用时后端会自己校验，前端不必在这里替它拦。
+    if (!s.enabled) return null;
+    const hasKey = !!String(s.api_key || '').trim();
+    const hasEnv = !!String(s.api_key_env || '').trim();
+    if (hasKey && hasEnv) return 'api_key 与 api_key_env 只能填一个';
+    // 编辑已有端点时不回填明文：留空表示"沿用原密钥"（后端按 id 合并）。
+    // 判据必须同时要求"还是同一个 id"——改了 id 就没有可继承的对象了。
+    const sameRow = !!(customEditing && customEditing === s.id);
+    const prev = sameRow ? customItems.find(x => String(x.id) === s.id) : null;
+    const canInherit = !!(prev && (prev.key_tail || String(prev.api_key_env || '').trim()));
+    if (!hasKey && !hasEnv && !canInherit) return 'api_key 与 api_key_env 必填其一';
+    return null;
+  }
+
+  // customPutItems 提交**完整** items（PUT 是整表覆盖，没有"只改一项"的说法）。
+  async function customPutItems(items) {
+    return admin('/admin/custom-upstreams', { method: 'PUT', body: JSON.stringify({ items: items }) });
+  }
+
+  // customProbeToast 把探测回执翻成一句人话（编辑器测试与行内测试共用）。
+  function customProbeToast(r) {
+    if (r && r.ok) {
+      toast(`连通：${r.status || 200} · ${r.models_count || 0} 个模型 · ${r.latency_ms || 0}ms`, false);
+      return true;
+    }
+    toast('连通性测试失败：' + ((r && r.error) || '未知原因'), true);
+    return false;
+  }
+
+  async function saveCustomUpstreams() {
+    const btn = $('customSave');
+    const spec = collectCustomSpec();
+    if (!spec) return false;                 // collectCustomSpec 已说清是哪一行
+    const bad = customSpecError(spec);
+    if (bad) { toast(bad, true); return false; }
+    // 改 id 撞上已有项：两名上游抢同一个前缀，后端要么报错要么静默覆盖 —— 先拦。
+    if (customEditing !== spec.id && customItems.some(x => String(x.id) === spec.id)) {
+      toast(`ID「${spec.id}」已被占用，换一个`, true);
+      return false;
+    }
+    const items = customItems.map(customSpecFromItem);
+    const i = items.findIndex(x => x.id === spec.id);
+    if (i >= 0) items[i] = spec;
+    else items.push(spec);
+    // 改了 id：老那一行必须一起删掉，否则保存完会"多出一个上游"。
+    if (customEditing && customEditing !== spec.id) {
+      const old = items.findIndex(x => x.id === customEditing);
+      if (old >= 0) items.splice(old, 1);
+    }
+    return busyRun(btn, async () => {
+      try {
+        const r = await customPutItems(items);
+        // need_restart 是**后端说的**（例：["custom_upstreams"]），文案照抄它，
+        // 不在这里猜"哪些项要重启"。
+        const nr = (r && r.need_restart) || [];
+        toast('已保存到 config.json' + (nr.length
+          ? `：${nr.join('、')} 需重启网关后生效`
+          : '（后端未报需要重启）'), false);
+        closeCustomEditor();
+        await loadCustomUpstreams();
+        return true;
+      } catch (e) { toast('保存失败：' + ((e && e.message) || e), true); return false; }
+    }, { label: '保存上游', busyText: '保存中…' });
+  }
+
+  async function testCustomDraft() {
+    const btn = $('customTest');
+    const spec = collectCustomSpec();
+    if (!spec) return false;
+    await busyRun(btn, async () => {
+      try {
+        // 走 POST /test：未保存的草稿也能测，且不会写 config.json。
+        const r = await admin('/admin/custom-upstreams/test',
+          { method: 'POST', body: JSON.stringify(spec) });
+        return customProbeToast(r);
+      } catch (e) { toast('连通性测试失败：' + ((e && e.message) || e), true); return false; }
+    }, { label: '测试连通性', busyText: '测试中…' });
+  }
+
+  async function customTestRow(it, btn) {
+    await busyRun(btn, async () => {
+      try {
+        const r = await admin('/admin/custom-upstreams/test',
+          { method: 'POST', body: JSON.stringify(customSpecFromItem(it)) });
+        // 把结果写回这一行再重绘：列表接口不做探测（N 个端点会变成 N 次
+        // 上游往返），所以"最近探测"只能由刚跑完的这次测试来填。
+        it.probe = {
+          ok: !!(r && r.ok), status: (r && r.status) || 0,
+          latency_ms: (r && r.latency_ms) || 0,
+          models_count: (r && r.models_count) || 0,
+          error: (r && r.error) || '',
+          at: new Date().toISOString(),
+        };
+        renderCustomUpstreams(customItems);
+        return customProbeToast(r);
+      } catch (e) { toast('连通性测试失败：' + ((e && e.message) || e), true); return false; }
+    }, { label: '测试连通性', busyText: '测试中…' });
+  }
+
+  async function customToggleRow(it, btn) {
+    const next = !it.enabled;
+    const label = String(it.name || it.id || '');
+    await busyRun(btn, async () => {
+      try {
+        await customPutItems(customItems.map(x => {
+          const s = customSpecFromItem(x);
+          if (String(x.id) === String(it.id)) s.enabled = next;
+          return s;
+        }));
+        toast(`${next ? '已启用' : '已停用'} ${label}（重启网关后生效）`);
+        await loadCustomUpstreams();
+        return true;
+      } catch (e) { toast('操作失败：' + ((e && e.message) || e), true); return false; }
+    }, { label: next ? '启用' : '停用', busyText: '…' });
+  }
+
+  async function customDeleteRow(it, btn) {
+    const label = String(it.name || it.id || '');
+    if (!confirm(`删除自定义上游「${label}」？\n\n· 从 config.json 的 custom_upstreams 里移除这一项\n· 重启网关后它连同 ${it.id}/ 前缀的模型一起消失\n· 页面不保留备份，旧配置只在你自己留的配置副本里`)) return;
+    await busyRun(btn, async () => {
+      try {
+        await customPutItems(customItems
+          .filter(x => String(x.id) !== String(it.id))
+          .map(customSpecFromItem));
+        toast(`已删除 ${label}（重启网关后生效）`);
+        await loadCustomUpstreams();
+        return true;
+      } catch (e) { toast('删除失败：' + ((e && e.message) || e), true); return false; }
+    }, { label: '删除上游', busyText: '删除中…' });
+  }
+
+  // installCustomUpstreamActions 行内动作的**唯一**一次委托（绑在 #customRows 上）。
+  //
+  // 为什么用委托而不是逐行绑：renderCustomUpstreams 每次加载都重写整个 tbody，
+  // 逐行绑会随刷新次数累积监听器（本项目踩过的同款 bug，
+  // 见 installGenericActions 的注释）。这里绑一次、只认 data-* 属性。
+  function installCustomUpstreamActions() {
+    const host = $('customRows');
+    if (!host) return;
+    host.addEventListener('click', ev => {
+      const b = ev.target.closest('button[data-cedit],button[data-ctest],button[data-ctoggle],button[data-cdel]');
+      if (!b || b.disabled) return;
+      const d = b.dataset;
+      const id = d.cedit || d.ctest || d.ctoggle || d.cdel || '';
+      const it = customItems.find(x => String(x.id) === id);
+      // 点击与处理之间列表被刷新过 → 这一行已经不在 customItems 里了。
+      // 明确说一句，而不是拿一个空对象去 PUT（那会把别人刚改的配置覆盖掉）。
+      if (!it) { toast('这一行已不存在，请刷新后重试', true); return; }
+      if (d.cedit) { openCustomEditor(it); return; }
+      if (d.ctest) { customTestRow(it, b); return; }
+      if (d.ctoggle) { customToggleRow(it, b); return; }
+      if (d.cdel) { customDeleteRow(it, b); return; }
+    });
   }
 
   // ---------------------------------------------------------------- 成长计划
@@ -9416,6 +10026,28 @@ let multCatalogFailed = false;
 
     // API 管理：新建按钮 + 初始加载（无感轮询已挂在上面的 30s 间隔里）。
     $('btnApiKeyNew').onclick = () => apiKeyCreate($('btnApiKeyNew'));
+
+    // 自定义上游：**按钮全部只在这里绑一次**。
+    //
+    // 表格行由 renderCustomUpstreams 整体重写，若跟着渲染绑 handler，
+    // 监听器会随每次加载累积（见 installGenericActions 的注释）——
+    // 所以行内动作走 installCustomUpstreamActions 里那一次委托。
+    //
+    // 这个面板的数据**不在 boot 里拉**：只有用户切到它时 showPanel 才调用
+    // loadCustomUpstreams（看不见的面板不产生流量，与 stats/series 同一条纪律）。
+    $('btnCustomAdd').onclick = () => openCustomEditor(null);
+    $('customSave').onclick = () => saveCustomUpstreams();
+    $('customCancel').onclick = () => { closeCustomEditor(); toast('已取消，未写入配置'); };
+    $('customTest').onclick = () => testCustomDraft();
+    // 显示/隐藏 key：只切 input.type，**不**重绘编辑器（重绘会丢其它字段的输入）。
+    $('cfKeyToggle').onclick = () => {
+      const inp = $('cfKey');
+      if (!inp) return;
+      const show = inp.type === 'password';
+      inp.type = show ? 'text' : 'password';
+      $('cfKeyToggle').textContent = show ? '隐藏' : '显示';
+    };
+    installCustomUpstreamActions();
 
     // 导航最后构建：此时所有 section 都已在 DOM 里。
     //
