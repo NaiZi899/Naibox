@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 COPY cmd ./cmd
 COPY internal ./internal
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/omni2api ./cmd/server
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/naibox ./cmd/server
 
 FROM alpine:3.20
 RUN apk add --no-cache wget ca-certificates tzdata \
@@ -28,10 +28,10 @@ RUN apk add --no-cache wget ca-certificates tzdata \
  && chown -R app:app /app
 USER app
 WORKDIR /app
-COPY --from=build /out/omni2api /app/omni2api
+COPY --from=build /out/naibox /app/naibox
 # ⚠ 不 COPY config.json：里面含明文 api_key，且 compose/运行时总是挂载覆盖它；
 # 缺 config 时 main.go 会自动回落纯默认值启动（config 不存在不是致命错误）。
 EXPOSE 7863
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
   CMD wget -qO- http://127.0.0.1:7863/healthz || exit 1
-ENTRYPOINT ["/app/omni2api", "-config", "/app/config.json"]
+ENTRYPOINT ["/app/naibox", "-config", "/app/config.json"]

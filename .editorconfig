@@ -24,7 +24,7 @@ indent_style = space
 indent_size = 2
 
 # cmd.exe 按 OEM 代码页（中文 Windows 上是 936/GBK）解析 .bat：
-# UTF-8 + 非 ASCII 会被误解码并打断解析 —— 见 start.bat 顶部注释。
+# UTF-8 + 非 ASCII 会被误解码并打断解析 —— 见 tools/windows/start.bat 顶部注释。
 [*.{bat,cmd}]
 charset = ascii
 end_of_line = crlf

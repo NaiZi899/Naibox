@@ -154,7 +154,7 @@ jobs:
           # 其它平台不带：那些平台的用户习惯自己写启动脚本，
           # 塞一个 .sh 进去反而要处理执行权限。
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            cp start.bat "pkg/$PKG/"
+            cp tools/windows/start.bat "pkg/$PKG/"
           fi
           cd pkg
           if [ "${{ matrix.archive }}" = "zip" ]; then

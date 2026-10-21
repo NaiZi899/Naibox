@@ -1,7 +1,7 @@
 services:
-  omni2api:
+  naibox:
     build: .
-    container_name: omni2api
+    container_name: naibox
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai

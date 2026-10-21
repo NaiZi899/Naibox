@@ -35,8 +35,7 @@ config.json
 config.json.*
 # 其它测试配置的备份（config-test-port7864.json.bak-buddy-… 这种）。
 # ⚠ config.json.* 那条**盖不住**它们 —— 前缀是 config-test…，不是 config.json.。
-# 本仓库有**跟踪**的测试配置（config-test-port7864.json），所以它的备份
-# 必须显式忽略，否则改动它时留下的 .bak-* 会被一起 add 进版本库。
+# 测试配置只放在本地 tests/configs/，不再跟踪；备份同样显式忽略。
 config-test*.json.bak-*
 config.example.json.bak-*
 config-test.example.json.bak-*
@@ -89,13 +88,11 @@ tasks/
 
 # 测试脚本与部署脚本：仓库只保留"能编译出产物"的核心源码。
 # 这些文件仍在本机磁盘上，CI 也不依赖它们（release.yml 的打包步骤是内联的，
-# 只取二进制、config.example.json 与 start.bat）。
+# 只取二进制、config.example.json 与 tools/windows/start.bat）。
 /tests/
 /scripts/
-/credit.sh
 /login.sh
 /restart-7863.sh
-/signin.sh
 
 # ⚠ 被 go:embed 内嵌的 md 必须**显式**豁免 —— 它不是文档，是编译输入。
 #

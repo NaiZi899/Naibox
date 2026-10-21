@@ -1,9 +1,9 @@
 @echo off
 REM ============================================================
-REM start.bat - double-click to start the omni2api gateway
+REM start.bat - double-click to start the Naibox gateway
 REM
 REM Why this file exists:
-REM   When you double-click bin\omni2api-server.exe, Windows sets the
+REM   When you double-click bin\Naibox-server.exe, Windows sets the
 REM   working directory to the exe's own folder (bin\), NOT the repo
 REM   root. The program then looks for config.json relative to that
 REM   directory, fails, and exits. Even if config.json were found,
@@ -39,17 +39,17 @@ REM the program print one easily-missed line and disappear.
 if not exist "config.json" goto no_config
 
 REM Locate the executable. Two layouts must both work:
-REM   A) Release package: omni2api-server.exe sits next to this file
+REM   A) Release package: Naibox-server.exe sits next to this file
 REM      (what users get from the GitHub Release zip - extract and run)
 REM   B) Source checkout: the binary is built into bin\ per the README
 REM Without this check the release package would tell downloaders to
 REM "go build it first", which is exactly what they cannot do.
 set "EXE="
-if exist "omni2api-server.exe" set "EXE=omni2api-server.exe"
-if not defined EXE if exist "bin\omni2api-server.exe" set "EXE=bin\omni2api-server.exe"
+if exist "Naibox-server.exe" set "EXE=Naibox-server.exe"
+if not defined EXE if exist "bin\Naibox-server.exe" set "EXE=bin\Naibox-server.exe"
 if not defined EXE goto no_exe
 
-echo Starting omni2api...
+echo Starting Naibox...
 echo   working directory: %CD%
 echo   config file:       %CD%\config.json
 echo   executable:        %CD%\%EXE%
@@ -83,18 +83,18 @@ exit /b 1
 
 :no_exe
 echo.
-echo [ERROR] omni2api-server.exe not found.
+echo [ERROR] Naibox-server.exe not found.
 echo         working directory: %CD%
 echo.
 echo         Looked in:
-echo           %CD%\omni2api-server.exe       (Release package layout)
-echo           %CD%\bin\omni2api-server.exe   (source checkout layout)
+echo           %CD%\Naibox-server.exe       (Release package layout)
+echo           %CD%\bin\Naibox-server.exe   (source checkout layout)
 echo.
 echo         If you downloaded a Release package, the .exe should sit
 echo         next to this file - re-extract the zip and keep them together.
 echo.
 echo         If you are running from a source checkout, build it first:
-echo           go build -o bin\omni2api-server.exe .\cmd\server
+echo           go build -o bin\Naibox-server.exe .\cmd\server
 echo.
 pause
 exit /b 1

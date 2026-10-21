@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/NaiZi899/Naibox/about"
+	"github.com/NaiZi899/Naibox/internal/about"
 	"github.com/NaiZi899/Naibox/internal/openurl"
 )
 
