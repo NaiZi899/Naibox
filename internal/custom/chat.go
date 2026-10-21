@@ -18,6 +18,7 @@ package custom
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -34,6 +35,19 @@ import (
 func (p *Provider) Chat(ctx context.Context, cred gateway.Credential, body []byte) (gateway.ChatStream, error) {
 	ep := p.endpointOf(cred)
 	target := ep.ChatURL()
+
+	// 出口层的增量解析只认 SSE，所以对上游一律要流式；非流式的聚合由出口层做
+	//（与其它内置上游同一形态，它们的 Chat 也固定要 SSE）。
+	//
+	// 必须改请求体里的 stream，不能只发 Accept 头：上游是按**请求体的 stream**
+	// 决定返回形态的，Accept 不参与判定。只发头会让 stream:false 的请求拿到整包
+	// JSON，而出口层按 SSE 解析 —— 一个 data: 帧都读不到，直接
+	// `upstream stream contained no valid data events`（502 upstream_parse）。
+	//
+	// 改写必须在这里：下一行就把 body 包成 Reader 了，之后改切片不生效。
+	if forced, ferr := forceStream(body); ferr == nil {
+		body = forced
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
@@ -59,4 +73,39 @@ func (p *Provider) Chat(ctx context.Context, cred gateway.Credential, body []byt
 
 	// 不读、不 Close：Caller owns Close（见 gateway.ChatStream.Body 的注释）。
 	return gateway.ChatStream{Status: resp.StatusCode, Body: resp.Body}, nil
+}
+
+
+// forceStream 把请求体里的 stream 强制置为 true，其余字段原样保留。
+//
+// # 为什么不是字符串替换
+//
+// `"stream": false` / `"stream":false`、字段顺序都可能不同，正则改写会在某种写法
+// 上悄悄失效 —— 而失效的表现又是"非流式坏了"，排查成本远高于这里一次 JSON 往返。
+// 请求体本身是 JSON（OpenAI 协议），解析再序列化零信息损失。
+//
+// # 已是 true 时不重新序列化
+//
+// 保持原始字节：部分上游对请求体做指纹/签名，重新序列化会改变字段顺序与空白，
+// 可能让本来能通过的请求失败。
+//
+// 解析失败时原样返回 body（不改写）：那种情况上游本来也会报错，把原文透出去比
+// 在这里造一个"体已合法"的假象更好。
+func forceStream(body []byte) ([]byte, error) {
+	if len(body) == 0 {
+		return body, fmt.Errorf("empty body")
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body, err
+	}
+	if v, ok := m["stream"].(bool); ok && v {
+		return body, nil
+	}
+	m["stream"] = true
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body, err
+	}
+	return out, nil
 }
