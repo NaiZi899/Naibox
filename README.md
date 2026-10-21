@@ -1,395 +1,275 @@
 <p align="center">
-  <img src="assets/icon/app.svg" alt="NaiBox" width="112" height="112">
+  <img src="assets/icon/app.svg" alt="NaiBox" width="96" height="96">
 </p>
 
 <h1 align="center">NaiBox</h1>
 
 <p align="center">
-  <b>把 12 个 AI 上游聚合成一个 OpenAI 兼容 API 的多账号网关</b><br>
-  统一鉴权 · 账号池轮转 · 熔断与冷却 · 会话粘性 · 定时签到与续期 · 桌面版与控制台
+  <b>本地 AI 网关，多个上游账号，一个 OpenAI 兼容接口</b>
 </p>
 
+<p align="center">
+  <a href="../../releases">下载</a> ·
+  <a href="#第一次启动">快速开始</a> ·
+  <a href="#配置与重启">配置</a> ·
+  <a href="#自定义上游">自定义上游</a>
+</p>
 
-## 这是什么
+## 用途
 
-**NaiBox 是一个多上游聚合反代网关**。它把多个上游账号聚合成一个 OpenAI 兼容的
-`base_url` + `api_key`。你的应用只认 OpenAI 协议，网关负责背后的上游选号、额度、
-签到、续期、冷却与排障。
+NaiBox 是一个 Go 编写的本地 AI 网关，Windows 桌面版与 Linux/macOS 服务端共用同一套装配，对外提供一个 OpenAI 兼容的 `base_url` 和 `api_key`。
 
+内置 12 个上游，也能接入任意 OpenAI 兼容端点。客户端只配一个地址和一把 key，选号、冷却、重试、续期、模型目录由网关处理。
+
+适合多账号统一调用和桌面常驻。需要对外多租户计费时，这个项目不提供那层能力。
+
+## 请求路径
+
+```text
+客户端 ──Bearer──► NaiBox ──选号──► 上游
+                      │
+                      └── 冷却 / 熔断 / 换号
 ```
-你的应用 ──► NaiBox ──┬──► WorkBuddy          腾讯 CodeBuddy 桌面端（默认上游）
-                       ├──► WorkBuddy AI       海外版（www.workbuddy.ai）
-                       ├──► CodeArts           华为云 CodeArts
-                       ├──► Loomy              讯飞 Loomy 桌面端
-                       ├──► Cline              Cline 桌面端
-                       ├──► TRAE               字节 TRAE
-                       ├──► Raccoon Work       商汤小浣熊
-                       ├──► LobsterAI          有道龙虾
-                       ├──► Qoder              阿里 Qoder
-                       ├──► Qoder（中国版）
-                       ├──► InkStone           书生·端砚 TokenPlan
-                       └──► Jiyuan             基元律动（TokenRhythm）
-```
 
-"加一个上游 = 加一个目录 + 实现一组接口 + 配置加一段，**核心零改动**"。这条判据
-由 `internal/gateway/arch_test.go` 的**可执行断言**守着，不是靠约定。
+模型名带前缀时指定上游，裸模型名走默认上游。前缀不认识会直接返回 400，请求不会发出。
 
-- 核心包不得依赖任何具体上游
-- 上游之间不得互相依赖
-- 装配层（`internal/boot`）允许依赖上游，但**不得被上游反向依赖**
-- 判据本身用 `go list -deps` 的包级依赖图，不是源码文本匹配
-  （文本判据被 `import` 别名绕过过两次，这条写在测试注释里）
+账号池按健康状态、在途名额和会话粘性选号。上游报错后，网关按错误类型决定换号、冷却、熔断或原样透传。
 
-从 4 个上游扩到 12 个的过程中，核心包**一行没改**。
+## 运行方式
 
-## 两种形态，同一套装配
-
-| | 服务端 | 桌面版（Windows） |
+| | 桌面版（Windows） | 服务端 |
 |---|---|---|
-| 入口 | `cmd/server` | `cmd/desktop` |
-| 装配 | `internal/boot`（两者共用） | 同左 |
-| 界面 | 浏览器打开 `127.0.0.1:7863/ui` | 原生窗口（WebView2）+ 托盘 |
-| 数据 | 当前工作目录下的 `config.json` / `auths` / `data` | `%APPDATA%\omni2api\` |
-| 典型场景 | 服务器 / Docker / 长期在线 | 个人电脑，双击即用 |
+| 适合 | 个人电脑，双击启动 | 服务器、NAS、长期在线 |
+| 数据 | `%APPDATA%\omni2api\` | 当前目录下的 `config.json`、`auths`、`data` |
+| 界面 | WebView2 窗口加托盘 | 浏览器打开 `/ui` |
+| 升级 | 替换 exe，数据不动 | 替换二进制，重启 |
 
-桌面版没有第二套实现，它复用同一个 `boot.Run`，窗口只是 `Navigate` 到
-`127.0.0.1:<port>/ui`。所以两者的账号池、配置、上游行为、HTTP 契约完全一致。
+桌面版行为
 
-## 🖥 桌面版
+- 首次启动生成配置、凭证、数据和日志目录。
+- 端口从 7863 起顺延，实际地址写在 `runtime.json`。
+- 第二次双击只唤出已有窗口。
+- 托盘提供控制台、数据目录、日志、备份和重启入口。
+- 关窗可选询问、最小化到托盘、退出。最小化后网关继续运行。
+- 缺少 WebView2 时回落到托盘加默认浏览器。
 
-**数据与程序分离**。数据根固定在 `%APPDATA%\omni2api\`，程序目录可以随便删、
-随便换版本。卸载/覆盖安装不影响账号。
-
-| 项 | 行为 |
-|---|---|
-| 首次启动 | 生成 `config.json`（随机 `api_key`）、`auths\`、`data\`、`logs\` |
-| 旧版升级 | 自动发现 exe 同级或当前目录的旧 `config.json`，**复制**（不移动）到新数据根；源目录保留并写 `.migrated.bak`，重复启动幂等 |
-| 端口 | 7863 起自动顺延到 7873，仍占用则请系统分配；实际地址写在 `runtime.json` |
-| 单实例 | 命名互斥体 + `runtime.json` + `/healthz` 三重校验，双击第二次只唤出已有窗口 |
-| 关窗行为 | 托盘菜单可设「询问 / 最小化到托盘 / 直接退出」。**最小化 = 隐藏窗口、进程与网关继续在后台运行**（这就是保活） |
-| 托盘菜单 | 打开控制台 / 在浏览器中打开 / 打开数据目录 / 查看今日日志 / 备份数据 / 开机自启 / 重启服务 / 退出 |
-| 兜底 | 系统缺 WebView2 Runtime 时自动回落「托盘 + 默认浏览器」，不会白屏 |
-
-
-
-## 🐾 已接入上游
-
-| 上游 | 账号形态 | 控制台能力 |
-|---|---|---|
-| **WorkBuddy**（默认） | OAuth 设备码登录 | 签到 / 保活 / 成长计划 / 猫猫旅行 / 任务一键完成 |
-| **WorkBuddy AI**（海外版） | OAuth 设备码登录（www.workbuddy.ai） | 对话 / 模型 / 额度查询（海外版无签到/成长/旅行，显式禁用）。按凭证的 `channel` 字段自动选域，国内与海外账号可同池共存 |
-| **CodeArts** | OAuth + DPoP（约 2 小时 STS，自动续期） | 签到（福利领取）/ 额度探测 |
-| **Loomy** | `session`（无 TTL） | 手机号验证码登录 / 新手任务一键完成 / 邀请码绑定 / 批量粘贴导入 / 额度实时查询 / **生图 + 联网搜索** |
-| **Cline** | WorkOS 设备码轮询 | 余额查询 / 后台续期（不起本地端口，服务器部署天然可用） |
-| **TRAE** | JWT + 消费型 refreshToken | 页内添加账号（浏览器授权）/ 每日自动签到 / token 自动续期 / 权益包额度 |
-| **Raccoon Work** | 浏览器授权（微信扫码 / 手机号） | 积分余额 / 登录奖励 / onboarding 状态 |
-| **LobsterAI** | 浏览器 OAuth 回跳 | 三步式签到领取积分 / 定时自动签到 |
-| **Qoder** 与 **Qoder 中国版** | PKCE 设备码 | 积分余额 / 每日签到 / WASM 加密推理桥。**是两个独立 id**（`qoder` / `qodercn`），下表因此只有 11 行但实际 12 个上游 |
-| **InkStone**（书生·端砚 TokenPlan） | API Key（`sk-…`，默认 6 个月） | 模型目录 / 额度（墨点）查询。Key 只能在 SSO 后的 TokenPlan 页创建，网关拿不到，故只有**批量导入**与「重载 auths」 |
-| **Jiyuan**（基元律动 / TokenRhythm） | API Key（`sk-…`） | 模型目录（实时拉取，失败回落内置静态表）/ 批量导入（`sk_` 与 `sess_` 两种形态）/ 实时余额 |
-
-> ⚠ `inkstone` 与 `jiyuan` 的配置段**缺省即启用**（与其它的 opt-in 相反）。
-> 理由是它们加进代码时没同步进示例配置，而"段缺席 = 不加载"会让存量部署
-> 永远看不到这两个上游。它们的 Caps 只有 `chat|models|import`、没有签到/保活，
-> 所以"默认启用但没凭证"不产生任何周期请求，只是界面多一个空分组。
-> 想关掉就显式写 `"enabled": false`。
-
-## 🚀 快速开始
-
-### A. 下载预编译包
-
-到 [Releases](../../releases) 取包。每版都附 `SHA256SUMS.txt`，建议先校验。
+服务端
 
 ```bash
-sha256sum -c SHA256SUMS.txt
+./Naibox-server -config config.json
 ```
 
-**Windows 桌面版**，个人使用选这个。压缩包里有三样东西。
-
-```
-NaiBox-windows-amd64.zip    →  NaiBox.exe + config.example.json + README.txt
-```
-
-解压后双击 `NaiBox.exe`，窗口里直接就是控制台，不需要先准备配置文件（首次启动
-会用内嵌模板在 `%APPDATA%\omni2api\` 生成一份）。包目录可以随便删、随便换版本，
-账号数据不在里面。
-
-**服务端**，Linux / macOS，或者需要对外提供服务时用。
-
-```
-Naibox-server-windows-amd64.zip
-Naibox-server-linux-amd64.tar.gz      Naibox-server-linux-arm64.tar.gz
-Naibox-server-darwin-amd64.tar.gz     Naibox-server-darwin-arm64.tar.gz
-```
-
-包里有二进制和 `config.example.json`，Windows 包另外带 `start.bat`。所有包都由
-CI 构建，本机不手工上传。
-
-这一步最容易卡在配置上。直接跑起来的是一个**没有任何上游**的空网关，能打开
-界面但发不出请求。要先复制配置再改两处，一处填 `api_key`（调用方鉴权用），
-一处把要用的上游 `enabled` 改成 `true`。
+Docker
 
 ```bash
-# Windows 服务端
-unzip Naibox-server-windows-amd64.zip
-cd Naibox-server-windows-amd64
 cp config.example.json config.json
-# 编辑 config.json
-./Naibox-server -config config.json
+# 填 api_key，并把要用的上游 enabled 改成 true
+docker compose up -d --build
 ```
 
-看到 `omni2api listening on 127.0.0.1:7863` 就是起来了，浏览器打开
-`127.0.0.1:7863/ui` 进控制台。
+## 第一次启动
 
-### B. 从源码构建服务端
+**桌面版**
 
-需要 Go 1.22 或更新（CI 用 1.22）。
+1. 从 [Releases](../../releases) 下载 `NaiBox-windows-amd64.zip`，用 `SHA256SUMS.txt` 校验。
+2. 解压，双击 `NaiBox.exe`。
+3. 在「账号池」添加账号，到「仪表盘」复制 `base_url` 与 `api_key`。
+
+**服务端**
 
 ```bash
-go build -o Naibox-server ./cmd/server
+cp config.example.json config.json
+# 填 api_key，启用上游
 ./Naibox-server -config config.json
 ```
 
-这样编出来的二进制和 Release 里那个功能相同，差别只在版本号停在开发期默认值。
-服务端只认 `-config` 一个参数，没有 `-version`；要确认版本请对照 tag 或看控制台。
+打开 `http://127.0.0.1:7863/ui`。`/healthz` 在账号数为 0 时返回 503，表示网关已启动，但还没有可用账号。
 
-### C. 从源码构建桌面版
+## 接入账号
 
-Windows 上跑脚本，三步都在里面。
+控制台「账号池」点「添加账号」，或使用批量导入。
+
+| 凭证类型 | 上游 |
+|---|---|
+| 浏览器授权 | WorkBuddy、WorkBuddy AI、CodeArts、TRAE、LobsterAI、Qoder、Qoder 中国版、Raccoon |
+| 设备码轮询 | Cline |
+| 手机号验证码 | Loomy |
+| API Key 批量导入 | InkStone、Jiyuan |
+| OpenAI 兼容端点 | 自定义上游 |
+
+| 上游 | 功能 |
+|---|---|
+| WorkBuddy（默认） | 对话、模型、额度、签到、保活、成长、旅行 |
+| WorkBuddy AI | 对话、模型、额度，无签到与成长 |
+| CodeArts | 对话、模型、签到、额度、STS 续期 |
+| Loomy | 对话、模型、额度、生图、联网搜索 |
+| Cline | 对话、模型、余额、续期 |
+| TRAE | 对话、模型、签到、续期、权益额度 |
+| Raccoon | 对话、模型、积分、登录奖励 |
+| LobsterAI | 对话、模型、签到、积分 |
+| Qoder / 中国版 | 对话、模型、额度、签到、WASM 推理 |
+| InkStone | 模型目录、墨点额度 |
+| Jiyuan | 模型目录、余额 |
+| 自定义上游 | 对话、模型目录、探测、多 key、多分片 |
+
+`inkstone` 与 `jiyuan` 缺省启用。没有凭证时只是一个空分组，想关掉就写 `"enabled": false`。
+
+## 控制台
+
+| 页面 | 用途 |
+|---|---|
+| 仪表盘 | 健康、请求量、成功率、token、TTFB、趋势 |
+| 账号池 | 账号、冷却、禁用、额度、在途请求 |
+| 请求日志 | 历史分页与 SSE 实时推送 |
+| 可用模型 | 合并目录与能力标注 |
+| 对话测试 | 选模型直接发一条 |
+| 设置 | 调度、超时、提示词、日志保留、显示过滤 |
+| 自定义上游 | 新增、编辑、测试、启停、删除 |
+| 关于软件 | 项目地址与推荐项目 |
+
+「账号池显示过滤」只影响界面。被隐藏的上游仍然参与选号和签到。
+
+## 调用网关
+
+在 `config.json` 所在目录执行。
+
+```bash
+KEY=$(sed -n 's/.*"api_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' config.json)
+BASE=http://127.0.0.1:7863
+
+curl "$BASE/v1/chat/completions" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"workbuddy/glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}'
+```
+
+| 接口 | 用途 |
+|---|---|
+| `POST /v1/chat/completions` | 对话，支持流式 |
+| `GET /v1/models` | 合并模型目录 |
+| `POST /v1/images/generations` | OpenAI 兼容生图 |
+| `GET /healthz` | 无鉴权探活，账号数为 0 时返回 503 |
+| `GET /status` | 需鉴权状态 |
+| `/admin/*` | 管理接口，仅本机 |
+
+模型目录里的 `supports_images` 控制输入图片，`capabilities` 里的 `image_generation` 控制输出图片。
+
+Loomy 的 `generate_image` 与 `web_search` 由网关注入，agent 框架直接可用。关闭用 `server.disables_chat_tools: true`。
+
+生图返回裸 URL，签名地址在 `url_signed`。
+
+## 配置与重启
+
+配置在 `config.json`，完整示例见 [config.example.json](config.example.json)。
+
+| 组 | 关键项 |
+|---|---|
+| 基础 | `listen`、`api_key`、`service_name`、`auth_dir`、`state_file` |
+| 界面 | `ui.hidden_providers`、`server.max_body_mb`、`server.disables_chat_tools` |
+| 账号池 | `pool.*`、`session_sticky.*`、`schedule.*` |
+| 出站 | `upstream.*`、`prompt.*` |
+| 存储 | `upstash.*`，不配则纯内存 |
+
+| 改动 | 生效 |
+|---|---|
+| 自定义上游、提示词、上游超时、账号池、监听地址 | 重启网关 |
+| 日志保留、签到与保活开关、显示过滤、API Key 轮换、账号操作 | 立即生效 |
+
+提示词有三种模式。
+
+| 模式 | 行为 |
+|---|---|
+| `passthrough`（默认） | 客户端 system 原样透传 |
+| `custom` | 删除客户端 system，换成网关提示词 |
+| `append` | 保留客户端 system，再追加一条网关 system |
+
+`prompt.file` 不可读或为空会让启动失败。`NAIBOX_PROMPT_MODE=passthrough` 是回滚开关。
+
+## 自定义上游
+
+```json
+{
+  "custom_upstreams": [
+    {
+      "id": "office",
+      "base_url": "https://api.example.com/v1",
+      "api_keys": ["sk-key-one", "sk-key-two"],
+      "models": ["gpt-4o-mini"],
+      "shards": 1
+    }
+  ]
+}
+```
+
+模型名写作 `office/gpt-4o-mini`。
+
+- 密钥有三种写法，`api_key`、`api_keys`、`api_key_env`。
+- 账号数等于 key 数量乘以 `shards`。
+- 多 key 时 401/403 换 key，429 换号但不冷却；单 key 时这三类错误原样透传。
+- 模型列表可以写死，也可以留空实时读取 `/models`。
+- 所有改动都要重启网关。
+
+## 日常运维
+
+| 路径 | 内容 |
+|---|---|
+| `config.json` | 配置 |
+| `auths/` | 各上游凭证 |
+| `data/` | 状态、请求日志、API Key |
+| `logs/` | 服务端日志 |
+| `runtime.json` | 桌面版监听地址与进程信息 |
+
+| 现象 | 先查 | 处理 |
+|---|---|---|
+| `/healthz` 503 | `total` 是否为 0 | 添加账号或重载 auths |
+| 401 | 网关 key 是否正确 | 用 `/v1/models` 验 key；上游 401 则重新登录 |
+| 429 | 上游限流 | 等 Retry-After；多 key 自定义上游会自动换 |
+| 400 模型前缀 | `GET /v1/models` | 修正前缀或模型名 |
+| 界面打不开 | `runtime.json` 与 `logs/` | 桌面版看实际端口；服务端改 `listen` 后重启 |
+
+```bash
+tail -f logs/server-*.log
+```
+
+## 已知限制
+
+- 自定义上游只支持 OpenAI 兼容的 `chat/completions` 与 `models`，不支持 Anthropic 原生协议。
+- `/admin/*` 只接受本机访问，远程管理需要 SSH 隧道或反向代理。
+- 没有多租户和计费能力，API Key 只用于本机调用鉴权。
+- 桌面版依赖 WebView2，发布 exe 未签名，SmartScreen 会提示未知发布者。
+- 大部分配置改动需要重启网关，没有完整的配置热加载。
+
+## 安全
+
+- 默认只绑本机。对外服务时自行加反向代理与 TLS。
+- 凭证放在 `auths/`，已排除出版本库；控制台昵称与密钥尾号会打码。
+- 自定义上游只填可信端点，网关会按配置向该地址发请求。
+- 发布产物用 `SHA256SUMS.txt` 校验，不要凭 SmartScreen 的提示判断。
+- 仅用于自有账号的自动化，遵守各上游条款。
+
+## 开发、来源与许可
+
+```bash
+go build ./... && go vet ./...
+go test ./... -count=1
+```
+
+Windows 上 `gofmt -l .` 会因 CRLF 误报，以 CI 的 Linux 结果为准。
+
+桌面版必须用构建脚本，否则 exe 没有图标和 DPI 清单。
 
 ```powershell
 pwsh scripts/build-desktop.ps1
 ```
 
-它会先用 `tools/genicon` 把图标画成 ICO，再用 `rsrc` 打成 `rsrc.syso`，最后带
-`-H windowsgui` 链接，产物是 `dist/NaiBox.exe`。
+`internal/gateway` 是唯一接缝，`internal/boot` 负责装配，`cmd/server` 与 `cmd/desktop` 共用。新增上游只加一个 `internal/<name>/`、一行注册和两份示例配置。
 
-不要直接 `go build ./cmd/desktop`。链接器只收集**参与构建的包目录里**的
-`.syso`，而它属于构建期派生物、不入库，所以那条命令出来的 exe 没有图标、也没有
-DPI 声明。程序能跑，只是任务栏里是个白框，高分屏上还会糊。脚本末尾会读 PE 头
-验证这两件事，你可以照着它的输出确认。
+来源
 
-## 添加账号
-
-控制台「账号池」分组行点「＋ 添加账号」，各上游走自己的流程。
-
-- **WorkBuddy / CodeArts / TRAE / LobsterAI / Qoder / Raccoon**：点「添加账号」后
-  由网关用无痕窗口自动打开授权页（授权页里各有扫码 / 设备码 / 手机号）。
-  窗口被关掉时可点「复制链接」粘贴到无痕/隐私窗口。Raccoon 还额外把防串号标识
-  放进 `redirect` 的 query（`nonce`）而不是 `state`。
-- **Cline**：WorkOS 设备码轮询，不起本地端口，服务器部署也能用。
-- **Loomy**：输手机号 + 验证码登录；或「批量导入」粘贴 JSON；或把凭证放进
-  `auths/loomy/loomy-<uid>.json` 后点「重载 auths」。
-- **InkStone / Jiyuan**：上游不提供可自动化的页内登录，只能**批量导入** Key
-  （jiyuan 还支持 `sess_` 登录凭证，用于查实时余额）。
-
-> **关于无痕窗口**：默认给浏览器一份独立 profile（临时目录），本次授权从零 cookie
-> 开始，避免浏览器里已登录的账号把会话串到别的账号上。
-
-## 🖥 管理控制台
-
-访问 `http://127.0.0.1:7863/ui`（本机访问自动注入 Key，顶栏可复制 curl 示例）。
-
-- **仪表盘**：网关状态、调用统计（请求数 / 成功率 / token / TTFB）、
-  趋势图（可切「近 24 小时 / 近 7 天 / 自定义区间」）、API 接入信息。
-- **账号池**：每个上游一张表（列集由上游自报），行内动作按上游能力渲染；
-  顶部可按上游**显示过滤**（见下）。
-- **请求日志**：历史分页 + **实时推送**（SSE 长连接，新请求立刻出现，
-  延迟从 10s 降到亚秒级；断线自动重连并带上最后一条序号续传）。
-- **设置**：调度、上游显示过滤、超时、限流与熔断、日志保留等。
-
-提醒：
-
-- **「账号池显示过滤」只影响显示**。勾选的上游不出现在账号池与左侧导航，
-  但它的账号仍在池里参与选号、签到、保活，模型也仍可调用。
-  想真正停用，改 `config.json` 里它的 `enabled`。
-- **`/healthz` 在 0 账号时返回 503**（不是 200）。这是有意的：它同时是桌面版
-  的"就绪判据"，所以**不要**把 200 当成本服务已就绪。
-
-### 生图与对话工具
-
-上游自报的工具（Loomy 的生图 / 联网搜索）由网关注入并在网关侧执行，
-**agent 框架零配置可用**：
-
-| 模型调谁 | 谁执行 | agent 框架看到什么 |
-|---|---|---|
-| 客户端的（`bash` / `read` / …） | 客户端 | 正常的 `tool_calls` |
-| 网关注入的（`generate_image` / `web_search`） | 网关 | 只见模型"直接回了张带图的 markdown" |
-
-关掉注入：`server.disables_chat_tools: true`（只影响注入，客户端自带 `tools` 不受影响）。
-
-生图两种用法：
-
-```bash
-# ① 对话里说一句（网关自动调生图模型）
-curl http://127.0.0.1:7863/v1/chat/completions \
-  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"model":"loomy/deepseek-v4-flash-0731","messages":[{"role":"user","content":"画一张：赛博朋克城市夜景"}]}'
-
-# ② 直接调 OpenAI 兼容生图端点
-curl http://127.0.0.1:7863/v1/images/generations \
-  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"model":"loomy/doubao-seedream-5-lite","prompt":"赛博朋克城市夜景","n":1,"size":"1024x1024"}'
+```text
+Sliverkiss/workbuddy2api → Practice019/multi2api → NaiZi899/Naibox
 ```
 
-返回的图片是**裸 URL**（已剥掉 COS 签名）。签名 URL 对 HEAD 请求
-必然 403（COS 把 method 也算进签名），而预览器/取图器通常先发 HEAD 探测，
-一探测就失败。原始签名 URL 保留在同级 `url_signed` 字段里作兜底。
+相对基线的增量包括 Windows 桌面壳、装配层、实时日志、代码图标、InkStone、Jiyuan 和自定义上游。
 
-## ⚙️ 配置说明
-
-全部配置在 `config.json`（参考 `config.example.json`）。
-
-| 项 | 默认 | 说明 |
-|---|---|---|
-| `listen` | `:7863` | 监听地址。**桌面版**把空 host 收敛到 `127.0.0.1`；服务端按配置原样绑定（Docker 需要通配）。显式写 `0.0.0.0` 时两者都尊重 |
-| `api_key` | — | 调用方 Bearer 鉴权；为空则不鉴权（不建议） |
-| `service_name` | `omni2api` | `/healthz` 与 `/status` 的协议标识（不改名，见开头说明） |
-| `auth_dir` | `./auths` | 凭证根目录，各上游分子目录 |
-| `state_file` | `./data/state.json` | 账号池状态（额度/冷却/禁用/成功率） |
-| `ui.hidden_providers` | `[]` | 账号池与导航里**不显示**的上游 id（展示过滤，不是停用） |
-| `server.max_body_mb` | `8` | 请求体上限 |
-| `server.disables_chat_tools` | `false` | 关闭网关注入的对话工具 |
-| `login.open_browser` / `isolated` / `browser` | `true` / `true` / `""` | 添加账号时的浏览器行为 |
-| `pool.*` | — | 在途上限、熔断阈值与退避、闲置权重、主动健康检查间隔 |
-| `schedule.*` | — | 签到 / 保活 / 活跃上报（统一 30 分钟被动扫描） |
-| `session_sticky.*` | `enabled=true` `ttl=30m` | 同一会话固定同一账号 |
-| `upstream.*` | 内嵌默认 | 出站身份（UA / 客户端版本 / 设备 token / IP 透传）与超时 |
-| `prompt.*` | 内嵌默认 | 系统提示词（`custom` / `append` / `passthrough`），见 [docs/system-prompt.md](docs/system-prompt.md) |
-| `upstash.*` | — | 可选 Redis/Upstash 后端；不配则纯内存 |
-
-各上游都有自己的段（都支持 `enabled` / `auth_dir`，多数还有 `pool_accounts`）：
-
-`workbuddy` · `workbuddy_intl` · `codearts` · `loomy` · `trae` · `cline` ·
-`raccoon` · `lobsterai` · `qoder` · `inkstone` · `jiyuan`
-
-### 系统提示词
-
-网关在出站前改写 `system` / `developer` 消息，用来消灭客户端（Claude Code 等）注入的
-模板句——上游内容审核对它们做逐字匹配，命中就整单 400。三种模式：
-
-| `prompt.mode` | 未降级时 | 适合 |
-|---|---|---|
-| `passthrough`（默认） | 一个字节都不动，客户端 system 原样透传 | 不改变上游看到的渠道画像；撞审核时靠降级兜一次 |
-| `custom` | 删掉客户端 system，换成网关自有提示词 | 最能消指纹，接受丢客户端人格与画像变化 |
-| `append` | 保留客户端 system，在其后追加一条网关 system | 想留住客户端人格，接受残留指纹风险与双份 token |
-
-`prompt.file` 留空即用内置默认（约 2KB）；指了文件但不可读/为空，**启动直接失败**。
-管理台「设置 → 系统提示词」可选模式、填路径并看到当前生效的那份（重启生效）。
-`NAIBOX_PROMPT_MODE=passthrough` 是现场回滚通道，优先于 `config.json`。
-
-细节（三层分工、降级期为什么三种模式同路、保存期与启动期的校验差异、生效范围）见
-[docs/system-prompt.md](docs/system-prompt.md)。
-
-## 🔌 API
-
-```bash
-curl http://127.0.0.1:7863/v1/chat/completions \
-  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"model":"loomy/deepseek-v4-flash-0731","messages":[{"role":"user","content":"hi"}],"stream":true}'
-```
-
-- 模型名带上游前缀：`loomy/xxx`、`workbuddy/xxx`…；裸模型名走默认上游。
-- `GET /v1/models`：各上游目录合并（含生图模型，带 `capabilities` 标注）。
-- `POST /v1/images/generations`：OpenAI 兼容生图。
-- `GET /healthz`：**无鉴权**，负载均衡友好（0 账号返回 503）。
-- `GET /status`：需鉴权，带详情。
-- 管理 API：`/admin/*`（含 `/admin/logs/stream` 实时日志 SSE）。
-
-`/v1/models` 每条记录的字段：
-
-```json
-{"id":"workbuddy/deepseek-v4-pro","object":"model","owned_by":"workbuddy",
- "context_length":1000000,"max_output_tokens":128000,"supports_images":true}
-```
-
-`supports_images`（能不能把图**发进去**）与 `capabilities:["image_generation"]`
-（能不能让上游**生图出来**）是**两个轴**，不是一回事。前者是**逐上游**的事实，
-不由模型名推断。同一个 `glm-5.2` 在 `workbuddy` 上可能是 `true`、在 `trae` 上 `false`。
-
-## 🛡 安全
-
-- 默认只绑本机；对外暴露请自行加反向代理与更严格的鉴权。
-- 凭证按上游分目录存于 `auths/`（已 gitignore）；控制台昵称自动打码。
-- `auths/`、`data/`、`config.json`、`logs/`、`.build/`、`dist/` 全部不入库。
-- 发布产物未做代码签名，双击时 SmartScreen 会提示"未知发布者"。这是未签名
-  exe 的必然现象，不是中毒。校验请用 `SHA256SUMS.txt`。
-- 本项目面向**自有账号**的自动化管理与协议理解；请遵守各上游的服务条款与额度限制。
-
-## 🛠 开发
-
-```bash
-go build ./... && go vet ./...        # 构建 + 静态检查
-go test ./... -count=1                # 全量测试（含假上游契约测试）
-gofmt -l .                            # 格式检查
-```
-
-> ⚠ Windows 上 `gofmt -l .` 会误报（CRLF 被当成格式问题）。本地判真实情况要先做
-> LF 归一化；CI（Linux）不受影响。`.gitattributes` 已对 `webui.html` / `favicon.svg` /
-> 内嵌的 `.md` 关掉换行转换，因为它们是被 `//go:embed` 逐字节内嵌的数据，
-> 两个平台的字节数不同会让产物不同构。
-
-- **架构**：`internal/gateway` 是唯一接缝（`Provider` 4 方法 + 若干可选扩展点：
-  登录流程 / 凭证加载 / 额度探测 / 每日动作 / 列集自报 / 凭证寿命 / 后台任务 /
-  生图 / 对话工具 / 诊断端点…）。`internal/boot` 是装配层，`cmd/server` 与
-  `cmd/desktop` 共用它。
-- **图标**：仓库里没有 `.ico` / `.png`。图形由 `internal/icon`（纯标准库）用代码画，
-  构建期 `tools/genicon` 生成 6 帧 ICO，运行时托盘调同一个包。
-  `assets/icon/app.svg` 是设计规格，`internal/server/favicon.svg` 是同一套几何的站点图标。
-- **CI**（`.github/workflows/ci.yml`）：`go mod tidy` 检查 / build / vet / gofmt /
-  全量测试，五项门禁。
-- **发布**（`.github/workflows/release.yml`）：打 `v*` 标签自动构建五平台服务端 +
-  Windows 桌面版，生成 `SHA256SUMS.txt` 挂到 Release。
-
-## 🤝 贡献
-
-提 PR 前跑一遍本地质量门禁（与 CI 同一组命令）：
-
-```bash
-go mod tidy && git diff --exit-code go.mod go.sum
-go build ./... && go vet ./...
-gofmt -l .
-go test ./... -count=1
-```
-
-约定：
-
-- **新上游不改核心**：只加一个 `internal/<name>/` 包 + 一段配置 +
-  `internal/boot/boot.go` 里一行 `registry.Register(...)`；
-  `internal/gateway/arch_test.go` 会验证包依赖方向没被破坏。
-- **新增上游时顺手改三处示例**：`config.example.json`、`internal/desktop/defaultconfig.example.json`、
-  本 README 的上游表格。漏掉前两处的表现是"代码有、成品里没有"，
-  有 `internal/desktop/config_drift_test.go` 守着。
-- **提交信息**：`<type>(<scope>): <摘要>`，type 取 `feat` / `fix` / `docs` /
-  `refactor` / `test` / `chore`。
-- **不要把真实凭据提交进仓库**：测试里的 uid / 手机号 / token / API Key 一律占位值。
-- 行为变更请同步 `CHANGELOG.md`。
-
-安全问题见 [SECURITY.md](SECURITY.md)。
-
-## 🧬 来源与二创
-
-本项目是**开源项目基础上的二次开发**：
-
-```
-Sliverkiss/workbuddy2api  ──►  Practice019/multi2api  ──►  NaiZi899/Naibox (NaiBox)
-    WorkBuddy 专用反代            多上游聚合网关（10 个）        12 个上游 + 桌面版
-```
-
-三层的 MIT 版权声明都保留在 [LICENSE](LICENSE) 里。
-
-相对基线的增量（详见 [CHANGELOG.md](CHANGELOG.md)）：
-
-- **桌面版**：Windows 原生窗口 + 托盘 + 数据目录分离 + 旧布局迁移 + 关窗行为
-- **装配层抽取**：`cmd/server` 与 `cmd/desktop` 共用 `internal/boot`
-- **控制台**：实时日志 SSE、自定义时间区间、上游显示过滤、视觉令牌层与七态
-- **图标代码化**：仓库零二进制媒体，图形由代码画、构建期派生
-- **两个上游**：InkStone（书生·端砚）与 Jiyuan（基元律动）
-
-## 📄 许可证
-
-[MIT](LICENSE)。二创自 [Practice019/multi2api](https://github.com/Practice019/multi2api)
-
-## 免责声明
-
-本项目仅用于对自有账号 / 自有软件协议的理解与自动化，请遵守各相关平台的服务条款 / 资源使用请合法合规，严禁用于违法途径 / 使用者一切行为与开发者无关。
+[MIT](LICENSE)。仅用于自有账号与协议理解，遵守各上游条款，使用者行为由使用者负责。
