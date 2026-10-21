@@ -36,6 +36,16 @@ type webviewView struct {
 	hidden atomic.Bool
 	// asking 询问框是否正开着（防止叠第二个对话框）。
 	asking atomic.Bool
+	// closeAskShown 页面内弹窗是否已经真的显示出来。
+	// 关窗时先 Eval 让页面弹窗，若页面还没加载好，这个标志会一直是 false，
+	// 超时后回退到原生 MessageBox（不能让用户点 X 没反应）。
+	closeAskShown atomic.Bool
+	// closeConfirmed 用户已经明确选择退出。重投 WM_CLOSE 时用它跳过询问，
+	// 直接走原来的销毁路径（落盘/停机逻辑不绕过）。
+	closeConfirmed atomic.Bool
+	// closeAskReady 三个 JS 回调都绑定成功。绑定失败时不再尝试页面弹窗，
+	// 直接走原生 MessageBox，避免"页面弹窗 + 超时兜底"同时出现两个框。
+	closeAskReady atomic.Bool
 }
 
 // 子类化窗口过程的全局登记表。
@@ -86,6 +96,7 @@ func newView(l Layout, url string, store *windowStore, logger *log.Logger) (Wind
 		return nil, fmt.Errorf("WebView2 窗口创建失败（运行时可能已损坏，可尝试重装 WebView2 运行时）")
 	}
 	v := &webviewView{w: w, layout: l, store: store, log: logger}
+	v.bindCloseAsk()
 	v.hwnd = uintptr(w.Window())
 	if st.HasPos {
 		moveWindow(v.hwnd, st.X, st.Y)
@@ -101,6 +112,49 @@ func newView(l Layout, url string, store *windowStore, logger *log.Logger) (Wind
 
 // Navigate 换地址。
 func (v *webviewView) Navigate(url string) { v.w.Navigate(url) }
+
+// eval 在页面里执行一段脚本（异步，不等待结果）。
+func (v *webviewView) eval(js string) { v.w.Eval(js) }
+
+// bindCloseAsk 把页面内关窗弹窗需要的三个回调注册到 JS。
+//
+//	closeChoice(choice)  用户选了 hide / quit / cancel
+//	closeFallback()      页面里没有弹窗实现时，走原生 MessageBox
+//	closeShown()         弹窗真的显示出来了（用于取消超时兜底）
+//
+// Bind 失败不致命：关窗超时兜底仍会弹原生框。
+func (v *webviewView) bindCloseAsk() {
+	ok := true
+	if err := v.w.Bind("nbCloseChoice", v.onCloseChoice); err != nil {
+		v.logf("绑定关窗弹窗回调失败（将回退原生对话框）：%v", err)
+		ok = false
+	}
+	if err := v.w.Bind("nbCloseFallback", v.onCloseFallback); err != nil {
+		v.logf("绑定关窗兜底回调失败（将回退原生对话框）：%v", err)
+		ok = false
+	}
+	if err := v.w.Bind("nbCloseShown", func() { v.closeAskShown.Store(true) }); err != nil {
+		v.logf("绑定关窗弹窗显示回调失败（超时兜底仍可用）：%v", err)
+		ok = false
+	}
+	v.closeAskReady.Store(ok)
+}
+
+func (v *webviewView) onCloseChoice(choice string) {
+	v.logf("关窗询问：页面选择 %s", choice)
+	switch choice {
+	case "hide":
+		v.resolveCloseAsk(true)
+	case "quit":
+		v.resolveCloseAsk(false)
+	default:
+		v.cancelCloseAsk()
+	}
+}
+
+func (v *webviewView) onCloseFallback() {
+	v.fallbackCloseAsk()
+}
 
 // Show 提到前台；若窗口藏在托盘里就恢复出来。
 func (v *webviewView) Show() {
@@ -339,19 +393,37 @@ func (v *webviewView) handleWindowMessage(hwnd, msg, wParam, lParam uintptr) uin
 
 // handleClose WM_CLOSE：按设置决定藏起来还是退出。
 func (v *webviewView) handleClose(hwnd, wParam, lParam uintptr) uintptr {
+	// 用户已经在页面内明确选了退出：这次 WM_CLOSE 是 resolveCloseAsk 重投的，
+	// 直接交回原过程走销毁，不能再问一遍。
+	if v.closeConfirmed.Swap(false) {
+		return callWindowProc(v.prevProc, hwnd, wmClose, wParam, lParam)
+	}
+
 	act := closeActionFor(v.behavior())
 	if act == closeAsk {
-		// 已经有一个询问框挂在屏幕上（用户或脚本又发了一次 WM_CLOSE）：
-		// 吞掉这一次，别叠第二个对话框。
-		if !v.asking.CompareAndSwap(false, true) {
+		// JS 桥接没有装好：直接走原来的原生对话框，不尝试页面弹窗。
+		if !v.closeAskReady.Load() {
+			minimize := false
+			if v.policy.Ask != nil {
+				minimize = v.policy.Ask(hwnd)
+			}
+			act = resolveAsk(minimize)
+		} else {
+			// 已经有一次询问在路上（用户或脚本又发了一次 WM_CLOSE）：
+			// 吞掉这一次，别叠第二个弹窗。
+			if !v.asking.CompareAndSwap(false, true) {
+				return 0
+			}
+			v.closeAskShown.Store(false)
+			// 页面还没加载完 / 脚本被禁用时，Eval 不会产生任何回调。
+			// 超时后回退原生 MessageBox，保证点 X 一定有反应。
+			go v.closeAskWatchdog()
+			v.eval(`(function () {
+				if (typeof window.__nbCloseAsk === 'function') { window.__nbCloseAsk(); return; }
+				if (window.nbCloseFallback) { window.nbCloseFallback(); }
+			})()`)
 			return 0
 		}
-		minimize := false
-		if v.policy.Ask != nil {
-			minimize = v.policy.Ask(hwnd)
-		}
-		v.asking.Store(false)
-		act = resolveAsk(minimize)
 	}
 
 	if act == closeHide {
@@ -364,6 +436,56 @@ func (v *webviewView) handleClose(hwnd, wParam, lParam uintptr) uintptr {
 	// 「先落盘再停机」。这里绝不能自己 PostQuitMessage 或 os.Exit ——
 	// 那条路绕过 boot.Runtime.Shutdown，账号池状态直接丢。
 	return callWindowProc(v.prevProc, hwnd, wmClose, wParam, lParam)
+}
+
+// closeAskWatchdog 页面内弹窗没显示出来时回退原生 MessageBox。
+//
+// 正常路径下 JS 一打开弹窗就会回调 nbCloseShown，这个 goroutine 醒来后
+// 什么也不做。只有页面还没加载完、脚本报错、Bind 失败时才真正兜底。
+func (v *webviewView) closeAskWatchdog() {
+	time.Sleep(2 * time.Second)
+	if v.asking.Load() && !v.closeAskShown.Load() {
+		v.fallbackCloseAsk()
+	}
+}
+
+// fallbackCloseAsk 用原生 MessageBox 完成这次询问。
+func (v *webviewView) fallbackCloseAsk() {
+	if !v.asking.Load() {
+		return
+	}
+	v.logf("页面内关窗弹窗不可用，回退到原生消息框")
+	minimize := false
+	if v.policy.Ask != nil {
+		minimize = v.policy.Ask(v.hwnd)
+	}
+	v.resolveCloseAsk(minimize)
+}
+
+// resolveCloseAsk 收尾一次询问：先关页面弹窗，再执行隐藏或退出。
+func (v *webviewView) resolveCloseAsk(minimize bool) {
+	if !v.asking.CompareAndSwap(true, false) {
+		return
+	}
+	v.eval("window.__nbCloseHide && window.__nbCloseHide()")
+	if minimize {
+		v.hideToTray()
+		return
+	}
+	// 退出必须回到窗口消息循环里做：这里可能跑在 WebView2 的回调线程上。
+	v.closeConfirmed.Store(true)
+	if !postMessage(v.hwnd, wmClose, 0, 0) {
+		v.closeConfirmed.Store(false)
+		v.logf("投递退出消息失败（窗口句柄 %#x），本次关闭已取消", v.hwnd)
+	}
+}
+
+// cancelCloseAsk 用户点了取消：只收弹窗，不动窗口。
+func (v *webviewView) cancelCloseAsk() {
+	if !v.asking.CompareAndSwap(true, false) {
+		return
+	}
+	v.eval("window.__nbCloseHide && window.__nbCloseHide()")
 }
 
 // hideToTray 只隐藏窗口（不销毁 WebView）。

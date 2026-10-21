@@ -33,6 +33,7 @@ var (
 	// 而标题栏 / 任务栏 / Alt-Tab 读的是**窗口类图标**（WM_SETICON）——
 	// 两套东西。只做前者的话，标题栏会一直是 Windows 的默认空白图标。
 	procSendMessageW = user32.NewProc("SendMessageW")
+	procPostMessageW = user32.NewProc("PostMessageW")
 	procLoadImageW   = user32.NewProc("LoadImageW")
 )
 
@@ -59,8 +60,17 @@ const (
 	flashwTimerNoFG = 0x0000000C
 )
 
-// showWindow 是对 ShowWindow 的薄封装。
-//
+// postMessage 投递一条窗口消息。跨线程安全，用于把 JS 回调里的决定
+// 送回窗口消息循环（门内弹窗是异步的，不能在 WebView 回调线程里直接销毁窗口）。
+func postMessage(hwnd uintptr, msg uint32, wParam, lParam uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	r, _, _ := procPostMessageW.Call(hwnd, uintptr(msg), wParam, lParam)
+	return r != 0
+}
+
+// showWindow 是对 ShowWindow 的薄封装。//
 // 返回值是 Win32 的原义：**调用之前**窗口是否可见。对已经隐藏的窗口返回
 // false —— 那不是失败。所以这里不返回 error：把 ShowWindow 的返回值当
 // 成功判据是这类代码的经典错法（真被藏起来时反而"报错"）。
