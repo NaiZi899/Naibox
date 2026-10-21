@@ -188,6 +188,20 @@ const (
 	// 任何 `gateway.ErrorKind(n)` 形式的代码也会静默错位。
 	// 因此**只追加，不插入**。有测试钉住（TestErrorKindValuesAreStable）。
 	ErrKindContentBlocked
+
+	// ErrKindPassthrough 上游错误应**原样透传**：不换号、不冷却、不喂熔断。
+	//
+	// # 为什么需要这一档（自定义上游的实测）
+	//
+	// 自定义端点用一把静态 key，`shards` 只是同一把 key 的多个并发槽位。
+	// 401/403（密钥失效）与 429（限流）在**所有分片上是同一件事**：
+	// 换一个分片重试等于用同一把 key 再打一次 —— 上游看到的是 N 倍请求，
+	// 客户端最后拿到的却是"所有账号不可用"的 503，而不是上游给出的
+	// 429（Retry-After 语义丢失）或 401（密钥失效这个事实被吞掉）。
+	//
+	// 所以这类错误必须由上游自己声明"别换号，直接回给调用方"。
+	// 归类放在枚举末尾：取值会被写进日志，插入会让既有数字全部位移。
+	ErrKindPassthrough
 )
 
 // String 人类可读的分类名（与 upstream.ErrKind 的拼写**逐字一致**，
@@ -212,6 +226,8 @@ func (k ErrorKind) String() string {
 		return "client"
 	case ErrKindContentBlocked:
 		return "content_blocked"
+	case ErrKindPassthrough:
+		return "passthrough"
 	default:
 		return "none"
 	}

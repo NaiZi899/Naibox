@@ -857,6 +857,21 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				Status: status,
 				Msg:    string(respBody),
 			}
+			// 原样透传（目前只有自定义上游会报）：不换号、不冷却、不喂熔断。
+			//
+			// # 为什么必须单独一支
+			//
+			// 默认的"换号再试"对**同一把 key 的多个分片**没有任何意义：
+			// 401/429 在每个分片上都会得到同一个答案，换号只是把同一个失败
+			// 再打 N 次，最后还会把上游的 429 变成"所有账号不可用"的 503。
+			// 透传保住两件对客户端有用的东西：真实状态码，以及 401 这个
+			// "密钥就是错的"的事实（而不是伪装成容量不足）。
+			if kind == gateway.ErrKindPassthrough {
+				st.status = status
+				releaseHeld()
+				writePassthroughError(w, status, respBody)
+				return
+			}
 			// 内容策略拦截：**不罚账号**，改用降级提示词重试一次。
 			//
 			// 见 gateway.ErrKindContentBlocked 的长注释：内容问题换号没有意义
@@ -1888,6 +1903,21 @@ func poolUnavailableHintOf(list []pool.Status) string {
 		return ""
 	}
 	return strings.Join(parts, "；")
+}
+
+// writePassthroughError 把上游错误**原样**交给客户端（状态码 + 正文）。
+//
+// 与 writeOpenAIError 的分工：后者把错误包成 OpenAI 信封（网关自己产生的
+// 错误用），这里保留上游的原始正文 —— 客户端（以及排障的人）需要看到
+// 真实原因，而不是被我方改写过的转述。
+func writePassthroughError(w http.ResponseWriter, status int, body []byte) {
+	ct := "text/plain; charset=utf-8"
+	if json.Valid(bytes.TrimSpace(body)) {
+		ct = "application/json; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
