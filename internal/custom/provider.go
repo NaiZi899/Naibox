@@ -271,6 +271,9 @@ func (e Endpoint) clone() Endpoint {
 	if e.StaticModels != nil {
 		out.StaticModels = append([]string(nil), e.StaticModels...)
 	}
+	if e.Keys != nil {
+		out.Keys = append([]string(nil), e.Keys...)
+	}
 	return out
 }
 

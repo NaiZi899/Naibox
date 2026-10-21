@@ -79,12 +79,22 @@ func (s *customStore) ListCustomUpstreams() ([]admin.CustomUpstreamView, error) 
 		view.Headers = spec.Headers
 		view.TimeoutSeconds = spec.TimeoutSeconds
 		view.InsecureSkipVerify = spec.InsecureSkipVerify
-		// 密钥只回显尾 4 位；env 形态下读当前环境（读不到就留空）。
-		key := strings.TrimSpace(spec.APIKey)
-		if key == "" && strings.TrimSpace(spec.APIKeyEnv) != "" {
-			key = strings.TrimSpace(os.Getenv(strings.TrimSpace(spec.APIKeyEnv)))
+		// 密钥只回显尾 4 位。多 key 时每把各给一个尾号，前端显示数量。
+		rawKeys := append([]string(nil), spec.APIKeys...)
+		if len(rawKeys) == 0 {
+			key := strings.TrimSpace(spec.APIKey)
+			if key == "" && strings.TrimSpace(spec.APIKeyEnv) != "" {
+				key = strings.TrimSpace(os.Getenv(strings.TrimSpace(spec.APIKeyEnv)))
+			}
+			if key != "" {
+				rawKeys = []string{key}
+			}
 		}
-		view.KeyTail = custom.MaskKey(key)
+		view.KeyTails = custom.MaskKeys(rawKeys)
+		view.KeyCount = len(view.KeyTails)
+		if len(view.KeyTails) > 0 {
+			view.KeyTail = view.KeyTails[0]
+		}
 
 		// 用与启动期同一份 Normalize 补齐模型数与默认值；失败只影响展示，
 		// 不阻断列表（否则一条写错的 disabled 条目会让整页打不开）。
@@ -96,6 +106,15 @@ func (s *customStore) ListCustomUpstreams() ([]admin.CustomUpstreamView, error) 
 			view.TimeoutSeconds = int(ep.Timeout.Seconds())
 			if view.Models == nil {
 				view.Models = append([]string(nil), ep.StaticModels...)
+			}
+			tails := custom.MaskKeys(ep.Keys)
+			if len(tails) == 0 && ep.APIKey != "" {
+				tails = custom.MaskKeys([]string{ep.APIKey})
+			}
+			view.KeyTails = tails
+			view.KeyCount = len(tails)
+			if len(tails) > 0 {
+				view.KeyTail = tails[0]
 			}
 		} else if view.Enabled {
 			view.Probe.Error = err.Error()
@@ -142,13 +161,13 @@ func (s *customStore) ReplaceCustomUpstreams(items json.RawMessage) ([]string, e
 	return []string{"custom_upstreams"}, nil
 }
 
-// inheritKeys 给"提交时没带密钥"的条目补上旧配置里的 api_key / api_key_env。
+// inheritKeys 给"提交时没带密钥"的条目补上旧配置里的 api_keys / api_key / api_key_env。
 //
-// 判据是 **id 相同且两个密钥字段都为空**：
-//   - 只空一个 → 用户显式在切换形态（key ↔ env），尊重提交值，不继承；
-//   - 两个都空 → 列表页没有回显密钥，只可能是"没改密钥"，继承。
+// 判据是 **id 相同且三种密钥形态都为空**：
+//   - 只空一种 → 用户显式在切换形态（单 key ↔ 多 key ↔ env），尊重提交值；
+//   - 全空 → 列表页没有回显密钥，只可能是"没改密钥"，继承。
 //
-// 新建条目（id 在旧配置里找不到）两个都空时保持空，交给 NormalizeAll 报错。
+// 新建条目（id 在旧配置里找不到）全空时保持空，交给 NormalizeAll 报错。
 func inheritKeys(in, old []custom.Spec) []custom.Spec {
 	oldByID := make(map[string]custom.Spec, len(old))
 	for _, o := range old {
@@ -162,13 +181,17 @@ func inheritKeys(in, old []custom.Spec) []custom.Spec {
 			// 启用中的条目会因此报"必须填一个"，那正是"先停用再清空"的用法。
 			out[i].APIKey = ""
 			out[i].APIKeyEnv = ""
+			out[i].APIKeys = nil
 			out[i].ClearAPIKey = false // 语义位只在本次请求里有效，不落盘
 			continue
 		}
-		if strings.TrimSpace(out[i].APIKey) != "" || strings.TrimSpace(out[i].APIKeyEnv) != "" {
+		if len(out[i].APIKeys) > 0 ||
+			strings.TrimSpace(out[i].APIKey) != "" ||
+			strings.TrimSpace(out[i].APIKeyEnv) != "" {
 			continue
 		}
 		if prev, ok := oldByID[out[i].ID]; ok {
+			out[i].APIKeys = append([]string(nil), prev.APIKeys...)
 			out[i].APIKey = prev.APIKey
 			out[i].APIKeyEnv = prev.APIKeyEnv
 		}

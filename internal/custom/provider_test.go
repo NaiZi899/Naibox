@@ -387,6 +387,20 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+// TestClassifyMultiKey 多 key 时 401/429 必须换号（下一把 key 可能是好的）。
+func TestClassifyMultiKey(t *testing.T) {
+	s := specFor("http://127.0.0.1:1/v1")
+	s.APIKey = ""
+	s.APIKeys = []string{"sk-a-12345678", "sk-b-87654321"}
+	p := New(mustEndpoint(t, s), nil)
+	if got := p.Classify(401, ""); got != gateway.ErrKindAuth {
+		t.Errorf("多 key 401 = %v，期望 Auth（换号）", got)
+	}
+	if got := p.Classify(429, ""); got != gateway.ErrKindNone {
+		t.Errorf("多 key 429 = %v，期望 None（换号不罚）", got)
+	}
+}
+
 // TestProbeOKCountsModels 2xx 且形状正确：OK + 条数。
 func TestProbeOKCountsModels(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

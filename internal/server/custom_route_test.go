@@ -158,6 +158,69 @@ func TestChatRoutesToCustomProvider(t *testing.T) {
 	}
 }
 
+// TestCustomMultiKeyFailover 多 key 时 401 应换到下一把 key，而不是透传给客户端。
+func TestCustomMultiKeyFailover(t *testing.T) {
+	var mu sync.Mutex
+	hits := 0
+	badKeySeen := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		auth := r.Header.Get("Authorization")
+		if auth == "Bearer sk-bad-key-1111" {
+			badKeySeen = true
+		}
+		mu.Unlock()
+		if auth == "Bearer sk-bad-key-1111" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":"bad key"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+	}))
+	defer upstream.Close()
+
+	ep, err := custom.Normalize(custom.Spec{
+		ID: "multi-test", BaseURL: upstream.URL,
+		APIKeys: []string{"sk-bad-key-1111", "sk-good-key-2222"},
+		Models:  []string{"m1"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov := custom.New(ep, nil)
+	p := pool.New("")
+	p.SetDefaultProvider("multi-test")
+	p.SetMaxInFlight(10)
+	creds, _ := prov.LoadCredentialsWithSecrets("")
+	auths := make([]*auth.Auth, 0, len(creds))
+	secrets := map[string]any{}
+	for _, c := range creds {
+		auths = append(auths, &auth.Auth{UID: c.UID, Nickname: c.Nickname})
+		secrets[c.UID] = c.Secret
+	}
+	p.SyncToDirWithSecrets("multi-test", auths, secrets)
+
+	r := &customRouter{id: "multi-test", prov: prov, p: p}
+	h := NewHandler(Config{
+		Pool: p, Upstream: newFakeUpstream(t, func(string) (int, string, bool) { return 500, "{}", false }),
+		Provider: r, DefaultProvider: "multi-test", OwnedBy: "workbuddy",
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"multi-test/m1","messages":[{"role":"user","content":"hi"}]}`)))
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"content":"ok"`) {
+		t.Fatalf("多 key 请求没有成功: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if badKeySeen && hits < 2 {
+		t.Errorf("坏 key 被拒后没有换号: hits=%d", hits)
+	}
+}
+
 // TestCustomRateLimitPassthrough 单端点限流必须原样透传，且只打上游一次。
 //
 // 这是评审 I1 的回归用例：默认的"换号再试"对同一把 key 的多个分片毫无意义，

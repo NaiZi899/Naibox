@@ -15,6 +15,37 @@ func baseSpec() Spec {
 	return Spec{ID: "my-openai", BaseURL: "https://api.example.com/v1", APIKey: "sk-test-123456"}
 }
 
+func TestNormalizeMultipleKeys(t *testing.T) {
+	s := baseSpec()
+	s.APIKey = ""
+	s.APIKeys = []string{" sk-a-12345678 ", "sk-b-87654321", "sk-a-12345678"}
+	if _, err := Normalize(s, nil); err == nil || !strings.Contains(err.Error(), "重复") {
+		t.Fatalf("重复 key 应被拒: %v", err)
+	}
+
+	s.APIKeys = []string{"sk-a-12345678", "sk-b-87654321"}
+	ep, err := Normalize(s, nil)
+	if err != nil {
+		t.Fatalf("多 key 被拒: %v", err)
+	}
+	if len(ep.Keys) != 2 || ep.APIKey != "sk-a-12345678" {
+		t.Errorf("多 key 归一结果不对: %v", ep.Keys)
+	}
+
+	// 三种密钥形态不能混用。
+	s.APIKey = "sk-single"
+	if _, err := Normalize(s, nil); err == nil || !strings.Contains(err.Error(), "只能填一种") {
+		t.Errorf("多 key 与单 key 混用应被拒: %v", err)
+	}
+
+	s = baseSpec()
+	s.APIKey = ""
+	s.APIKeys = []string{"sk-a", ""}
+	if _, err := Normalize(s, nil); err == nil || !strings.Contains(err.Error(), "为空") {
+		t.Errorf("空行应被拒: %v", err)
+	}
+}
+
 func TestNormalizeDefaults(t *testing.T) {
 	ep, err := Normalize(baseSpec(), nil)
 	if err != nil {

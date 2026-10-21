@@ -45,6 +45,8 @@ type CustomUpstreamView struct {
 	ModelsCount int             `json:"models_count"`
 	Shards      int             `json:"shards"`
 	KeyTail     string          `json:"key_tail"`
+	KeyTails    []string        `json:"key_tails,omitempty"`
+	KeyCount    int             `json:"key_count,omitempty"`
 	Probe       CustomProbeView `json:"probe"`
 
 	APIKeyEnv  string   `json:"api_key_env,omitempty"`

@@ -11,7 +11,7 @@
 //	凭证      配置里的静态 key，没有 OAuth、没有 refresh token
 //	余额      不探测、不参与额度调度（不声明 CapQuotaProbe，不实现 QuotaExt）
 //	生命周期  没有签到/成长/旅行，也没有 CredentialRefresher
-//	并发      单端点默认一个合成账号；用 shards 分片抬高在途上限
+//	并发      每把 key 是一个独立账号；shards 再切成并发槽位
 //
 // # 协议边界
 //
@@ -43,6 +43,11 @@ type Spec struct {
 	BaseURL string `json:"base_url"`
 	// APIKey 静态密钥；与 APIKeyEnv 二选一。
 	APIKey string `json:"api_key,omitempty"`
+	// APIKeys 同一个上游的多把密钥，一行一个，每把密钥进池后是一个独立账号。
+	//
+	// 与 APIKey / APIKeyEnv 三选一：同时出现会被拒绝，避免"到底用哪把"的歧义。
+	// 多账号只影响调度与故障转移，模型前缀仍然是同一个 <id>/模型。
+	APIKeys []string `json:"api_keys,omitempty"`
 	// APIKeyEnv 从环境变量读密钥（部署时把 key 留在环境里，配置可分享）。
 	APIKeyEnv string `json:"api_key_env,omitempty"`
 	// ClearAPIKey 显式要求清空密钥（管理 API 的语义位，不落盘）。
@@ -78,10 +83,13 @@ type Spec struct {
 // 它会作为账号池里的不透明 secret 原样保存（`*Endpoint`），Provider 取值时
 // 用类型断言读回 —— 与其它上游把自己的凭证结构塞进 secret 是同一手法。
 type Endpoint struct {
-	ID                 string
-	Name               string
-	BaseURL            string
-	APIKey             string
+	ID      string
+	Name    string
+	BaseURL string
+	APIKey  string
+	// Keys 该端点配置的全部密钥（至少一把）。账号池按 key × shards 生成账号；
+	// APIKey 始终是当前凭证实际使用的那把（池里的 secret 会带单把 key）。
+	Keys               []string
 	ChatPath           string
 	ModelsPath         string
 	AuthHeader         string
@@ -95,6 +103,69 @@ type Endpoint struct {
 
 // resolvedKey 返回该端点实际使用的密钥（供 Provider 拼鉴权头）。
 func (e Endpoint) resolvedKey() string { return e.APIKey }
+
+// resolvedKeys 返回该端点配置的全部密钥；老配置没有 Keys 时回落到单 key。
+func (e Endpoint) resolvedKeys() []string {
+	if len(e.Keys) > 0 {
+		return e.Keys
+	}
+	if e.APIKey == "" {
+		return nil
+	}
+	return []string{e.APIKey}
+}
+
+// MaskKeys 把一组密钥投影成可展示的尾号列表。
+func MaskKeys(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, MaskKey(k))
+	}
+	return out
+}
+
+// resolveKeys 把三种密钥形态收敛成一个非空列表。
+//
+// 多 key 与单 key / 环境变量三选一，同时出现直接拒绝：否则"到底用哪把"
+// 会变成实现细节，用户在界面上改了一项、另一项悄悄生效。
+func resolveKeys(raw []string, key, envName string, getenv func(string) string) ([]string, error) {
+	if len(raw) > 0 {
+		if key != "" || envName != "" {
+			return nil, fmt.Errorf("api_keys 与 api_key / api_key_env 只能填一种")
+		}
+		out := make([]string, 0, len(raw))
+		seen := make(map[string]int, len(raw))
+		for i, k := range raw {
+			k = strings.TrimSpace(k)
+			if k == "" {
+				return nil, fmt.Errorf("第 %d 行为空", i+1)
+			}
+			if strings.ContainsAny(k, "\r\n") {
+				return nil, fmt.Errorf("第 %d 行包含换行", i+1)
+			}
+			if prev, dup := seen[k]; dup {
+				return nil, fmt.Errorf("第 %d 行与第 %d 行重复", i+1, prev+1)
+			}
+			seen[k] = i
+			out = append(out, k)
+		}
+		return out, nil
+	}
+
+	if key != "" && envName != "" {
+		return nil, fmt.Errorf("api_key 与 api_key_env 只能填一个")
+	}
+	if key == "" && envName == "" {
+		return nil, fmt.Errorf("api_key、api_keys 或 api_key_env 必须填一个")
+	}
+	if key == "" {
+		key = strings.TrimSpace(getenv(envName))
+		if key == "" {
+			return nil, fmt.Errorf("环境变量 %s 为空或未设置", envName)
+		}
+	}
+	return []string{key}, nil
+}
 
 // MaskKey 把密钥变成可展示的形态：只保留尾 4 位。
 //
@@ -209,6 +280,9 @@ func NormalizeAll(specs []Spec, getenv func(string) string) ([]Endpoint, error) 
 
 // Normalize 把一条配置补全默认值并校验。返回的错误总是 *ConfigError。
 func Normalize(s Spec, getenv func(string) string) (Endpoint, error) {
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
 	fail := func(field, msg string) (Endpoint, error) {
 		return Endpoint{}, &ConfigError{ID: s.ID, Field: field, Msg: msg}
 	}
@@ -236,17 +310,9 @@ func Normalize(s Spec, getenv func(string) string) (Endpoint, error) {
 
 	key := strings.TrimSpace(s.APIKey)
 	envName := strings.TrimSpace(s.APIKeyEnv)
-	if key != "" && envName != "" {
-		return fail("api_key", "api_key 与 api_key_env 只能填一个")
-	}
-	if key == "" && envName == "" {
-		return fail("api_key", "api_key 或 api_key_env 必须填一个")
-	}
-	if key == "" {
-		key = strings.TrimSpace(getenv(envName))
-		if key == "" {
-			return fail("api_key_env", fmt.Sprintf("环境变量 %s 为空或未设置", envName))
-		}
+	keys, err := resolveKeys(s.APIKeys, key, envName, getenv)
+	if err != nil {
+		return fail("api_keys", err.Error())
 	}
 
 	chatPath, err := normalizePath(s.ChatPath, "/chat/completions", "chat_path")
@@ -300,7 +366,8 @@ func Normalize(s Spec, getenv func(string) string) (Endpoint, error) {
 		ID:                 id,
 		Name:               name,
 		BaseURL:            base,
-		APIKey:             key,
+		APIKey:             keys[0],
+		Keys:               keys,
 		ChatPath:           chatPath,
 		ModelsPath:         modelsPath,
 		AuthHeader:         authHeader,

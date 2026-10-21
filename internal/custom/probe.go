@@ -75,14 +75,42 @@ func (p *Provider) Probe(ctx context.Context) ProbeResult {
 }
 
 // ProbeNow 立刻探测一次并刷新缓存（管理台的强制刷新走这里）。
+//
+// 多 key 时逐把探测，任意一把通就算端点可用；只有全部失败才返回第一把的
+// 错误。总时长单独限 8 秒，避免 8 把坏 key × 5 秒把面板拖死。
 func (p *Provider) ProbeNow(ctx context.Context) ProbeResult {
-	res := probeEndpoint(ctx, p.client, p.ep)
+	keys := p.ep.resolvedKeys()
+	if len(keys) <= 1 {
+		res := probeEndpoint(ctx, p.client, p.ep)
+		p.storeProbe(res)
+		return res
+	}
 
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	var first ProbeResult
+	for i, key := range keys {
+		ep := p.ep
+		ep.APIKey = key
+		ep.Keys = nil
+		res := probeEndpoint(ctx, p.client, ep)
+		if res.OK {
+			p.storeProbe(res)
+			return res
+		}
+		if i == 0 {
+			first = res
+		}
+	}
+	first.Error = fmt.Sprintf("%s（%d 把 key 均未通过）", first.Error, len(keys))
+	p.storeProbe(first)
+	return first
+}
+
+func (p *Provider) storeProbe(res ProbeResult) {
 	p.probeMu.Lock()
 	p.probeCache = probeCache{res: res, at: time.Now()}
 	p.probeMu.Unlock()
-
-	return res
 }
 
 // ProbeSpec 探测一条**尚未保存**的配置（表单里的“测试连通性”）。

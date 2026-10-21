@@ -90,6 +90,37 @@ func TestCustomStoreRejectsInvalidWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestCustomStoreInheritsMultipleKeys(t *testing.T) {
+	path := writeTempConfig(t, `{"listen":"127.0.0.1:0","custom_upstreams":[
+	  {"id":"multi","base_url":"https://x","api_keys":["sk-key-one-1111","sk-key-two-2222"]}
+	]}`)
+	cfg := &Config{}
+	if err := json.Unmarshal([]byte(`[{"id":"multi","base_url":"https://x","api_keys":["sk-key-one-1111","sk-key-two-2222"]}]`), &cfg.CustomUpstreams); err != nil {
+		t.Fatal(err)
+	}
+	store := newCustomStore(path, cfg)
+
+	list, err := store.ListCustomUpstreams()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list[0].KeyCount != 2 || len(list[0].KeyTails) != 2 {
+		t.Fatalf("列表没有回显两把 key 的尾号: %+v", list[0])
+	}
+
+	// 编辑时不回填密钥：提交空 api_keys 应沿用旧的两把。
+	if _, err := store.ReplaceCustomUpstreams(json.RawMessage(`[{"id":"multi","name":"改名","base_url":"https://x","api_keys":[]}]`)); err != nil {
+		t.Fatalf("多 key 编辑应被接受: %v", err)
+	}
+	if len(cfg.CustomUpstreams[0].APIKeys) != 2 {
+		t.Errorf("没有继承多 key: %+v", cfg.CustomUpstreams[0])
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "sk-key-one-1111") || !strings.Contains(string(raw), "sk-key-two-2222") {
+		t.Errorf("落盘时丢了多 key: %s", raw)
+	}
+}
+
 func TestCustomStoreClearKeyOnDisabledEntry(t *testing.T) {
 	path := writeTempConfig(t, `{"listen":"127.0.0.1:0","custom_upstreams":[
 	  {"id":"a","enabled":false,"base_url":"https://x","api_key":"sk-old-secret"}

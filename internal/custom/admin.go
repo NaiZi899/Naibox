@@ -71,6 +71,11 @@ func (p *Provider) adminInfo(w http.ResponseWriter, r *http.Request) {
 		// 目录是现场拉的（models_source=live）时，唯一已知的条数就是探测读到的。
 		count = probe.ModelsCount
 	}
+	tails := MaskKeys(p.ep.resolvedKeys())
+	firstTail := ""
+	if len(tails) > 0 {
+		firstTail = tails[0]
+	}
 
 	writeJSON(w, http.StatusOK, struct {
 		ID           string      `json:"id"`
@@ -80,6 +85,8 @@ func (p *Provider) adminInfo(w http.ResponseWriter, r *http.Request) {
 		ModelsCount  int         `json:"models_count"`
 		Shards       int         `json:"shards"`
 		KeyTail      string      `json:"key_tail"`
+		KeyTails     []string    `json:"key_tails,omitempty"`
+		KeyCount     int         `json:"key_count,omitempty"`
 		Probe        ProbeResult `json:"probe"`
 	}{
 		ID:           p.ep.ID,
@@ -89,8 +96,10 @@ func (p *Provider) adminInfo(w http.ResponseWriter, r *http.Request) {
 		ModelsCount:  count,
 		Shards:       p.shardCount(),
 		// 只给尾 4 位（见文件头）。
-		KeyTail: MaskKey(p.ep.resolvedKey()),
-		Probe:   probe,
+		KeyTail:  firstTail,
+		KeyTails: tails,
+		KeyCount: len(tails),
+		Probe:    probe,
 	})
 }
 

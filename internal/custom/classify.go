@@ -44,8 +44,17 @@ func (p *Provider) Classify(status int, body string) gateway.ErrorKind {
 	_ = body
 	switch {
 	case status == 401 || status == 403:
+		// 多 key 时换号是有意义的：下一把 key 可能没坏。
+		// 单 key 时所有分片共用同一把密钥，换号只是把同一个 401 再打 N 次，
+		// 直接透传，让客户端看到"密钥就是错的"。
+		if p.multiKey() {
+			return gateway.ErrKindAuth
+		}
 		return gateway.ErrKindPassthrough
 	case status == 429:
+		if p.multiKey() {
+			return gateway.ErrKindNone
+		}
 		return gateway.ErrKindPassthrough
 	case status == 404:
 		return gateway.ErrKindClient

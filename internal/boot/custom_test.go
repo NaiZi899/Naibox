@@ -90,6 +90,34 @@ func (f fakeProvider) Models(context.Context, gateway.Credential) ([]gateway.Mod
 	return nil, nil
 }
 
+func TestRegisterCustomMultipleKeys(t *testing.T) {
+	eps, err := custom.NormalizeAll([]custom.Spec{{
+		ID: "multi", BaseURL: "https://api.example.com/v1",
+		APIKeys: []string{"sk-a-12345678", "sk-b-87654321"}, Shards: 2,
+	}}, os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := gateway.NewRegistry()
+	if err := reg.Register(fakeProvider{id: "workbuddy"}); err != nil {
+		t.Fatal(err)
+	}
+	p := pool.New(filepath.Join(t.TempDir(), "state.json"))
+	p.SetDefaultProvider("workbuddy")
+	if err := registerCustomUpstreams(&Config{CustomEndpoints: eps}, reg, p, func(string, ...any) {}); err != nil {
+		t.Fatalf("装配失败: %v", err)
+	}
+	// 2 把 key × 2 分片 = 4 个账号。
+	if got := len(p.ListFor("multi")); got != 4 {
+		t.Errorf("账号数 = %d，期望 4", got)
+	}
+	for _, st := range p.ListFor("multi") {
+		if st.Nickname == "" {
+			t.Errorf("账号 %s 缺少展示名", st.UID)
+		}
+	}
+}
+
 func TestRegisterCustomUpstreams(t *testing.T) {
 	// 直接用已规范化的 Endpoint 构造配置，避免把配置解析再测一遍。
 	eps, err := customEndpointsForTest(t)

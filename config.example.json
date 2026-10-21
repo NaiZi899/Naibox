@@ -107,6 +107,15 @@
       "models": ["gpt-4o-mini"],
       "timeout_seconds": 120,
       "shards": 1
+    },
+    {
+      "id": "my-multi-key",
+      "name": "多密钥示例",
+      "enabled": false,
+      "base_url": "https://api.example.com/v1",
+      "api_keys": ["sk-key-one", "sk-key-two"],
+      "models": ["gpt-4o-mini"],
+      "shards": 1
     }
   ],
   "features": {
