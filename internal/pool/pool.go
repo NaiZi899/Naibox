@@ -219,6 +219,13 @@ type entry struct {
 	// 而真正失效的 session（每次都会 12153）仍会被停掉。
 	sessionDeadStreak int
 
+	// restrictedStreak 连续被上游**风控**拒绝（403 + 11140）的计数（**持久化**）。
+	//
+	// 与 sessionDeadStreak 同一套门控：达到 restrictedThreshold 才禁用。
+	// 一次风控可能是上游误判或瞬时抖动，但同一个号连续被拒就是真状态 ——
+	// 实测被标记的号会持续 403 一整天，而它在此之前一直显示"健康"。
+	restrictedStreak int
+
 	// inFlight 单账号在途请求数（运行态，不持久化）。用 atomic 避免 Pick 热路径拿写锁。
 	inFlight atomic.Int64
 }
@@ -355,6 +362,8 @@ type stateAccount struct {
 	// 落盘理由同 SoftStreak：重启不该让"这个号已经连续 2 次 session 失效"
 	// 这件事被忘掉 —— 那样它永远攒不满阈值。
 	SessionDeadStreak int `json:"session_dead_streak,omitempty"`
+	// RestrictedStreak 连续被上游风控拒绝的次数（见 entry.restrictedStreak）。
+	RestrictedStreak int `json:"restricted_streak,omitempty"`
 }
 
 // stateFile 持久化格式。
@@ -455,6 +464,13 @@ const (
 // 代价分析：阈值过大（如 10）会让真正失效的号在池子里反复被选中、
 // 每次都白跑一次往返；阈值过小（如 1）就退回了改造前的误杀行为。
 const sessionDeadThreshold = 3
+
+// restrictedThreshold 连续被上游风控拒绝多少次才禁用账号。
+//
+// 与 sessionDeadThreshold 取同一个数（3）：一次风控可能是误判，
+// 但连续三次被拒已经不是抖动 —— 而被标记的号留在池里，每次选号都会
+// 白跑一个往返（实测一个号一天被选中 164 次、0 次成功）。
+const restrictedThreshold = 3
 
 // StoreSnapshotter 池状态快照镜像的最小接口（redisstore.Store 满足；Noop 空实现安全）。
 // 与本地 state.json 并存，作启动恢复备份：快照比本地新才采用，否则本地优先。
@@ -1716,6 +1732,50 @@ func (p *Pool) NoteSessionDead(uid string) (disabled bool) {
 	return false
 }
 
+// NoteUpstreamRestricted 记录一次上游**风控**拒绝（403 + 11140），返回是否因此被禁用。
+//
+// # 为什么用计数门控，而不是一次就禁用
+//
+// 与 NoteSessionDead 同一条理由：一次 403 可能是上游误判，也可能是带风控
+// 措辞的软限流。连续 restrictedThreshold 次才认定账号真被标记，期间任何
+// 一次成功（NoteSuccess）都会把计数清零。
+//
+// # 为什么不能维持改造前的"只换号不罚"
+//
+// 实测：一个被标记的号在 24 小时里被选中 164 次、0 次成功，每次都白跑一个
+// 往返，而仪表盘一直显示它健康。只换号不罚等于让坏号长期占用选号概率，
+// 用户看到的是"时好时坏"，且没有任何界面线索能让他找出是哪几个号。
+func (p *Pool) NoteUpstreamRestricted(uid string) (disabled bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	e.restrictedStreak++
+	e.errTotal++
+	e.lastErr = time.Now()
+	if e.restrictedStreak >= restrictedThreshold {
+		e.disabled = true
+		e.reason = "上游风控（连续 " + itoa(e.restrictedStreak) + " 次，需人工确认后启用）"
+		p.dirty.Store(true)
+		return true
+	}
+	p.recordBreakerFailureLocked(e)
+	p.dirty.Store(true)
+	return false
+}
+
+// RestrictedStreak 返回账号当前连续被上游风控拒绝的次数（管理台展示用）。
+func (p *Pool) RestrictedStreak(uid string) int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if e, ok := p.byUID[uid]; ok {
+		return e.restrictedStreak
+	}
+	return 0
+}
+
 // SessionDeadStreak 返回账号当前连续 session 失效次数（管理台展示用）。
 func (p *Pool) SessionDeadStreak(uid string) int {
 	p.mu.RLock()
@@ -1838,6 +1898,8 @@ func (p *Pool) NoteSuccess(uid string) {
 		// 这是"瞬时抖动"能自愈的关键 —— 不清的话它会把抖动一路攒到阈值，
 		// 三次跨天的无关抖动叠加起来就误禁了一个健康的号。
 		e.sessionDeadStreak = 0
+		// 风控计数同理清零：一次成功证明这个号现在是被上游接受的。
+		e.restrictedStreak = 0
 		// 凭证续期失败计数同样清零（A2 移植，见 health.go）：一次成功说明 token 又活了。
 		e.refreshFails = 0
 		p.dirty.Store(true)
@@ -2174,6 +2236,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 			softRateModel: s.SoftRateModel,
 			// session 失效连续计数（旧文件无此字段 → 0 = 全新计数）。
 			sessionDeadStreak: s.SessionDeadStreak,
+			restrictedStreak:  s.RestrictedStreak,
 		}
 	}
 }
@@ -2262,6 +2325,7 @@ func (p *Pool) stateOverviewLocked() stateFile {
 			SoftRateModel: e.softRateModel,
 			// session 失效连续计数必须落盘（理由见 stateAccount.SessionDeadStreak）。
 			SessionDeadStreak: e.sessionDeadStreak,
+			RestrictedStreak:  e.restrictedStreak,
 		}
 	}
 	return sf

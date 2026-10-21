@@ -1093,8 +1093,21 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if hint := h.poolUnavailableHint(reqProvider); hint != "" {
 		msg += " —— " + hint
 	}
+	// ⚠ 这里**逐一不**复述上游原文。
+	//
+	// 客户端会拿 503 的 message 做错误分类。实测把
+	// `upstream client (http 403): {"code":11140,"msg":"request illegal"}` 拼进来
+	// 之后，客户端（CodeBuddy）把整条链判成 AUTH，界面上显示「API 密钥无效」——
+	// 而网关这把 key 完全正确，真实原因是上游风控了其中几个账号。
+	// 原文只进日志（排障要看它），响应体只给状态码与分类名。
 	if lastErr != nil {
-		msg += ": " + lastErr.Error()
+		log.Printf("chat provider=%s: 全部账号不可用，最后一次上游失败：%v",
+			reqProvider, lastErr)
+		if label := upstreamFailureRedacted(lastErr); label != "" {
+			msg += "（最后一次失败：" + label + "）"
+		} else {
+			msg += ": " + lastErr.Error()
+		}
 	}
 	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
 	st.status = http.StatusServiceUnavailable
@@ -1458,6 +1471,27 @@ func (e *chatError) Error() string {
 	return fmt.Sprintf("upstream %s (http %d): %s", e.Kind, e.Status, e.Msg)
 }
 
+// upstreamFailureRedacted 对**会被客户端误判**的类别返回不含原文的一句，
+// 其余类别返回空串（调用方保留原文，逐字不变）。
+//
+// # 为什么要按类别挑，而不是一律剥掉
+//
+// 客户端会读 503 的 message 做错误分类。上游风控的正文里同时有 `403` 与
+// `request illegal`，客户端据此判成 AUTH 并显示「API 密钥无效」——
+// 而网关这把 key 是对的，真实原因是被风控的账号拖垮了这一轮。
+//
+// 但模型未注册（`InferHub.002002009.404`）、余额不足这类原文**必须**透出：
+// 那是用户自己能处理的东西（换个模型、充值），剥掉只剩"上游 200（none）"，
+// 等于把可操作的错误变成不可操作的错误。
+func upstreamFailureRedacted(e error) string {
+	var ce *chatError
+	if errors.As(e, &ce) && ce.Kind == gateway.ErrKindAccountRestricted {
+		// 连状态码都不给：客户端会把 message 里的 "403" 也当成鉴权信号。
+		return "上游账号被风控限制（已计入连续失败，达到阈值会自动禁用该账号）"
+	}
+	return ""
+}
+
 // softRateReset 问**该上游自己**"这次软限流有没有精确的重置时刻"。
 //
 // # 两条路径（与 classifyErr 同形状，但回落策略刻意不同）
@@ -1803,6 +1837,17 @@ func (h *Handler) applyErrorPolicy(uid string, kind gateway.ErrorKind, provider 
 		// 任何一次成功都清零。真正失效的 session（每次都会 12153）
 		// 仍然会被停掉，行为与改造前一致。
 		h.cfg.Pool.NoteSessionDead(uid)
+	case gateway.ErrKindAccountRestricted:
+		// 上游风控标记了这个号（403 + 11140 request illegal）。
+		//
+		// 交给 Pool 计数门控：连续 3 次才禁用，期间任何一次成功清零。
+		// 不直接 Cooldown —— 风控不是"等一会儿就好"的限流，也不是
+		// "额度会回血"的余额问题：主动健康检查（pool_health.go）探的是
+		// 额度端点，被标记的号额度是好的，就会把它提前恢复出来，
+		// 冷却等于白设。
+		if h.cfg.Pool.NoteUpstreamRestricted(uid) {
+			log.Printf("chat uid=%s provider=%s: 连续被上游风控拒绝，已禁用该账号", uid, provider)
+		}
 	case gateway.ErrKindNotFound:
 		// 404 短冷却（软冷却），防雪崩。
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")

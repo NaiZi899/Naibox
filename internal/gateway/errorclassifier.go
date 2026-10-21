@@ -202,6 +202,20 @@ const (
 	// 所以这类错误必须由上游自己声明"别换号，直接回给调用方"。
 	// 归类放在枚举末尾：取值会被写进日志，插入会让既有数字全部位移。
 	ErrKindPassthrough
+
+	// ErrKindAccountRestricted 上游**风控**标记了这个账号（403 + 11140 request illegal）。
+	//
+	// 映射：upstream.ErrAccountRestricted（目前只有 workbuddy）。
+	//
+	// # 处置为什么不是"只换号不罚"
+	//
+	// 风控是**账号级**状态。换号确实有救（换到健康号就成功），但被标记的
+	// 号必须从池里摘出去 —— 否则每次选号都可能再撞上它，用户看到的是
+	// "时好时坏"，而我们自己的仪表盘还一直显示它是健康的。
+	//
+	// 与 ErrKindContentBlocked 的区别是关键：后者是**请求内容**触发审核，
+	// 每个号背后是同一套策略，换号没有意义；风控是**账号**被标记，换号有意义。
+	ErrKindAccountRestricted
 )
 
 // String 人类可读的分类名（与 upstream.ErrKind 的拼写**逐字一致**，
@@ -228,6 +242,8 @@ func (k ErrorKind) String() string {
 		return "content_blocked"
 	case ErrKindPassthrough:
 		return "passthrough"
+	case ErrKindAccountRestricted:
+		return "account_restricted"
 	default:
 		return "none"
 	}

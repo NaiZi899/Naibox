@@ -116,6 +116,13 @@ func toGatewayKind(k upstream.ErrKind) gateway.ErrorKind {
 		// （每个账号背后是同一套内容策略），换号只会白烧 MaxRotate 次往返，
 		// 最后把"内容被拦"误报成"所有账号不可用"。
 		return gateway.ErrKindContentBlocked
+	case upstream.ErrAccountRestricted:
+		// 账号被上游风控标记（403 + 11140 request illegal）。
+		//
+		// 同样不能落 default：None 是"只换号不罚"，那会让被标记的号
+		// 永远以健康身份留在池里反复被选中 —— 这正是实测里一个号
+		// 一天 164 次 403、0 次成功却始终显示健康的原因。
+		return gateway.ErrKindAccountRestricted
 	default:
 		return gateway.ErrKindNone
 	}

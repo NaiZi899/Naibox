@@ -39,6 +39,24 @@ const (
 	// 处置见 gateway.ErrKindContentBlocked：core 据此触发提示词降级重试，
 	// 而**不是**换号 —— 换号对内容问题没有意义（每个号都被同一套策略拦）。
 	ErrContentBlocked
+
+	// ErrAccountRestricted 上游**风控**标记了这个账号（403 + code 11140）。
+	//
+	// # 为什么必须与 ErrClient 分开
+	//
+	// 上游用同一个 `code 11140` 表达了两件相反的事：
+	//
+	//	"请求过于频繁，将在 … 重置"           → 软限流，等一会儿就好
+	//	"request illegal / 账号存在异常行为"   → 账号被风控，换号才有救
+	//
+	// 两者的 HTTP 形态都是 403，但处置相反。落到 ErrClient 的后果是账号
+	// 既不冷却也不计数，永远以"健康"身份留在池里被反复选中：每次撞上都
+	// 白跑一个往返，客户端偶尔收到"所有账号不可用"。实测一个号一天被
+	// 选中 164 次、0 次成功，而仪表盘始终显示健康。
+	//
+	// 判据必须看**文案**而不是 code：11140 同时承载上面两种语义。
+	// 追加在末尾（不插中间）的理由同 ErrContentBlocked。
+	ErrAccountRestricted
 )
 
 func (k ErrKind) String() string {
@@ -57,6 +75,8 @@ func (k ErrKind) String() string {
 		return "client"
 	case ErrContentBlocked:
 		return "content_blocked"
+	case ErrAccountRestricted:
+		return "account_restricted"
 	default:
 		return "none"
 	}
@@ -116,6 +136,22 @@ var contentBlockedMarkers = []string{
 	"illegal api invocation",
 }
 
+// restrictedMarkers 账号被上游**风控标记**时的措辞（403 + code 11140）。
+//
+// 三个来源是同一句话的三种形态：
+//
+//	request illegal        上游 msg 字段
+//	unusual activity       displayMsg.en
+//	账号存在异常行为         displayMsg.zh
+//
+// ⚠ **刻意不含** "请求过于频繁"：那是同一个 11140 的另一半语义（软限流），
+// 归到风控会把限流误判成"账号被防守"，让一个只是被限速的号被计数到禁用。
+var restrictedMarkers = []string{
+	"request illegal",
+	"unusual activity",
+	"账号存在异常行为",
+}
+
 // Classify 按 HTTP 状态码 + body 判定错误类别。
 func Classify(status int, body string) ErrKind {
 	if status == http.StatusPaymentRequired {
@@ -151,6 +187,14 @@ func Classify(status int, body string) ErrKind {
 	for _, m := range contentBlockedMarkers {
 		if strings.Contains(lowerBody, m) {
 			return ErrContentBlocked
+		}
+	}
+	// 风控：必须在 `status >= 400 → ErrClient` 之前判，否则又会落成"只换号不罚"。
+	//
+	// 判据只看文案不看 code（11140 同时用于软限流，见 ErrAccountRestricted）。
+	for _, m := range restrictedMarkers {
+		if strings.Contains(lowerBody, strings.ToLower(m)) || strings.Contains(body, m) {
+			return ErrAccountRestricted
 		}
 	}
 	if status == http.StatusTooManyRequests {
