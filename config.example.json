@@ -97,6 +97,18 @@
     "pool_accounts": true,
     "mgmt_base": ""
   },
+  "custom_upstreams": [
+    {
+      "id": "my-openai",
+      "name": "我的 OpenAI 反代",
+      "enabled": false,
+      "base_url": "https://api.example.com/v1",
+      "api_key": "sk-replace-me",
+      "models": ["gpt-4o-mini"],
+      "timeout_seconds": 120,
+      "shards": 1
+    }
+  ],
   "features": {
     "sanitize_blacklist_fingerprints": true
   },

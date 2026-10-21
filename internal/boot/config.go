@@ -15,6 +15,7 @@ import (
 
 	"github.com/NaiZi899/Naibox/internal/clientlogin"
 	"github.com/NaiZi899/Naibox/internal/codearts"
+	"github.com/NaiZi899/Naibox/internal/custom"
 	"github.com/NaiZi899/Naibox/internal/loomy"
 	"github.com/NaiZi899/Naibox/internal/prompt"
 	"github.com/NaiZi899/Naibox/internal/wire"
@@ -885,6 +886,20 @@ type Config struct {
 		LiveModels *bool `json:"live_models"`
 	} `json:"jiyuan"`
 
+	// CustomUpstreams 用户自定义的 OpenAI 兼容端点（见 internal/custom）。
+	//
+	// 与内置上游的区别：不是"再写一个包"，而是**配置驱动** —— 每一条
+	// 注册成一个独立 Provider，模型前缀就是它的 id。默认值与校验只在
+	// custom.Normalize 一处实现（管理页与启动期共用），这里只负责承载。
+	//
+	// 空数组/段缺席 = 没有自定义上游，行为与改造前逐字节一致。
+	CustomUpstreams []custom.Spec `json:"custom_upstreams"`
+	// CustomEndpoints 是 CustomUpstreams 规范化之后的结果（不参与序列化）。
+	//
+	// 装配层直接用这一份：默认值、密钥解析、URL 归一都已经做完，
+	// 避免"启动用一份、管理页用另一份"两套理解。
+	CustomEndpoints []custom.Endpoint `json:"-"`
+
 	// 解析后
 	SoftRateDur time.Duration `json:"-"`
 	// SoftRateMaxDur 软冷却指数退避封顶；<=0 由 pool 用自己的默认值（2h）。
@@ -1323,6 +1338,13 @@ func (c *Config) normalize() error {
 			return fmt.Errorf("jiyuan.mgmt_base=%q 非法: %w", c.Jiyuan.MgmtBase, err)
 		}
 		c.Jiyuan.MgmtBase = norm
+	}
+	// 自定义上游：默认值/校验只在 custom 包实现，错误里已带条目序号。
+	//
+	// 这里**只处理启用的条目**；显式停用的条目不注册、不入池，
+	// 形态写错也不影响启动 —— "临时停用"应当是一个能救火的开关。
+	if c.CustomEndpoints, err = custom.NormalizeAll(c.CustomUpstreams, os.Getenv); err != nil {
+		return err
 	}
 	if c.Pool.IdleWeightPerHour <= 0 {
 		c.Pool.IdleWeightPerHour = 0.5

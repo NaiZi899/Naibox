@@ -258,7 +258,11 @@ func (r registryRouter) Models(ctx context.Context, id string) ([]gateway.ModelI
 	if !ok {
 		return nil, false
 	}
-	if id != r.Default() && r.p != nil && len(r.p.AvailableUIDsFor(id)) == 0 {
+	// 目录只要求"这个上游有账号"，**不要求账号当前健康**：
+	// 模型目录是端点级静态事实，冷却中的账号也能提供 secret（甚至根本不需要）。
+	// 用 AvailableUIDsFor 会让单账号端点一进熔断就整段目录消失，而聊天还在
+	// 走 pickEarliestExpiry 兜底 —— 表现成"模型时有时无"，非常难查。
+	if id != r.Default() && r.p != nil && len(r.p.ListFor(id)) == 0 {
 		return nil, false
 	}
 	ms, err := pv.Models(ctx, r.credentialFor(id))
@@ -313,9 +317,9 @@ func (r registryRouter) credentialFor(id string) gateway.Credential {
 	if r.p == nil {
 		return cred
 	}
-	for _, uid := range r.p.AvailableUIDsFor(id) {
-		if secret, ok := r.p.SecretOf(uid); ok && secret != nil {
-			cred.UID = uid
+	for _, st := range r.p.ListFor(id) {
+		if secret, ok := r.p.SecretOf(st.UID); ok && secret != nil {
+			cred.UID = st.UID
 			cred.Secret = secret
 			return cred
 		}

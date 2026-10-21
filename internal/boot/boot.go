@@ -1008,6 +1008,16 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 		}
 	}
 
+	// ---- 自定义上游（配置驱动，必须在内置上游之后）----
+	//
+	// 注册顺序决定默认上游：这里放在 qodercn 之后，registry.First() 仍是
+	// workbuddy，裸模型名的行为不变。自定义端点一律走 `<id>/模型` 前缀。
+	if len(cfg.CustomEndpoints) > 0 {
+		if err := registerCustomUpstreams(cfg, registry, p, log.Printf); err != nil {
+			fatalf("注册自定义上游失败: %v", err)
+		}
+	}
+
 	// "已注册上游"必须打在**所有**上游注册完之后。
 	//
 	// # 为什么（实测踩到过）
@@ -1275,7 +1285,10 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 						s.SetKeepDays(days)
 					}
 				}, withPromptGate(promptGate)),
-				StartedAt: time.Now(),
+				// 自定义上游管理页：读写 config.json 的 custom_upstreams 段。
+				// 没有自定义上游时它仍然可用（页面上可以新增第一条）。
+				CustomUpstreams: newCustomStore(cfgPath, cfg),
+				StartedAt:       time.Now(),
 				// 「添加账号」默认用**无痕窗口**打开授权页（用户要求）。
 				//
 				// 放在装配层而不是 admin 里直接 exec：admin 保持"可测、无副作用"，
