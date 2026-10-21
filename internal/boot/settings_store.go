@@ -133,8 +133,9 @@ func (s *settingsStore) Snapshot() admin.Settings {
 // 下发空串 → 回来空串 → 撞上保存校验的第一条（模式必须三选一）→ 用户改个
 // 日志保留天数都存不下来，而错误信息说的是 prompt.mode，看上去毫不相干。
 //
-// 回落到"此刻生效的模式"而不是硬写 custom：环境变量覆盖过（NAIBOX_PROMPT_MODE）
+// 回落到"此刻生效的模式"而不是硬写某一个值：环境变量覆盖过（NAIBOX_PROMPT_MODE）
 // 或配置文件没写这一段时，用户在该行看到的就是真正在跑的那个值。
+// 最后一级兜底取 passthrough，与配置缺省的默认模式保持一致。
 func (s *settingsStore) promptModeSetting() string {
 	if m := strings.TrimSpace(s.cfg.Prompt.Mode); m != "" {
 		return m
@@ -142,7 +143,7 @@ func (s *settingsStore) promptModeSetting() string {
 	if m := strings.TrimSpace(s.cfg.PromptMode); m != "" {
 		return m
 	}
-	return prompt.ModeCustom
+	return prompt.ModePassthrough
 }
 
 // PromptStatus 实现 admin.PromptStatusSource：报**此刻生效**的提示词状态。

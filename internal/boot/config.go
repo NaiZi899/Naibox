@@ -1379,8 +1379,13 @@ func (c *Config) normalize() error {
 	case prompt.ModeCustom, prompt.ModeAppend, prompt.ModePassthrough:
 		// 合法值原样保留
 	case "":
-		// 未配置 → 默认 custom（与 B 的缺省一致：从源头消灭指纹误报）
-		c.PromptMode = prompt.ModeCustom
+		// 未配置 → **透传**（不改写，一个字节都不动）。
+		//
+		// 2026-10 起默认值从 custom 改成 passthrough：改写会改变上游看到的
+		// 渠道画像，而上游按累积采样判定渠道是否正常（实测有部署在改了模式
+		// 七小时后被整片拦截）。这个代价该由显式选择改写的人承担，
+		// 不该由"什么都没配"的人默认承担。
+		c.PromptMode = prompt.ModePassthrough
 	default:
 		// 非法值**报错**而不是静默当 custom：
 		// 用户写 "passthru" / "Custom " 时，静默按 custom 处理会让

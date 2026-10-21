@@ -106,15 +106,22 @@ func TestPromptCustomFallsBackToDefaultWhenTextEmpty(t *testing.T) {
 	}
 }
 
-// TestPromptCustomEmptyModeIsCustom 空 mode 按 custom 处理（与配置缺省一致）。
-func TestPromptCustomEmptyModeIsCustom(t *testing.T) {
+// TestPromptEmptyModeIsPassthrough 空 mode 按 passthrough 处理（与配置缺省一致）。
+//
+// 2026-10 起默认模式从 custom 改为 passthrough：没配置就一个字节都不动，
+// 改写要由用户显式选择。
+func TestPromptEmptyModeIsPassthrough(t *testing.T) {
 	c := New()
 	c.PromptMode = "" // 未配置
 	c.PromptText = "默认提示词"
+	c.SanitizeFingerprints = false // 隔离脱敏层，断言逐字
 	got := wireBody(t, c, clientBody())
 
-	if sys := firstSystemContent(t, got); sys != "默认提示词" {
-		t.Errorf("空 mode 应按 custom 处理，system=%q", sys)
+	if sys := firstSystemContent(t, got); sys != clientSystem {
+		t.Errorf("空 mode 应按 passthrough 处理（保留客户端 system），得到 %q", sys)
+	}
+	if strings.Contains(string(got), "默认提示词") {
+		t.Error("空 mode 下 PromptText 不得出现在 wire body 上")
 	}
 }
 

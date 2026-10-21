@@ -53,13 +53,16 @@ func Default() string { return defaultPrompt }
 const (
 	// ModeCustom 出站前用网关自有提示词**替换**客户端 system / developer 消息。
 	//
-	// 这是默认值：它从源头消灭 system 来源的指纹误报，
-	// 代价是丢弃客户端自己的 system（例如 Claude Code 的工程约定）。
+	// 它从源头消灭 system 来源的指纹误报，代价是丢弃客户端自己的 system
+	// （例如 Claude Code 的工程约定），并且**改变了上游看到的渠道画像** ——
+	// 上游按累积采样判定渠道是否正常，所以这是一个需要用户显式选择的动作，
+	// 不再是默认值（默认见 ModePassthrough）。
 	ModeCustom = "custom"
 	// ModePassthrough 透传客户端原始 system，不做改写。
 	//
-	// 保留客户端人格的完整语义，代价是仍可能撞上指纹误报 ——
-	// 此时由降级机制（见 gate.go）兜底：撞一次之后自动换中性提示词重试。
+	// 这是默认值：配置里没有 prompt 段、或 mode 为空时落到这里，一个字节都不动。
+	// 理由与 ModeCustom 相同 —— 改写会改变渠道画像，代价该由选择改写的人承担。
+	// 代价是仍可能撞上模板句指纹误报，此时由降级机制（见 gate.go）兜底。
 	ModePassthrough = "passthrough"
 	// ModeAppend 叠加模式：保留客户端的 system / developer，在其后追加一条网关 system。
 	//

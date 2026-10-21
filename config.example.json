@@ -101,9 +101,9 @@
     "sanitize_blacklist_fingerprints": true
   },
   "prompt": {
-    "_comment_mode": "mode is one of three values: custom (default) = replace the client system/developer messages with the gateway prompt, which removes that fingerprint source entirely | append = keep the client system/developer messages and add one gateway system message after them; the client's template lines stay in the request, so fingerprints are only mitigated by the appended text plus the sanitize layer and a residual 400 is possible (falls back to the degraded prompt and retries) | passthrough = forward the client system untouched. Empty mode = custom.",
+    "_comment_mode": "mode is one of three values: passthrough (default) = replace the client system/developer messages with the gateway prompt, which removes that fingerprint source entirely | append = keep the client system/developer messages and add one gateway system message after them; the client's template lines stay in the request, so fingerprints are only mitigated by the appended text plus the sanitize layer and a residual 400 is possible (falls back to the degraded prompt and retries) | passthrough = forward the client system untouched. Empty mode = passthrough.",
     "_comment_file": "file: empty = use the built-in default persona (about 2KB; combining it with mode=append costs double tokens and stacks two personas). A missing, unreadable or empty file aborts startup, and so does a prompt whose text matches the sanitize fingerprint table - it would be rewritten before sending, so what you configure would not be what the upstream receives. The NAIBOX_PROMPT_MODE environment variable overrides mode at startup (rollback switch, e.g. NAIBOX_PROMPT_MODE=passthrough).",
-    "mode": "custom",
+    "mode": "passthrough",
     "file": ""
   },
   "upstash": {

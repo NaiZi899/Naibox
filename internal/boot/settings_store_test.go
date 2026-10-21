@@ -327,15 +327,15 @@ func TestPromptSettingsRoundTrip(t *testing.T) {
 	}
 
 	// 配置文件里没写 prompt.mode（最常见的新装形态）：cfg.Prompt.Mode 为空，
-	// 但启动归一算出了生效值 custom。
+	// 但启动归一算出了生效值 passthrough（2026-10 起的默认）。
 	cfg := &Config{}
-	cfg.PromptMode = prompt.ModeCustom
+	cfg.PromptMode = prompt.ModePassthrough
 	st := settingsStoreForTest(t, cfg)
 
 	// 0) 回显：空串必须回落成生效模式，否则下发什么就被回灌什么
-	if got := st.currentSettings().PromptMode; got != prompt.ModeCustom {
+	if got := st.currentSettings().PromptMode; got != prompt.ModePassthrough {
 		t.Fatalf("currentSettings().PromptMode = %q，want %q —— "+
-			"空串会被前端原样回灌，撞上保存校验的第一条", got, prompt.ModeCustom)
+			"空串会被前端原样回灌，撞上保存校验的第一条", got, prompt.ModePassthrough)
 	}
 
 	// 1) parse：json tag 对不上就会静默丢弃（这里同时守 tag 名）
@@ -358,7 +358,7 @@ func TestPromptSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("内存 cfg.Prompt = %q / %q，want %q / %q",
 			cfg.Prompt.Mode, cfg.Prompt.File, prompt.ModeAppend, pfile)
 	}
-	if cfg.PromptMode != prompt.ModeCustom {
+	if cfg.PromptMode != prompt.ModePassthrough {
 		t.Fatalf("applyToMemory 动了生效模式（%q）—— 语义是「保存后重启生效」，"+
 			"这里重载会让界面显示已生效而出站仍是旧词", cfg.PromptMode)
 	}

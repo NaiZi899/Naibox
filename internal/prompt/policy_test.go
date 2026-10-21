@@ -120,12 +120,12 @@ func TestInjectTruthTable(t *testing.T) {
 			wantClientCount: 0,
 		},
 		{
-			name:            "空 mode 非降级：落 custom",
+			// 空 mode = 没配置 = 不改写。2026-10 起这是产品默认值，
+			// 与 passthrough 同格（理由见 policy.go 的真值表注释）。
+			name:            "空 mode 非降级：透传",
 			mode:            "",
-			wantFirst:       testOwnPrompt,
-			wantRoles:       []string{"system", "user"},
-			wantOwnCount:    1,
-			wantClientCount: 0,
+			identical:       true,
+			wantClientCount: 1,
 		},
 		{
 			name:            "空 mode 降级期：换中性提示词",

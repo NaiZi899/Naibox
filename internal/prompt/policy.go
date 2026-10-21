@@ -39,27 +39,28 @@ type Profile struct {
 // 真值表（这是本包的验收线）：
 //
 //	Mode                     degraded=false            degraded=true
-//	ModePassthrough          body 原样                 Rewrite(body, Degraded)
+//	ModePassthrough / 空      body 原样                 Rewrite(body, Degraded)
 //	ModeAppend               Append(body, p.Text)      Rewrite(body, Degraded)
-//	ModeCustom / 空 / 未知   Rewrite(body, p.Text)     Rewrite(body, Degraded)
+//	ModeCustom / 其它未知值   Rewrite(body, p.Text)     Rewrite(body, Degraded)
 //
-// # 为什么空串与未知值都落到 custom
+// # 空 mode 为什么落 passthrough
 //
-// 配置项写错（拼写、大小写、旧版本残留）时，唯一安全的默认是"用网关自有提示词
-// 整体替换"：它一定会消除 system 来源的指纹。若默认落到 passthrough，
-// 写错的配置会变成一个完全静默的失败 —— 网关照常转发，只是功能一点没生效，
-// 而用户看到的现象是"偶发 400"，与配置无关的样子。
+// 配置缺省（没有 prompt 段、或 prompt.mode 为空）代表"这个部署没有选择任何
+// 改写姿势"，那就一个字节都不动 —— 这是 2026-10 调整后的产品默认值：
+// 改写会改变上游看到的渠道画像，而上游按累积采样判定，代价要由选择改写的人承担，
+// 不该由"什么都没配"的人默认承担。
 //
-// # 为什么先判降级再判 mode
+// # 未知值为什么仍然落 custom
 //
-// 降级状态压过用户选择：降级期已经确认过"当前提示词形态会被拦"，
-// 再按 mode 走一遍只是把已知的失败重演一次。
+// 拼错（"passtrhu"）与"没配置"是两件事：前者说明用户明确想做点什么，
+// 静默变成透传会让"我明明配了"变成无从对证的话。配置层已经在启动时对未知值
+// 报错，这里的兜底只是最后一道防线，选"仍然改写"而不是"什么都不做"。
 func Inject(body []byte, p Profile, degraded bool) []byte {
 	if degraded {
 		return Rewrite(body, Degraded)
 	}
 	switch p.Mode {
-	case ModePassthrough:
+	case "", ModePassthrough:
 		return body
 	case ModeAppend:
 		return Append(body, p.Text)

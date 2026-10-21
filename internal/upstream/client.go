@@ -197,12 +197,13 @@ type Client struct {
 	// SanitizeFingerprints 出站请求体黑名单指纹脱敏开关（默认 true；false 完全还原）。
 	SanitizeFingerprints bool
 
-	// PromptMode 系统提示词模式：prompt.ModeCustom（默认）/ prompt.ModePassthrough。
+	// PromptMode 系统提示词模式：prompt.ModePassthrough（默认）/ prompt.ModeCustom /
+	// prompt.ModeAppend。
 	//
-	// 空串按 custom 处理（与配置缺省一致）：从源头消灭 system/developer 来源的
-	// 指纹误报。见 internal/prompt 包注释里两层防护的分工。
+	// 空串按 passthrough 处理（与配置缺省一致，见 prompt.Inject 的真值表）：
+	// 没配过就不改写，一个字节都不动。
 	PromptMode string
-	// PromptText 生效的系统提示词文本（custom 模式下替换客户端 system/developer）。
+	// PromptText 生效的系统提示词文本（custom 替换 / append 追加时使用）。
 	//
 	// 空串时回落 prompt.Default()，而不是"什么都不做" ——
 	// 后者会让"装配漏了注入"变成一个完全静默的功能失效。
@@ -366,8 +367,9 @@ func (c *Client) prepareBody(body []byte) []byte {
 // # 路由规则只有一份
 //
 // mode × 降级状态的组合已经收进 prompt.Inject（见 internal/prompt/policy.go
-// 的真值表）。本函数只负责两件**装配层**的事：把空 mode 归一成 custom、
-// 把空正文回落成内置默认 —— 然后交给那唯一的策略函数。
+// 的真值表）。本函数只负责一件**装配层**的事：把空正文回落成内置默认，
+// 然后交给那唯一的策略函数。空 mode 不再在这里归一 —— 它的语义（透传）
+// 由策略函数回答，免得同一件事在两处各有一份答案。
 //
 // 之所以不在这里自己写 switch：早先 custom/passthrough 两态时各写一遍是可行的，
 // 一旦加上 append，"降级期 append 该怎么办"就会在调用方和提示词包各有一份答案，
@@ -389,9 +391,6 @@ func (c *Client) applyPrompt(body []byte) []byte {
 		return body
 	}
 	mode := c.PromptMode
-	if mode == "" {
-		mode = prompt.ModeCustom // 配置缺省 = custom
-	}
 	text := c.PromptText
 	if text == "" {
 		text = prompt.Default()
