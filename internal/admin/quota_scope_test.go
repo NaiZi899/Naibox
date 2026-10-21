@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/NaiZi899/Naibox/internal/auth"
@@ -13,13 +14,38 @@ import (
 	"github.com/NaiZi899/Naibox/internal/pool"
 )
 
+// askLog 记录"被问了哪些 uid"，并发安全。
+//
+// # 为什么必须加锁（这条用例曾经随机红）
+//
+// 全池刷新是**并发**跑的，多个 goroutine 同时进 RefreshQuota。
+// 早先这里直接 `*asked = append(*asked, uid)`，并发 append 会丢条目 ——
+// 断言"被刷的 3 个"时随机只看到 1~2 个，看起来像后端作用域写错，
+// 实际是测试自己吃了数据竞争。锁保护的是断言的可信度。
+type askLog struct {
+	mu   sync.Mutex
+	uids []string
+}
+
+func (l *askLog) add(uid string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.uids = append(l.uids, uid)
+}
+
+func (l *askLog) list() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.uids...)
+}
+
 // quotaScopeStub 一个实现了 QuotaExt 的桩上游，记录**被问了哪些 uid**。
 //
 // 这正是本组用例要断言的：作用域对不对，等价于"问了哪些 uid"。
 type quotaScopeStub struct {
 	id string
 	// asked 记录 RefreshQuota 收到的 uid（按调用顺序）。
-	asked *[]string
+	asked *askLog
 }
 
 func (s quotaScopeStub) ID() string               { return s.id }
@@ -31,17 +57,17 @@ func (s quotaScopeStub) Models(context.Context, gateway.Credential) ([]gateway.M
 	return nil, nil
 }
 func (s quotaScopeStub) RefreshQuota(uid string) (gateway.QuotaView, bool) {
-	*s.asked = append(*s.asked, uid)
+	s.asked.add(uid)
 	return gateway.CreditsQuota(123), true
 }
 
 // newScopeFixture 造一个含两个上游、三个账号的池 + registry。
 //
 //	alpha: a1, a2      beta: b1
-func newScopeFixture(t *testing.T) (*Handler, *[]string) {
+func newScopeFixture(t *testing.T) (*Handler, *askLog) {
 	t.Helper()
 	reg := gateway.NewRegistry()
-	asked := &[]string{}
+	asked := &askLog{}
 	if err := reg.Register(quotaScopeStub{id: "alpha", asked: asked}); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +118,7 @@ func TestQuotaRefreshScopeAccount(t *testing.T) {
 	if out["scope"] != "account" {
 		t.Errorf("scope = %v，want account", out["scope"])
 	}
-	if got := *asked; len(got) != 1 || got[0] != "a1" {
+	if got := asked.list(); len(got) != 1 || got[0] != "a1" {
 		t.Errorf("被刷的 uid = %v，want 只有 [a1] —— "+
 			"行内按钮必须只刷该账号；刷到别人就是用户报的那个 bug", got)
 	}
@@ -111,7 +137,7 @@ func TestQuotaRefreshScopeProvider(t *testing.T) {
 	if out["scope"] != "provider" {
 		t.Errorf("scope = %v，want provider", out["scope"])
 	}
-	got := *asked
+	got := asked.list()
 	if len(got) != 2 {
 		t.Fatalf("被刷的 uid = %v，want alpha 的 2 个（a1 a2）—— "+
 			"按上游刷新不该动别的上游（b1）", got)
@@ -138,7 +164,7 @@ func TestQuotaRefreshScopeAll(t *testing.T) {
 	if out["scope"] != "all" {
 		t.Errorf("scope = %v，want all", out["scope"])
 	}
-	if got := *asked; len(got) != 3 {
+	if got := asked.list(); len(got) != 3 {
 		t.Errorf("被刷的 uid = %v，want 全部 3 个 —— "+
 			"不带参数必须保持改造前的全池语义", got)
 	}
@@ -157,7 +183,7 @@ func TestQuotaRefreshScopeQueryParams(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if got := *asked; len(got) != 1 || got[0] != "a2" {
+	if got := asked.list(); len(got) != 1 || got[0] != "a2" {
 		t.Errorf("query 形式被刷的 uid = %v，want [a2] —— "+
 			"query 与 body 必须等价（否则脚本调用会静默刷全池）", got)
 	}
@@ -178,8 +204,8 @@ func TestQuotaRefreshUnknownUIDIs404(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("HTTP %d，want 404（账号不存在）", rec.Code)
 	}
-	if len(*asked) != 0 {
-		t.Errorf("404 时不该刷任何账号，实际刷了 %v", *asked)
+	if len(asked.list()) != 0 {
+		t.Errorf("404 时不该刷任何账号，实际刷了 %v", asked.list())
 	}
 }
 
@@ -208,7 +234,7 @@ func TestQuotaRefreshUIDWinsOverProvider(t *testing.T) {
 	if out["scope"] != "account" {
 		t.Errorf("scope = %v，want account —— uid 更具体，应当优先", out["scope"])
 	}
-	if got := *asked; len(got) != 1 || got[0] != "a1" {
+	if got := asked.list(); len(got) != 1 || got[0] != "a1" {
 		t.Errorf("被刷的 uid = %v，want 只有 [a1]", got)
 	}
 }
