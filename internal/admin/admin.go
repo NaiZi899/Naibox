@@ -340,6 +340,10 @@ func New(cfg Config) *Handler {
 	h.register("PUT /admin/custom-upstreams", h.customUpstreamsUpdate)
 	h.register("POST /admin/custom-upstreams/test", h.customUpstreamsTest)
 
+	// 关于页：内容在编译期嵌入 about.json；外链交给系统浏览器打开。
+	h.register("GET /admin/about", h.aboutInfo)
+	h.register("POST /admin/open-url", h.openURL)
+
 	// 核心调度相关的两条只读端点。
 	//
 	// # 为什么它们在通用段（而不是由上游自注册）

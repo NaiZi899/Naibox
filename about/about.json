@@ -1,0 +1,15 @@
+{
+  "name": "NaiBox",
+  "tagline": "把多个 AI 上游收进一个本地网关",
+  "intro": [
+    "NaiBox 把多个 AI 上游账号聚合成一个 OpenAI 兼容的 base_url 和 api_key。应用只认 OpenAI 协议，选号、额度、冷却与续期由网关处理。",
+    "桌面版双击即用，服务端可以长期跑在服务器或 Docker 里，两边共用同一套装配和配置。"
+  ],
+  "project_url": "https://github.com/NaiZi899/Naibox",
+  "recommended": [
+    {
+      "name": "multi2api",
+      "url": "https://github.com/Practice019/multi2api"
+    }
+  ]
+}

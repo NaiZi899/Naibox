@@ -344,6 +344,14 @@
     padding:5px 0;border-bottom:1px solid var(--line)}
   .kvs .k{color:var(--dim)}
   .kvs .v{font-weight:600;word-break:break-all;text-align:right}
+  /* 嵌套对象单独占一整行。
+     塞进 minmax(220px,1fr) 的单元格里时，探测结果这类 5 行子表会把所在行
+     整体拉高，左边只有一两行标量字段，右边挂着一大块卡片，版面像被切开。
+     占满一行后它落在标量字段下方，子表本身限宽，避免值被推到屏幕另一端。 */
+  .kvs .kv.wide{grid-column:1/-1;display:block}
+  .kvs .kv.wide > .k{display:block}
+  .kvs .kv.wide > .v{display:block;width:100%;max-width:560px;text-align:left;margin-top:2px}
+  .kvs .kv.wide .kvs.nested{margin-top:0}
   .content > section{display:none}
   .content > section.active{display:block}
   @media (max-width:820px){
@@ -424,6 +432,22 @@
   .keyfield button{position:absolute;right:4px;top:50%;transform:translateY(-50%);
     padding:2px 8px;font-size:11px;background:transparent;border-color:transparent;color:var(--dim)}
   .keyfield button:hover{color:var(--acc);border-color:transparent}
+  /* 关于软件 */
+  .about-hero{display:flex;align-items:center;gap:16px;padding:4px 0 18px;border-bottom:1px solid var(--line)}
+  .about-icon{width:64px;height:64px;border-radius:16px;flex:none}
+  .about-name{font-size:22px;font-weight:700;letter-spacing:.2px}
+  .about-tagline{margin-top:4px;font-size:13px;color:var(--dim)}
+  .about-intro{max-width:760px;margin-top:16px;font-size:13px;line-height:1.9}
+  .about-intro p{margin:0 0 12px}
+  .about-actions{margin-top:18px}
+  .about-friends{margin-top:28px}
+  .about-friends h3{margin:0 0 10px;font-size:12px;font-weight:650;letter-spacing:.6px;color:var(--dim)}
+  .friend-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+  .friend-card{display:flex;flex-direction:column;align-items:flex-start;gap:4px;
+    padding:12px 14px;text-align:left;background:var(--panel2);border:1px solid var(--line);border-radius:10px}
+  .friend-card:hover{border-color:var(--acc)}
+  .friend-name{font-size:13px;font-weight:600;color:var(--fg)}
+  .friend-url{font-size:11px;color:var(--dim);font-family:var(--mono);word-break:break-all}
   fieldset{border:1px solid var(--line);border-radius:10px;padding:14px;margin:0 0 16px}
   legend{font-size:12px;color:var(--dim);padding:0 8px;letter-spacing:.4px}
   /* 设置页重设计（用户本轮要求）新增的呈现类：生效时机徽章 / 组内子块 / 信息条 */
@@ -1263,6 +1287,16 @@
         <legend>运行信息 <span class="badge badge--ro">只读</span></legend>
         <dl id="setReadonly"></dl>
       </fieldset>
+    </div>
+  </section>
+
+  <!-- 关于软件。
+       内容来自编译期嵌入的 about/about.json（服务端 /admin/about），
+       这里只负责排版；改介绍、项目地址或推荐项目不需要动这段 HTML。 -->
+  <section data-key="about">
+    <h2>关于软件</h2>
+    <div class="body">
+      <div id="aboutBody"><p class="dim">加载中…</p></div>
     </div>
   </section>
 
@@ -4914,6 +4948,8 @@ let loginProvider = '';
     }
     if (key === 'settings') loadSettings();
     if (key === 'apikeys') loadAPIKeys();
+    // 关于页只在打开时拉一次，内容很小，但同样遵守按需加载。
+    if (key === 'about') loadAbout();
     // 自定义上游：**按需**拉（不进 boot）。
     //
     // 理由与 stats/series、日志同一条纪律：看不见的面板不产生流量。
@@ -5486,6 +5522,8 @@ let loginProvider = '';
     shards: '分片数',
     key_tail: '密钥尾号',
     probe: '最近探测',
+    ok: '可用',
+    at: '探测时刻',
     latency_ms: '延迟（ms）',
   };
 
@@ -5542,9 +5580,12 @@ let loginProvider = '';
     // 纯对象 → 键值对。嵌套对象递归展开（见 kvValueHTML），
     // 不再把整块 JSON 塞成一行代码 —— 那对用户等于没排版。
     if (typeof data === 'object') {
-      const kv = Object.entries(data).map(([k, v]) =>
-        `<div class="kv"><span class="k">${esc(kvLabel(k))}</span><span class="v">${kvValueHTML(k, v, 0)}</span></div>`
-      ).join('');
+      // 嵌套对象（探测结果等）加 wide：由 CSS 让它占满整行，
+      // 不再挤在 220px 的单元格里把整行拉高。
+      const kv = Object.entries(data).map(([k, v]) => {
+        const nested = v !== null && typeof v === 'object' && !Array.isArray(v);
+        return `<div class="kv${nested ? ' wide' : ''}"><span class="k">${esc(kvLabel(k))}</span><span class="v">${kvValueHTML(k, v, 0)}</span></div>`;
+      }).join('');
       return head + `<div class="kvs">${kv}</div>`;
     }
     return head + `<div class="mono">${esc(String(data))}</div>`;
@@ -6232,6 +6273,59 @@ let loginProvider = '';
     } finally {
       btn.disabled = false;
     }
+  }
+
+  // ---------------------------------------------------------------- 关于软件
+  //
+  // 数据来自 /admin/about（编译期嵌入 about/about.json）。
+  // 外链交给 /admin/open-url 走系统浏览器：控制台是 WebView2，
+  // 直接 target=_blank 有把页面导航走的风险。
+  async function loadAbout() {
+    const host = $('aboutBody');
+    if (!host) return;
+    try {
+      const d = await admin('/admin/about');
+      const intro = (d.intro || []).map(p => `<p>${esc(p)}</p>`).join('');
+      const friends = (d.recommended || []).map(f =>
+        `<button type="button" class="friend-card" data-about-url="${escAttr(f.url)}">
+           <span class="friend-name">${esc(f.name)}</span>
+           <span class="friend-url">${esc(f.url)}</span>
+         </button>`).join('');
+      host.innerHTML = `
+        <div class="about-hero">
+          <img class="about-icon" src="/favicon.svg" alt="">
+          <div>
+            <div class="about-name">${esc(d.name)}</div>
+            <div class="about-tagline">${esc(d.tagline)}</div>
+          </div>
+        </div>
+        <div class="about-intro">${intro}</div>
+        <div class="about-actions">
+          <button type="button" class="primary" data-about-url="${escAttr(d.project_url)}">打开项目地址</button>
+        </div>
+        ${friends ? `<div class="about-friends"><h3>推荐项目</h3><div class="friend-grid">${friends}</div></div>` : ''}`;
+    } catch (e) {
+      host.innerHTML = `<p class="err">读取失败：${esc((e && e.message) || e)}</p>`;
+    }
+  }
+
+  async function openAboutURL(url) {
+    if (!url) return;
+    try {
+      await admin('/admin/open-url', { method: 'POST', body: JSON.stringify({ url }) });
+    } catch (e) {
+      toast('打开链接失败：' + ((e && e.message) || e), true);
+    }
+  }
+
+  // 事件委托只绑一次（关于页的按钮由 loadAbout 整块重绘）。
+  function installAboutActions() {
+    const host = $('aboutBody');
+    if (!host) return;
+    host.addEventListener('click', ev => {
+      const b = ev.target.closest('[data-about-url]');
+      if (b) openAboutURL(b.dataset.aboutUrl);
+    });
   }
 
   // ---------------------------------------------------------------- 自定义上游
@@ -10048,6 +10142,7 @@ let multCatalogFailed = false;
       $('cfKeyToggle').textContent = show ? '隐藏' : '显示';
     };
     installCustomUpstreamActions();
+    installAboutActions();
 
     // 导航最后构建：此时所有 section 都已在 DOM 里。
     //
