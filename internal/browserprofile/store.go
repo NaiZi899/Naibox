@@ -58,6 +58,20 @@ type Profile struct {
 
 	// StartURL 启动时打开的地址（空 = about:blank）。
 	StartURL string `json:"start_url,omitempty"`
+	// Fingerprint 这套档案的指纹参数（nil = 不启用）。
+	//
+	// 只有"认识 --fingerprint-* 的变体"才吃这些参数；原版 Chrome/Edge 会静默
+	// 忽略，所以启动前会先探测（见 fingerprint.go 的 SupportsFingerprint）。
+	Fingerprint *Fingerprint `json:"fingerprint,omitempty"`
+
+	// BrowserPath 该档案固定用哪个浏览器可执行文件（空 = 用 login.browser 或自动探测）。
+	//
+	// # 为什么档案级而不是全局
+	//
+	// 指纹变体往往是单独下载的一份 chromium，而用户平时用的是 Edge/Chrome。
+	// 全局只留一个路径的话，"指纹档案"与"普通档案"没法共存。
+	BrowserPath string `json:"browser_path,omitempty"`
+
 	// ExtraArgs 追加参数（排障用：--window-size / --lang 等）。
 	//
 	// ⚠ 不允许覆盖 --user-data-dir / --proxy-server：那两个由档案与线路决定，

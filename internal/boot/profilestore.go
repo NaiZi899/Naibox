@@ -92,8 +92,23 @@ func (s *profileStore) viewOf(p browserprofile.Profile, idx map[string]admin.Egr
 	v := admin.BrowserProfileView{
 		ID: p.ID, UID: p.UID, Provider: p.Provider, Label: p.Label,
 		EgressID: p.EgressID, StartURL: p.StartURL, ExtraArgs: p.ExtraArgs,
+		BrowserPath: p.BrowserPath, Fingerprint: p.Fingerprint,
 		LastURL: p.LastURL, DebugPort: p.LastDebugPort,
 		Dir: s.store.UserDataDir(p),
+	}
+	// 有指纹才需要探测（读二进制，有缓存，但白跑没必要）。
+	if p.Fingerprint != nil && !p.Fingerprint.Empty() {
+		exe := s.browserPathOf(p)
+		v.BrowserName = s.browserNameOf(p)
+		if ok, ferr := browserprofile.SupportsFingerprint(exe); ferr != nil {
+			v.FingerprintNote = "无法确认浏览器是否支持指纹参数: " + ferr.Error()
+		} else if ok {
+			v.FingerprintOK = true
+			v.FingerprintNote = "当前浏览器支持 --fingerprint-* 参数"
+		} else {
+			v.FingerprintNote = v.BrowserName + " 不认识 --fingerprint-*：这些参数会被静默忽略，" +
+				"请把「浏览器」指向 fingerprint-chromium 那类变体"
+		}
 	}
 	if !p.CreatedAt.IsZero() {
 		v.CreatedAt = p.CreatedAt.Format(time.RFC3339)
@@ -126,13 +141,15 @@ func (s *profileStore) probeBrowser() admin.BrowserProbeView {
 
 // profilePatch 提交的档案补丁。
 type profilePatch struct {
-	ID        string   `json:"id"`
-	UID       string   `json:"uid"`
-	Provider  string   `json:"provider"`
-	Label     string   `json:"label"`
-	EgressID  string   `json:"egress_id"`
-	StartURL  string   `json:"start_url"`
-	ExtraArgs []string `json:"extra_args"`
+	ID          string                      `json:"id"`
+	UID         string                      `json:"uid"`
+	Provider    string                      `json:"provider"`
+	Label       string                      `json:"label"`
+	EgressID    string                      `json:"egress_id"`
+	StartURL    string                      `json:"start_url"`
+	ExtraArgs   []string                    `json:"extra_args"`
+	BrowserPath string                      `json:"browser_path"`
+	Fingerprint *browserprofile.Fingerprint `json:"fingerprint"`
 }
 
 // Upsert 新建/更新档案；绑 uid 时把账号名一并写进 Label。
@@ -180,10 +197,39 @@ func (s *profileStore) Upsert(ctx context.Context, raw json.RawMessage) (admin.B
 		}
 	}
 
+	// 指纹参数：先归一（范围/字符合法），再问一句"这个浏览器吃不吃"。
+	//
+	// # 为什么保存时就拒，而不是等到启动
+	//
+	// "保存成功 → 点启动才报错"会让用户以为配好了。这里在保存时就把话说明白：
+	// 原版 Chrome/Edge 不认识 --fingerprint-*，参数会被静默忽略。
+	if patch.Fingerprint != nil {
+		if patch.Fingerprint.Empty() {
+			patch.Fingerprint = nil
+		} else if err := patch.Fingerprint.Normalize(); err != nil {
+			return admin.BrowserProfileView{}, fmt.Errorf("指纹参数非法: %w", err)
+		}
+	}
+	if patch.Fingerprint != nil {
+		probeProfile := browserprofile.Profile{ID: patch.ID, BrowserPath: patch.BrowserPath}
+		exe := s.browserPathOf(probeProfile)
+		name := s.browserNameOf(probeProfile)
+		ok, ferr := browserprofile.SupportsFingerprint(exe)
+		if ferr != nil {
+			return admin.BrowserProfileView{}, fmt.Errorf("无法确认 %s 是否支持指纹参数: %w", name, ferr)
+		}
+		if !ok {
+			return admin.BrowserProfileView{}, fmt.Errorf(
+				"%s 不认识 --fingerprint-*：这些参数会被静默忽略，等于指纹没变。"+
+					"请在「浏览器」里填 fingerprint-chromium 那类变体的绝对路径，或清空指纹设置", name)
+		}
+	}
+
 	prev, had := s.store.Get(patch.ID)
 	next := browserprofile.Profile{
 		ID: patch.ID, UID: patch.UID, Provider: patch.Provider, Label: patch.Label,
 		EgressID: patch.EgressID, StartURL: patch.StartURL, ExtraArgs: patch.ExtraArgs,
+		BrowserPath: patch.BrowserPath, Fingerprint: patch.Fingerprint,
 	}
 	if had {
 		// 保留记账字段：它们由启动路径写，不该被一次编辑清掉。
@@ -221,13 +267,9 @@ func (s *profileStore) Launch(ctx context.Context, id, url string) (admin.Launch
 	if url == "" {
 		url = p.StartURL
 	}
-	explicit := ""
-	if s.cfg != nil {
-		explicit = s.cfg.Login.Browser
-	}
 	opts := browserprofile.Options{
 		URL:       url,
-		Explicit:  explicit,
+		Explicit:  s.browserPathOf(p),
 		ExtraArgs: p.ExtraArgs,
 	}
 	if p.EgressID != "" {
@@ -328,4 +370,33 @@ func sortAccounts(list []admin.EgressAccountView) {
 			list[j], list[j-1] = list[j-1], list[j]
 		}
 	}
+}
+
+// browserPathOf 该档案实际会用的浏览器可执行文件。
+//
+// 优先级：档案级 BrowserPath → 全局 login.browser → 自动探测。
+// 探测失败时返回空串，让 SupportsFingerprint 去报"读不到"而不是在这里 panic。
+func (s *profileStore) browserPathOf(p browserprofile.Profile) string {
+	explicit := strings.TrimSpace(p.BrowserPath)
+	if explicit == "" && s.cfg != nil {
+		explicit = s.cfg.Login.Browser
+	}
+	l, err := browseropen.Resolve(runtime.GOOS, explicit, nil)
+	if err != nil {
+		return ""
+	}
+	return l.Path
+}
+
+// browserNameOf 该档案实际会用的浏览器展示名（"Microsoft Edge" / "Google Chrome"）。
+func (s *profileStore) browserNameOf(p browserprofile.Profile) string {
+	explicit := strings.TrimSpace(p.BrowserPath)
+	if explicit == "" && s.cfg != nil {
+		explicit = s.cfg.Login.Browser
+	}
+	l, err := browseropen.Resolve(runtime.GOOS, explicit, nil)
+	if err != nil {
+		return "未找到浏览器"
+	}
+	return l.Name
 }

@@ -186,3 +186,100 @@ func TestProfileOpenDirWithoutDesktop(t *testing.T) {
 		t.Fatalf("错误信息应当说明形态限制，实际 %q", err.Error())
 	}
 }
+
+// fakeVariantExe 造一个"像变体"的可执行文件：里面带 --fingerprint-* 的开关字符串。
+// 探测看的就是这些字符串，所以不需要真的跑它。
+func fakeVariantExe(t *testing.T, dir string, variant bool) string {
+	t.Helper()
+	path := filepath.Join(dir, map[bool]string{true: "variant.exe", false: "plain.exe"}[variant])
+	body := "MZ fake browser binary"
+	if variant {
+		body += "\x00--fingerprint-canvas-noise\x00--fingerprint-platform=Win32"
+	}
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestProfileFingerprintRequiresVariant 原版浏览器 + 指纹参数 = 保存时就拒。
+//
+// 这条守的是最难查的失败形态：参数被静默忽略，窗口照开，指纹没变。
+func TestProfileFingerprintRequiresVariant(t *testing.T) {
+	ps, root := newProfileFixture(t)
+	plain := fakeVariantExe(t, root, false)
+	body := `{"id":"p1","browser_path":` + bodyQuote(plain) +
+		`,"fingerprint":{"canvas_noise":true}}`
+	_, err := ps.Upsert(context.Background(), json.RawMessage(body))
+	if err == nil {
+		t.Fatal("原版浏览器不该允许保存指纹参数")
+	}
+	if !strings.Contains(err.Error(), "变体") {
+		t.Fatalf("错误信息应当指向变体，实际 %q", err.Error())
+	}
+}
+
+// TestProfileFingerprintWithVariant 变体上保存成功，并把"支持"如实回给界面。
+func TestProfileFingerprintWithVariant(t *testing.T) {
+	ps, root := newProfileFixture(t)
+	variant := fakeVariantExe(t, root, true)
+	body := `{"id":"p1","browser_path":` + bodyQuote(variant) +
+		`,"fingerprint":{"canvas_noise":true,"screen_width":1920,"lang":"zh-CN"}}`
+	view, err := ps.Upsert(context.Background(), json.RawMessage(body))
+	if err != nil {
+		t.Fatalf("变体上应当保存成功: %v", err)
+	}
+	if view.Fingerprint == nil || view.Fingerprint.ScreenWidth != 1920 {
+		t.Fatalf("指纹没存进档案: %+v", view.Fingerprint)
+	}
+	if !view.FingerprintOK {
+		t.Fatalf("应当报支持: %+v", view)
+	}
+	if !strings.Contains(view.FingerprintNote, "支持") {
+		t.Fatalf("说明文字不对: %q", view.FingerprintNote)
+	}
+	// 启动参数里真的带上（不启动进程，只看 Plan）
+	p, _ := ps.store.Get("p1")
+	cmd, err := browserprofile.Plan("linux", p, t.TempDir(), browserprofile.Options{Explicit: variant})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joined, "--fingerprint-canvas-noise") || !strings.Contains(joined, "--fingerprint-screen-width=1920") {
+		t.Fatalf("指纹参数没进命令行: %v", cmd.Args)
+	}
+}
+
+// TestProfileFingerprintRejectsBadValues 越界值在保存时就拒。
+func TestProfileFingerprintRejectsBadValues(t *testing.T) {
+	ps, root := newProfileFixture(t)
+	variant := fakeVariantExe(t, root, true)
+	body := `{"id":"p1","browser_path":` + bodyQuote(variant) +
+		`,"fingerprint":{"screen_width":100}}`
+	_, err := ps.Upsert(context.Background(), json.RawMessage(body))
+	if err == nil || !strings.Contains(err.Error(), "指纹参数非法") {
+		t.Fatalf("越界屏幕宽度应当被拒，实际 %v", err)
+	}
+}
+
+// TestProfileFingerprintEmptyBecomesNil 前端传一个空对象等于"不启用指纹"。
+func TestProfileFingerprintEmptyBecomesNil(t *testing.T) {
+	ps, _ := newProfileFixture(t)
+	view, err := ps.Upsert(context.Background(), json.RawMessage(`{"id":"p1","fingerprint":{}}`))
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if view.Fingerprint != nil {
+		t.Fatalf("空指纹应当存成 nil，实际 %+v", view.Fingerprint)
+	}
+	p, _ := ps.store.Get("p1")
+	if p.Fingerprint != nil {
+		t.Fatalf("档案里也不该留一个空指纹对象: %+v", p.Fingerprint)
+	}
+}
+
+// bodyQuote 把路径安全地包成 JSON 字符串（Windows 反斜杠要转义）。
+func bodyQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}

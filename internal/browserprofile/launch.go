@@ -79,6 +79,8 @@ func (c Cmd) Argv() []string {
 // Chrome 在 --user-data-dir 指向不存在的路径时行为依版本而异，
 // 有的会静默改用默认 profile，那样"独立档案"就静默失效了）。
 func Plan(goos string, p Profile, userDataDir string, opts Options) (Cmd, error) {
+	// 归属优先：档案上钉死的 BrowserPath（由调用方塞进 opts.Explicit）→
+	// 全局 login.browser → 自动探测。指纹档案与普通档案因此可以共存。
 	launcher, err := browseropen.Resolve(goos, opts.Explicit, opts.Lookup)
 	if err != nil {
 		return Cmd{}, err
@@ -104,6 +106,12 @@ func Plan(goos string, p Profile, userDataDir string, opts Options) (Cmd, error)
 			return Cmd{}, err
 		}
 		args = append(args, "--proxy-server="+opts.ProxyURL)
+	}
+	// 指纹参数来自档案（固化），排在用户附加参数之前 —— 附加参数里若真写了
+	// 同名开关，后写的生效，用户仍有最终决定权（Plan 只挡 --user-data-dir
+	// 与 --proxy-server 这两个会破坏"档案/线路"语义的）。
+	if p.Fingerprint != nil {
+		args = append(args, p.Fingerprint.Args()...)
 	}
 	args = append(args, opts.ExtraArgs...)
 
@@ -160,6 +168,18 @@ func Open(s *Store, p Profile, opts Options) (Cmd, error) {
 	cmd, err := Plan(runtime.GOOS, p, dir, opts)
 	if err != nil {
 		return Cmd{}, err
+	}
+	// 指纹参数只对"变体"有效；原版会静默忽略。宁可在启动前拒绝，
+	// 也不开一个"看起来配好了、指纹其实没变"的窗口。
+	if p.Fingerprint != nil && !p.Fingerprint.Empty() {
+		ok, serr := SupportsFingerprint(cmd.Path)
+		if serr != nil {
+			return cmd, fmt.Errorf("无法确认 %s 是否支持指纹参数: %w", cmd.Browser, serr)
+		}
+		if !ok {
+			return cmd, fmt.Errorf("%s 不是支持 --fingerprint-* 的浏览器变体：这些参数会被静默忽略，"+
+				"等于指纹没变。请在档案里把「浏览器」指向 fingerprint-chromium 那类变体，或清空指纹设置", cmd.Browser)
+		}
 	}
 	if err := starter(cmd.Path, cmd.Argv()); err != nil {
 		return cmd, fmt.Errorf("启动 %s 失败: %w", cmd.Browser, err)

@@ -117,6 +117,10 @@ tasks/
 #   git check-ignore -v <文件>   # exit 0 = 会被忽略 = 构建必挂
 !internal/prompt/defaultprompt.md
 
+# 使用说明（关于页展示的那份）同样是 **go:embed 的编译输入**，不是文档。
+# 被 `*.md` 挡住的后果与上面那条一模一样：本机能 build，干净签出必挂。
+!internal/about/manual.md
+
 # 编辑器/工具留下的备份与「写错目标名」的编译产物。
 # 实测出现过 omni2api-server.exe~（13 MB）：某次 go build -o 的目标名
 # 多打了一个 ~，于是编译器把它当成一个**新文件**建出来，

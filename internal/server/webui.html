@@ -438,6 +438,37 @@
   .about-name{font-size:22px;font-weight:700;letter-spacing:.2px}
   .about-tagline{margin-top:4px;font-size:13px;color:var(--dim)}
   .about-intro{max-width:760px;margin-top:16px;font-size:13px;line-height:1.9}
+  /* 使用说明（关于页内的 markdown 渲染结果）。
+     # 为什么单立一组样式而不是复用 .about-intro
+     说明书里有 h2/h3/列表/代码块，.about-intro 只描述段落；混用会让
+     "标题比正文小"这类排版事故出现。宽度收到 820px：长行读起来累。 */
+  .about-manual{max-width:820px;margin-top:22px;padding-top:16px;border-top:1px solid var(--line)}
+  .about-manual h3{font-size:13px;margin:0 0 10px;color:var(--fg);letter-spacing:.4px}
+  .about-manual h2{font-size:16px;margin:22px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .about-manual h4{font-size:13px;margin:16px 0 6px;color:var(--fg)}
+  .about-manual p{margin:8px 0;font-size:13px;line-height:1.85;color:var(--fg)}
+  .about-manual ul{margin:8px 0 8px 18px;padding:0}
+  .about-manual li{font-size:13px;line-height:1.85;margin:4px 0}
+  .about-manual code{font-family:var(--mono);font-size:12px;background:var(--code-bg);
+    border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+  .about-manual pre{background:var(--code-bg);border:1px solid var(--line);border-radius:9px;
+    padding:11px 13px;overflow:auto;margin:10px 0}
+  .about-manual pre code{background:transparent;border:0;padding:0;font-size:12.5px;line-height:1.7}
+  .about-manual a{color:var(--acc)}
+  .about-manual table{border-collapse:collapse;margin:10px 0;font-size:12.5px}
+  .about-manual th,.about-manual td{border:1px solid var(--line);padding:6px 10px;text-align:left}
+  /* 分页条：说明书 12 章一次铺开会把人淹掉，按「三章一页」切成 4 页。
+     # 为什么分页而不是折叠
+     折叠只能藏，不能减少"当前这一屏要读多少"；分页能让人一眼知道总量（第 3/4 页）。 */
+  .md-pager{display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+    margin:18px 0 2px;padding-top:12px;border-top:1px solid var(--line)}
+  .md-pager button{padding:3px 10px;font-size:12px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:7px;color:var(--fg);cursor:pointer}
+  .md-pager button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
+  .md-pager button:disabled{opacity:.4;cursor:not-allowed}
+  .md-pager .md-num{padding:3px 9px;font-family:var(--mono)}
+  .md-pager .md-num.on{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+  .md-pager .md-label{margin-left:auto;font-size:11.5px;color:var(--dim)}
   .about-intro p{margin:0 0 12px}
   .about-actions{margin-top:18px}
   .about-friends{margin-top:28px}
@@ -1703,6 +1734,26 @@
       <button id="btnProfileAdd" style="padding:3px 10px;font-size:12px">新建档案</button>
     </h2>
     <div class="body">
+      <!-- ⚠ 上手警示（用户要求写在明面上）。
+           # 为什么它必须在最上面
+           这一页的两种配置（档案、指纹）配错**都不会报错**：浏览器照开、页面照跑，
+           只是上游看到的"那台设备"和网关里这个号对不上，或者指纹参数被原版浏览器
+           静默丢掉 —— 两种都以"账号被风控"的形式结账，而用户完全不知道自己动过什么。
+           所以先把"不确定就别设"写在第一屏，而不是塞进折叠说明里。 -->
+      <div class="gbad" style="margin-bottom:14px;line-height:1.85">
+        <b>⚠ 不确定这一页是干什么的，就不要设置。</b>
+        档案与指纹配错不会报错，只会让上游看到的<b>设备</b>与网关里这个账号对不上，
+        或者让指纹参数被浏览器静默丢掉 —— 这两种都以「账号被风控」结账。
+        <br>
+        <b>请不要在这里做这几件事：</b>
+        ① 看到「指纹」就去填几个值试试 —— 不确定就<b>全部留空</b>（留空 = 不做伪装，最安全）；
+        ② 在「附加参数」里写 <code class="mono">--user-data-dir</code> 或
+        <code class="mono">--proxy-server</code>（这两个由档案与线路决定，手写会覆盖掉）；
+        ③ 给线路配带认证的代理（Chrome 不处理认证，设了也不生效）；
+        ④ 随手上「删除」——它连 cookie 一起删，登录态当场消失。
+        <br>
+        如果你的目的只是「加个号」，这一页完全用不上：默认的一次性无痕模式就够了。
+      </div>
       <p class="info-line">
         一份档案 = 一份独立的浏览器配置（cookie / localStorage 都在 <code class="mono">browser/&lt;id&gt;/</code> 里）。
         加号时用它打开授权页，之后续期、签到不用重新输密码；<b>它不是无痕窗口</b> ——
@@ -1712,10 +1763,10 @@
       <p class="info-line" id="profileBrowserHint" style="margin-top:-4px"></p>
       <table>
         <thead><tr>
-          <th>档案</th><th>账号</th><th>上游</th><th>线路</th>
+          <th>档案</th><th>账号</th><th>上游</th><th>线路</th><th>指纹</th>
           <th>最近使用</th><th>调试端口</th><th>磁盘</th><th>操作</th>
         </tr></thead>
-        <tbody id="profileRows"><tr><td colspan="8" class="dim">加载中…</td></tr></tbody>
+        <tbody id="profileRows"><tr><td colspan="9" class="dim">加载中…</td></tr></tbody>
       </table>
     </div>
 
@@ -1750,6 +1801,62 @@
           <div class="field">
             <label>归属上游（随账号自动带出）</label>
             <input type="text" id="pfProvider" placeholder="留空 = 不绑定">
+          </div>
+          <div class="field wide">
+            <label>浏览器可执行文件（留空 = 自动探测）</label>
+            <input type="text" id="pfBrowserPath" placeholder="C:\\tools\\fingerprint-chromium\\chrome.exe">
+            <span class="hint">要用指纹参数，这里必须指向 <b>fingerprint-chromium 那类变体</b>；指到原版
+              Chrome/Edge 上，指纹参数会被<b>静默忽略</b>（保存时就会拦下来）。</span>
+          </div>
+          <div class="field wide">
+            <label>指纹（需变体支持；<b>不清楚请全部留空</b>）</label>
+            <div class="fieldgroup" style="margin-top:2px">
+              <div class="field chk">
+                <input type="checkbox" id="pfFpCanvas">
+                <label for="pfFpCanvas">canvas 噪声（<span class="mono">--fingerprint-canvas-noise</span>）</label>
+              </div>
+              <div class="field chk">
+                <input type="checkbox" id="pfFpRects">
+                <label for="pfFpRects">client-rects 噪声</label>
+              </div>
+              <div class="field chk">
+                <input type="checkbox" id="pfFpDnt">
+                <label for="pfFpDnt">发送 DNT: 1</label>
+              </div>
+              <div class="field">
+                <label>GPU vendor</label>
+                <input type="text" id="pfFpGpuVendor" placeholder="NVIDIA Corporation">
+              </div>
+              <div class="field">
+                <label>GPU renderer</label>
+                <input type="text" id="pfFpGpuRenderer" placeholder="ANGLE (NVIDIA GeForce RTX 3060)">
+              </div>
+              <div class="field">
+                <label>WebGL vendor</label>
+                <input type="text" id="pfFpWebGL" placeholder="Google Inc. (NVIDIA)">
+              </div>
+              <div class="field">
+                <label>platform</label>
+                <input type="text" id="pfFpPlatform" placeholder="Win32">
+              </div>
+              <div class="field">
+                <label>platformVersion</label>
+                <input type="text" id="pfFpPlatformVer" placeholder="15.0.0">
+              </div>
+              <div class="field">
+                <label>屏幕宽度（800–7680）</label>
+                <input type="number" id="pfFpScreenWidth" min="800" max="7680" placeholder="1920">
+              </div>
+              <div class="field">
+                <label>触点数量（0–10）</label>
+                <input type="number" id="pfFpTouch" min="0" max="10" placeholder="0">
+              </div>
+              <div class="field">
+                <label>语言（同时作用于 lang / accept-lang）</label>
+                <input type="text" id="pfFpLang" placeholder="zh-CN">
+              </div>
+            </div>
+            <span class="hint" id="pfFpHint">只填你确定要伪装的那几项。<b>没把握就全部留空</b>：留空 = 不做伪装，用的是真机的值，最安全；填错轻则参数被浏览器忽略（等于没配），重则伪装出来的值本身就是异常特征。</span>
           </div>
           <div class="field wide">
             <label>附加参数（每行一个，排障用）</label>
@@ -7024,8 +7131,10 @@ let loginProvider = '';
       }
       renderProfiles();
       renderProfileSelects();
+      // 编辑器可能已经开着了（用户点得快）：数据到了要把状态行补上。
+      if ($('profileEditor') && !$('profileEditor').hidden) updateFingerprintHint();
     } catch (e) {
-      host.innerHTML = `<tr><td colspan="8" class="err">读取失败：${esc((e && e.message) || e)}</td></tr>`;
+      host.innerHTML = `<tr><td colspan="9" class="err">读取失败：${esc((e && e.message) || e)}</td></tr>`;
     }
   }
 
@@ -7049,7 +7158,7 @@ let loginProvider = '';
     if (!host) return;
     const list = profileState.profiles || [];
     if (!list.length) {
-      host.innerHTML = '<tr><td colspan="8" class="dim">还没有浏览器档案 —— 点右上角「新建档案」。'
+      host.innerHTML = '<tr><td colspan="9" class="dim">还没有浏览器档案 —— 点右上角「新建档案」。'
         + '不建也能用：默认的「一次性无痕」模式不需要档案。</td></tr>';
       return;
     }
@@ -7067,6 +7176,13 @@ let loginProvider = '';
         <td style="font-size:12px">${who}</td>
         <td style="font-size:12px">${p.provider ? esc(p.provider) : '<span class="dim">—</span>'}</td>
         <td style="font-size:12px">${p.egress_id ? `<span class="mono">${esc(p.egress_id)}</span>` : '<span class="dim">直连</span>'}</td>
+        <td style="font-size:12px">${(() => {
+          const f = p.fingerprint;
+          const on = f && Object.keys(f).length > 0;
+          if (!on) return '<span class="dim">无</span>';
+          if (p.fingerprint_ok) return '<span class="pill ok">有 · 变体</span>';
+          return `<span class="pill err">有 · 原版不认</span>`;
+        })()}</td>
         <td style="font-size:12px">${esc(profileTime(p.last_used_at))}
           ${p.last_url ? `<br><span class="dim" style="font-size:11px">${esc(shorten(p.last_url, 28))}</span>` : ''}</td>
         <td>${running}</td>
@@ -7106,6 +7222,33 @@ let loginProvider = '';
     }
   }
 
+  // updateFingerprintHint 指纹状态行。
+  //
+  // # 为什么"未知"与"不可用"必须分开
+  //
+  // 打开编辑器的瞬间 GET /admin/browser-profiles 可能还没回来。把"还没探测到"
+  // 渲染成"功能不可用"，用户会以为指纹坏了 —— 而它只是慢了一步。
+  // 所以这里三态：未知（正在探测，并补拉一次） / 不支持（红字说清） / 支持。
+  function updateFingerprintHint() {
+    const hint = $('pfFpHint');
+    if (!hint) return;
+    const b = profileState.browser;
+    if (!b) {
+      hint.textContent = '正在探测本机浏览器…';
+      return;
+    }
+    if (!b.ok) {
+      hint.innerHTML = `<span class="err">没有探测到可用浏览器：${esc(b.error || '未知原因')}</span> —— 指纹功能不可用。`;
+      return;
+    }
+    if (b.fingerprint_ok) {
+      hint.innerHTML = `当前浏览器 <b>${esc(b.name)}</b> 支持 --fingerprint-* 参数。`;
+      return;
+    }
+    hint.innerHTML = `<span class="err">当前浏览器 ${esc(b.name)} 不认识 --fingerprint-*：`
+      + '填了会在保存时被拦下。</span>';
+  }
+
   function openProfileEditor(id) {
     const p = id ? (profileState.profiles || []).find(x => x.id === id) : null;
     profileEditing = p ? p.id : null;
@@ -7119,6 +7262,20 @@ let loginProvider = '';
     $('pfStartURL').value = p ? (p.start_url || '') : '';
     $('pfProvider').value = p ? (p.provider || '') : '';
     $('pfExtra').value = p && p.extra_args ? p.extra_args.join('\n') : '';
+    $('pfBrowserPath').value = p ? (p.browser_path || '') : '';
+    const f = (p && p.fingerprint) || {};
+    $('pfFpCanvas').checked = !!f.canvas_noise;
+    $('pfFpRects').checked = !!f.client_rects_noise;
+    $('pfFpDnt').checked = !!f.do_not_track;
+    $('pfFpGpuVendor').value = f.gpu_vendor || '';
+    $('pfFpGpuRenderer').value = f.gpu_renderer || '';
+    $('pfFpWebGL').value = f.webgl_vendor || '';
+    $('pfFpPlatform').value = f.platform || '';
+    $('pfFpPlatformVer').value = f.platform_version || '';
+    $('pfFpScreenWidth').value = f.screen_width || '';
+    $('pfFpTouch').value = f.touch_points || '';
+    $('pfFpLang').value = f.lang || '';
+    updateFingerprintHint();
     $('profileEditor').hidden = false;
     $('profileEditor').scrollIntoView({ block: 'nearest' });
   }
@@ -7139,9 +7296,29 @@ let loginProvider = '';
         return;
       }
     }
+    // 指纹：只提交**填了**的项（全空 = 不带该字段，后端存 nil）。
+    const fp = {};
+    if ($('pfFpCanvas').checked) fp.canvas_noise = true;
+    if ($('pfFpRects').checked) fp.client_rects_noise = true;
+    if ($('pfFpDnt').checked) fp.do_not_track = true;
+    const fpText = [
+      ['gpu_vendor', $('pfFpGpuVendor').value],
+      ['gpu_renderer', $('pfFpGpuRenderer').value],
+      ['webgl_vendor', $('pfFpWebGL').value],
+      ['platform', $('pfFpPlatform').value],
+      ['platform_version', $('pfFpPlatformVer').value],
+      ['lang', $('pfFpLang').value],
+    ];
+    for (const [k, v] of fpText) { if (String(v || '').trim()) fp[k] = String(v).trim(); }
+    const sw = Number($('pfFpScreenWidth').value);
+    if (sw > 0) fp.screen_width = sw;
+    const tp = Number($('pfFpTouch').value);
+    if (tp > 0) fp.touch_points = tp;
     const body = {
       id,
       uid: $('pfUid').value || '',
+      browser_path: ($('pfBrowserPath').value || '').trim(),
+      fingerprint: Object.keys(fp).length ? fp : null,
       provider: ($('pfProvider').value || '').trim(),
       label: ($('pfLabel').value || '').trim(),
       egress_id: $('pfEgress').value || '',
@@ -7641,10 +7818,100 @@ let loginProvider = '';
         <div class="about-actions">
           <button type="button" class="primary" data-about-url="${escAttr(d.project_url)}">打开项目地址</button>
         </div>
-        ${friends ? `<div class="about-friends"><h3>推荐项目</h3><div class="friend-grid">${friends}</div></div>` : ''}`;
+        ${friends ? `<div class="about-friends"><h3>推荐项目</h3><div class="friend-grid">${friends}</div></div>` : ''}
+        ${d.manual_html ? `<div class="about-manual">${d.manual_html}</div>` : ''}`;
+      // 分页必须在 innerHTML 之后：分页器是 DOM 操作，不是字符串拼接。
+      setupManualPager();
     } catch (e) {
       host.innerHTML = `<p class="err">读取失败：${esc((e && e.message) || e)}</p>`;
     }
+  }
+
+  // 说明书分页：三章一页。
+  //
+  // # 为什么在前端切，而不是让后端分页
+  //
+  // 说明书是编译期常量，整份也就 10 KB。为它加一个"第 N 页"的后端端点，
+  // 会让「关于页」这条本来零状态的路径多出一份服务端状态；前端拿到整份再切，
+  // 页码切换是瞬时的，也不需要重新请求。
+  //
+  // # 分页单位是章，不是字数
+  //
+  // 后端把每个二级标题包成 <div class="md-sec">（见 internal/about/manual.go）。
+  // 按字数切会把一段话、甚至一张表格劈成两半。
+  const MANUAL_PAGE_SIZE = 3;
+
+  function setupManualPager() {
+    const host = document.querySelector('#aboutBody .about-manual');
+    if (!host) return;
+    const secs = Array.prototype.slice.call(host.querySelectorAll(':scope > .md-sec'));
+    if (secs.length <= MANUAL_PAGE_SIZE) return;   // 不到一页就不摆分页条
+    const pages = Math.ceil(secs.length / MANUAL_PAGE_SIZE);
+    let cur = 1;
+
+    const bar = document.createElement('div');
+    bar.className = 'md-pager';
+
+    const prev = document.createElement('button');
+    prev.type = 'button';
+    prev.textContent = '‹ 上一页';
+    const next = document.createElement('button');
+    next.type = 'button';
+    next.textContent = '下一页 ›';
+    const nums = document.createElement('span');
+    nums.className = 'md-nums';
+    const label = document.createElement('span');
+    label.className = 'md-label';
+
+    const buttons = [];
+    for (let i = 1; i <= pages; i++) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'md-num';
+      b.textContent = String(i);
+      b.dataset.page = String(i);
+      b.addEventListener('click', () => go(i));
+      buttons.push(b);
+      nums.appendChild(b);
+    }
+
+    function apply() {
+      secs.forEach((el, i) => {
+        el.hidden = Math.floor(i / MANUAL_PAGE_SIZE) !== cur - 1;
+      });
+      prev.disabled = cur === 1;
+      next.disabled = cur === pages;
+      buttons.forEach(b => b.classList.toggle('on', Number(b.dataset.page) === cur));
+      const from = (cur - 1) * MANUAL_PAGE_SIZE + 1;
+      const to = Math.min(cur * MANUAL_PAGE_SIZE, secs.length);
+      label.textContent = `第 ${from}–${to} 节 · 共 ${secs.length} 节（第 ${cur} / ${pages} 页）`;
+    }
+    function go(p) {
+      const next_ = Math.min(Math.max(1, p), pages);
+      if (next_ === cur) return;
+      cur = next_;
+      apply();
+      // 翻页后把说明书顶部带进视野：否则读者还停在上一页的位置，
+      // 会以为自己点错了（内容"没变"）。
+      const top = host.getBoundingClientRect().top + window.scrollY - 80;
+      window.scrollTo({ top, behavior: 'smooth' });
+    }
+
+    prev.addEventListener('click', () => go(cur - 1));
+    next.addEventListener('click', () => go(cur + 1));
+    bar.appendChild(prev);
+    bar.appendChild(nums);
+    bar.appendChild(next);
+    bar.appendChild(label);
+    host.appendChild(bar);
+
+    // 键盘左右方向键也能翻（说明书长，滚到中段时手不用离开键盘）。
+    host.addEventListener('keydown', ev => {
+      if (ev.key === 'ArrowLeft') go(cur - 1);
+      if (ev.key === 'ArrowRight') go(cur + 1);
+    });
+
+    apply();
   }
 
   async function openAboutURL(url) {

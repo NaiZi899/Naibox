@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/NaiZi899/Naibox/internal/browserprofile"
 )
 
 // 档案端点的两条超时：普通操作（列/存/删/开目录）用短超时；
@@ -39,10 +41,22 @@ type BrowserProfileView struct {
 	EgressID    string   `json:"egress_id,omitempty"`
 	StartURL    string   `json:"start_url,omitempty"`
 	ExtraArgs   []string `json:"extra_args,omitempty"`
-	CreatedAt   string   `json:"created_at,omitempty"`
-	LastUsedAt  string   `json:"last_used_at,omitempty"`
-	LastURL     string   `json:"last_url,omitempty"`
-	DebugPort   int      `json:"last_debug_port,omitempty"`
+	// BrowserPath 档案钉死的浏览器（空 = 用全局 login.browser 或自动探测）。
+	BrowserPath string `json:"browser_path,omitempty"`
+	// BrowserName 启动时用的浏览器展示名（宿主解析后填入）。
+	BrowserName string `json:"browser_name,omitempty"`
+	// Fingerprint 这套档案的指纹参数（nil = 不启用）。
+	//
+	// ⚠ 直接复用 browserprofile 的类型，不再声明一份"视图版"：它是纯数据结构、
+	// 没有行为，复制一份只会让两边字段悄悄漂移。
+	Fingerprint *browserprofile.Fingerprint `json:"fingerprint,omitempty"`
+	// FingerprintOK 当前浏览器是否真的支持这些参数（false = 原版，参数会被忽略）。
+	FingerprintOK   bool   `json:"fingerprint_ok"`
+	FingerprintNote string `json:"fingerprint_note,omitempty"`
+	CreatedAt       string `json:"created_at,omitempty"`
+	LastUsedAt      string `json:"last_used_at,omitempty"`
+	LastURL         string `json:"last_url,omitempty"`
+	DebugPort       int    `json:"last_debug_port,omitempty"`
 	// DiskBytes 档案目录占用（0 = 还没启动过，目录不存在）。
 	DiskBytes int64 `json:"disk_bytes"`
 	// Dir 档案目录（只读展示；不提供"任意路径打开"，见 open-dir 端点）。
@@ -55,6 +69,10 @@ type BrowserProbeView struct {
 	Name string `json:"name,omitempty"`
 	Path string `json:"path,omitempty"`
 	Err  string `json:"error,omitempty"`
+	// FingerprintOK 这个可执行文件是否认识 `--fingerprint-*`（变体 = true，原版 = false）。
+	//
+	// 编辑器靠它提示"你选的是原版浏览器，指纹参数会被静默忽略"。
+	FingerprintOK bool `json:"fingerprint_ok"`
 }
 
 // LaunchResult 一次启动的回执。

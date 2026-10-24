@@ -30,6 +30,13 @@ type Content struct {
 	Intro       []string `json:"intro"`
 	ProjectURL  string   `json:"project_url"`
 	Recommended []Friend `json:"recommended"`
+
+	// ManualHTML 使用说明（manual.md 渲染后的 HTML，只读）。
+	//
+	// 它不出现在 about.json 里：说明书是**常改**的长文，塞进 JSON 会变成
+	// 一段带转义换行的字符串，谁都改不动。分成 md + 渲染器后，
+	// 改文档只动 manual.md（渲染见 manual.go）。
+	ManualHTML string `json:"manual_html,omitempty"`
 }
 
 var (
@@ -53,6 +60,7 @@ func parse(data []byte) (Content, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return Content{}, fmt.Errorf("about.json 不是合法 JSON: %w", err)
 	}
+	c.ManualHTML = ManualHTML()
 	c.Name = strings.TrimSpace(c.Name)
 	c.Tagline = strings.TrimSpace(c.Tagline)
 	c.ProjectURL = strings.TrimSpace(c.ProjectURL)
