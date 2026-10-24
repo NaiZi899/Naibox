@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -24,6 +25,7 @@ import (
 	"github.com/NaiZi899/Naibox/internal/apikey"
 	"github.com/NaiZi899/Naibox/internal/auth"
 	"github.com/NaiZi899/Naibox/internal/browseropen"
+	"github.com/NaiZi899/Naibox/internal/browserprofile"
 	"github.com/NaiZi899/Naibox/internal/checkinlog"
 	"github.com/NaiZi899/Naibox/internal/clientlogin"
 	"github.com/NaiZi899/Naibox/internal/cline"
@@ -1160,6 +1162,31 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 		return nil, err
 	}
 
+	// 备份：通道按配置建好，管理台与托盘共用**同一个** Manager。
+	//
+	// 数据根取 opt.DataDir；服务器形态它为空（改造前的 cwd 语义），
+	// 此时 cwd 就是数据根 —— local 通道会落到 ./backups。
+	dataRoot := opt.DataDir
+	if dataRoot == "" {
+		if wd, wderr := os.Getwd(); wderr == nil {
+			dataRoot = wd
+		}
+	}
+	backupStore, err := newBackupStore(cfgPath, dataRoot, cfg, log.Printf)
+	if err != nil {
+		fatalf("backup: %v", err)
+		return nil, err
+	}
+
+	// 出口线路：探活缓存 + 绑定。装配期的校验已在上面跑过（validateEgressBindings），
+	// 这里只提供服务期的那一半（管理台看/探/改/绑）。
+	egressStore := newEgressStore(cfgPath, cfg, p, log.Printf)
+
+	// 浏览器档案（login.profile_mode=reuse 时用；temp 模式不碰它）。
+	// 目录规划见 internal/browserprofile：索引在数据根下，档案在 browser/<id>/。
+	browserProfiles := browserprofile.NewStore(dataRoot)
+	profileStore := newProfileStore(cfg, p, browserProfiles, opt.OpenPath, log.Printf)
+
 	// 管理钥匙轮换的间接回调（见 admin.Config.OnAPIKeyRotated 注释：
 	// h 在 admin.New 的 Config 求值时尚未绑定，不能直接捕获，经此变量间接引用）。
 	var onRotate func(string) = func(string) {}
@@ -1294,7 +1321,14 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 				// 自定义上游管理页：读写 config.json 的 custom_upstreams 段。
 				// 没有自定义上游时它仍然可用（页面上可以新增第一条）。
 				CustomUpstreams: newCustomStore(cfgPath, cfg),
-				StartedAt:       time.Now(),
+				// 浏览器档案（列表 / 新建编辑 / 启动 / 删除 / 打开目录）。
+				Profiles: profileStore,
+				// 出口线路（看 / 探活 / 增删改 / 给账号绑线）。
+				Egress: egressStore,
+				// 备份管理（通道 / 定时 / 立即备份 / 取回）。
+				// 与托盘「备份数据」共用同一个 Manager，保留策略因此只有一份。
+				Backup:    backupStore,
+				StartedAt: time.Now(),
 				// 「添加账号」默认用**无痕窗口**打开授权页（用户要求）。
 				//
 				// 放在装配层而不是 admin 里直接 exec：admin 保持"可测、无副作用"，
@@ -1303,7 +1337,7 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 				//
 				// 返回 nil 表示本部署不自动开（配置关掉了，或本机没有
 				// 受支持的浏览器）—— admin 会退回"只回授权链接"的旧行为。
-				OpenAuthURL: loginBrowserOpener(cfg),
+				OpenAuthURL: loginBrowserOpener(cfg, browserProfiles),
 			})
 			return adminHandler
 		}(),
@@ -1400,7 +1434,9 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 		return nil, err
 	}
 
-	rt := &Runtime{Addr: ln.Addr().String(), Server: srv}
+	rt := &Runtime{Addr: ln.Addr().String(), Server: srv, Backup: backupStore.Manager()}
+	// 定时备份：整点语义自带 ticker（调度器的整点槽位已停用，见 backupstore.go）。
+	backupStore.StartSchedule(ctx)
 	st := &bootState{
 		p:        p,
 		srv:      srv,
@@ -1495,11 +1531,14 @@ func resolveListen(listen string, opt Options) string {
 // 否则"本机没装受支持的浏览器"这件事只在用户点「添加账号」时才暴露，
 // 而且表现成"点了没反应"（窗口不出现、也没人告诉他为什么）。
 // 启动期探测把问题提前到日志里。
-func loginBrowserOpener(cfg *Config) func(string) (string, error) {
+func loginBrowserOpener(cfg *Config, profiles *browserprofile.Store) func(string) (string, error) {
 	if !cfg.Login.OpenBrowser {
 		log.Printf("login: 自动打开授权页已关闭（login.open_browser=false）" +
 			"——「添加账号」只回授权链接，请手动粘贴到无痕窗口")
 		return nil
+	}
+	if cfg.Login.ProfileMode == "reuse" {
+		return reuseProfileOpener(cfg, profiles)
 	}
 	// 探测用的 Opts **不带** Isolated：Isolated 只影响参数里的
 	// --user-data-dir，而"本机有没有这个浏览器"与它无关。
@@ -1522,6 +1561,74 @@ func loginBrowserOpener(cfg *Config) func(string) (string, error) {
 		}
 		return c.Browser + "（无痕）", nil
 	}
+}
+
+// reuseProfileOpener 「持久档案」模式的加号打开器（login.profile_mode=reuse）。
+//
+// # 与 temp 模式的语义差别（用户必须知道）
+//
+//	temp   每次都是全新浏览器画像：这次授权**一定**落到新号上，
+//	       代价是登录态不留存，下次还要重新输密码。
+//	reuse  用同一份持久档案（cookie 在 <数据根>/browser/login/）：
+//	       登录态留存、下次加号少一次登录；代价是**可能**复用上次的会话 ——
+//	       如果上游的授权页会跳过登录，那这次加的可能是老号。
+//
+// 所以它不是"更好的默认"，只是另一种权衡，默认仍是 temp。
+//
+// # 为什么探测失败也要返回 nil
+//
+// 与 temp 模式同一条纪律：自动打开是便利，不是功能本身。授权链接无论如何
+// 都会经 /admin/login/start 返回给前端。
+func reuseProfileOpener(cfg *Config, profiles *browserprofile.Store) func(string) (string, error) {
+	if profiles == nil {
+		log.Printf("login: profile_mode=reuse 但浏览器档案存储未初始化 —— 回落" +
+			"「只回授权链接」（不影响加号，只是要手动打开）")
+		return nil
+	}
+	// 复用模式共用一个档案：按上游分档要连"这个号属于哪个上游"一起传进来，
+	// 而 opener 的签名只有 URL。等真的需要按上游分档时，改签名而不是在这里猜。
+	prof, err := profiles.Ensure("login", "", "加号档案（复用登录态）")
+	if err != nil {
+		log.Printf("login: 浏览器档案不可用（%v）——回落「只回授权链接」", err)
+		return nil
+	}
+	if _, err := browseropen.Resolve(runtime.GOOS, cfg.Login.Browser, nil); err != nil {
+		log.Printf("login: 未能启用「自动用持久档案打开授权页」（%v）"+
+			"——「添加账号」仍可用，请手动粘贴授权链接", err)
+		return nil
+	}
+	log.Printf("login: 「添加账号」将用**持久档案**打开授权页（%s），"+
+		"目录 %s —— 登录态会留存，注意这可能是同一个浏览器画像",
+		prof.ID, profiles.UserDataDir(prof))
+
+	return func(rawURL string) (string, error) {
+		opts := browserprofile.Options{
+			URL:      rawURL,
+			Explicit: cfg.Login.Browser,
+			ProxyURL: egressProxyFor(cfg, prof.EgressID),
+		}
+		c, err := browserprofile.Open(profiles, prof, opts)
+		if err != nil {
+			return "", err
+		}
+		return c.Browser + "（持久档案）", nil
+	}
+}
+
+// egressProxyFor 把线路 id 翻成浏览器的 --proxy-server 值（空 = 直连）。
+//
+// 带认证的代理会在 browserprofile.Plan 里被明确拒绝 —— 那里报错比在这里
+// 静默降级好：用户会看到"为什么不生效"，而不是"设了没反应"。
+func egressProxyFor(cfg *Config, egressID string) string {
+	if egressID == "" || cfg == nil {
+		return ""
+	}
+	for _, e := range cfg.Egress {
+		if e.ID == egressID {
+			return e.Proxy
+		}
+	}
+	return ""
 }
 
 // configureUpstream 把 config 里的超时 / 脱敏 / 出站身份写进一个 Client。
@@ -1675,11 +1782,10 @@ func validateEgressBindings(egress []EgressConfig, auths []*auth.Auth) {
 		return
 	}
 
-	byID := make(map[string]EgressConfig, len(egress))
-	for _, e := range egress {
-		byID[e.ID] = e
-	}
-	count := make(map[string]int, len(egress))
+	// ⚠ 判据只有一份：运行期绑定（管理台）调的是同一个 CheckEgressBinding。
+	// 这里把它的每个错误翻译成一行日志，**不阻断启动** —— 配置写坏了也要能
+	// 进去改，起不来就没法改。
+	counts := CountEgressBindings(auths, "")
 	unbound := 0
 	for _, a := range auths {
 		if a == nil {
@@ -1689,21 +1795,17 @@ func validateEgressBindings(egress []EgressConfig, auths []*auth.Auth) {
 			unbound++
 			continue
 		}
-		e, ok := byID[a.EgressID]
-		if !ok {
-			log.Printf("⚠ 账号 %s 绑定了不存在的线路 %q —— 会回落共用出口（改 config.json 的 egress 或该账号的 egressId）",
-				a.UID, a.EgressID)
-			continue
+		// 判断"是否超限"时把自己排除掉：重绑同一条线不该被自己的旧名额卡住。
+		bound := counts[a.EgressID]
+		if bound > 0 {
+			bound--
 		}
-		count[e.ID]++
-		// realm 一致性：空 realm = 不限，此处不判。
-		if e.Realm != "" && a.Channel != "" && e.Realm != a.Channel {
-			log.Printf("⚠ 账号 %s（渠道 %s）挂在线路 %q（realm=%s）上 —— %s",
-				a.UID, a.Channel, e.ID, e.Realm, realmMismatchHint(a.Channel))
+		if err := CheckEgressBinding(egress, a.Channel, a.EgressID, bound); err != nil {
+			log.Printf("⚠ 账号 %s：%v", a.UID, err)
 		}
 	}
 	for _, e := range egress {
-		if n := count[e.ID]; n > e.MaxAccounts {
+		if n := counts[e.ID]; n > e.MaxAccounts {
 			log.Printf("⚠ 线路 %q 上绑了 %d 个账号，超过上限 %d —— 同一出口上的账号越多，"+
 				"\"IP 复用\"这条关联证据越硬", e.ID, n, e.MaxAccounts)
 		}

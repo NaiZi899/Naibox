@@ -24,6 +24,8 @@ package boot
 import (
 	"log"
 	"net/http"
+
+	"github.com/NaiZi899/Naibox/internal/backup"
 )
 
 // Mode 运行形态。影响的是"谁来决定监听地址与数据根"，不影响装配内容。
@@ -73,6 +75,12 @@ type Options struct {
 	// nil = 不回调（cmd/server 不需要）。
 	OnReady func(addr string, rt *Runtime)
 
+	// OpenPath 用系统默认程序打开一个路径（桌面壳注入；服务端留空）。
+	//
+	// 只有"浏览器档案 → 打开目录"这类**桌面专属**动作用它。服务端形态下
+	// 对应的端点会明确回 501，而不是假装成功。
+	OpenPath func(path string) error
+
 	// Logger 日志出口。nil = 标准库默认（stderr）。
 	// 桌面模式会传一个写文件的 logger（同时 fan-out 到控制台）。
 	Logger *log.Logger
@@ -119,4 +127,10 @@ type Runtime struct {
 	// Server 底层 HTTP 服务。供需要"改 Handler / 关 KeepAlive"的调用方使用；
 	// 常规收尾请走 Shutdown（它保证落盘顺序）。
 	Server *http.Server
+
+	// Backup 备份管理器（nil = 未接线）。
+	//
+	// 桌面壳托盘「备份数据」走它，而不是自己再调一次 Layout.Backup()：
+	// 保留策略与通道配置必须只有一个执行点，否则托盘与管理台会各留一份。
+	Backup *backup.Manager
 }

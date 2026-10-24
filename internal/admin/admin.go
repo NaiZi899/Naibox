@@ -115,6 +115,23 @@ type Config struct {
 	// 它操作的是 config.json 的 custom_upstreams 段，而不是某个上游的运行时状态，
 	// 所以放在核心而不是 Provider 的 AdminExt 里 —— 详见 customupstreams.go 的文件头。
 	CustomUpstreams CustomUpstreamStore
+	// Profiles 浏览器档案契约（由装配层注入；nil = 未接线，端点不注册）。
+	//
+	// 档案 = 一份设备画像（cookie + 出口 + 浏览器），可绑到具体账号（uid）。
+	// 详见 profiles.go 的文件头。
+	Profiles ProfilesStore
+
+	// Egress 出口线路管理契约（由装配层注入；nil = 未接线，端点不注册）。
+	//
+	// 一条线路 = 上游眼里的一个身份（IP + ASN + 地区），所有上游共用；
+	// 它不属于任何单个上游，所以放在核心。详见 egress.go 的文件头。
+	Egress EgressStore
+
+	// Backup 备份管理契约（由 cmd/server 注入；nil = 未接线，端点不注册）。
+	//
+	// 备份备的是整个数据根（config.json + 全部 auths/ + data/），不表达任何
+	// 上游身份，所以属于核心；详见 backup.go 的文件头。
+	Backup BackupStore
 	// BuildTime 进程启动时间，UI 用来算运行时长。
 	StartedAt time.Time
 
@@ -290,6 +307,9 @@ func New(cfg Config) *Handler {
 	// 而上游**只负责把那段 JSON 解释成自己的凭证**
 	//（gateway.AccountImportExt）。详见 account_import.go。
 	h.register("POST /admin/accounts/import", h.accountsImport)
+	// 账号数据导出（json / zip / csv / txt）。与导入同层同理由：
+	// 目标是"所有上游共用"，分派按 provider 走网关扩展点。
+	h.register("POST /admin/accounts/export", h.accountsExport)
 	// 全上游通用的额度刷新（把上游自报的额度写回池）。
 	//
 	// 放在通用段而不是某个上游里：它是**所有上游共用**的动作，
@@ -339,6 +359,39 @@ func New(cfg Config) *Handler {
 	h.register("GET /admin/custom-upstreams", h.customUpstreams)
 	h.register("PUT /admin/custom-upstreams", h.customUpstreamsUpdate)
 	h.register("POST /admin/custom-upstreams/test", h.customUpstreamsTest)
+
+	// 浏览器档案（列表 / 新建编辑 / 启动 / 删除 / 打开目录）。
+	if h.cfg.Profiles != nil {
+		h.register("GET /admin/browser-profiles", h.browserProfiles)
+		h.register("POST /admin/browser-profiles", h.browserProfileUpsert)
+		h.register("DELETE /admin/browser-profiles/{id}", h.browserProfileDelete)
+		h.register("POST /admin/browser-profiles/{id}/launch", h.browserProfileLaunch)
+		h.register("POST /admin/browser-profiles/{id}/open-dir", h.browserProfileOpenDir)
+	}
+
+	// 出口线路（看 / 探活 / 增删改 / 给账号绑线）。
+	//
+	// 与备份同一纪律：未接线就不注册路由（宁可 404，也不要一条永远
+	// 返回"未接线"的端点）。
+	if h.cfg.Egress != nil {
+		h.register("GET /admin/egress", h.egress)
+		h.register("PUT /admin/egress", h.egressUpdate)
+		h.register("POST /admin/egress/probe", h.egressProbe)
+		h.register("POST /admin/accounts/{uid}/egress", h.accountEgress)
+	}
+
+	// 备份管理（通道 / 定时 / 立即备份 / 连通性 / 取回）。
+	//
+	// 未接线时不注册任何路由 —— 与 apikeys 同一条纪律：宁可 404 也不要
+	// 一条永远返回"未接线"的端点（那会让前端以为功能存在却点不动）。
+	if h.cfg.Backup != nil {
+		h.register("GET /admin/backup", h.backup)
+		h.register("PUT /admin/backup", h.backupUpdate)
+		h.register("POST /admin/backup/run", h.backupRun)
+		h.register("POST /admin/backup/channels/test", h.backupTestChannel)
+		h.register("GET /admin/backup/objects", h.backupObjects)
+		h.register("GET /admin/backup/download", h.backupDownload)
+	}
 
 	// 关于页：内容在编译期嵌入 about.json；外链交给系统浏览器打开。
 	h.register("GET /admin/about", h.aboutInfo)

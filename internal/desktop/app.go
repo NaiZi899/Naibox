@@ -81,6 +81,9 @@ type app struct {
 	version string
 
 	cancelAll context.CancelFunc
+	// ctx 本次会话的根 ctx（run 里创建）。托盘动作里的长任务（备份）
+	// 挂在它上面：用户退出时这些动作应当被一起取消。
+	ctx context.Context
 
 	mu       sync.Mutex
 	rt       *boot.Runtime
@@ -215,6 +218,7 @@ func Run(ctx context.Context, opt Options) error {
 func (a *app) run(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	a.cancelAll = cancel
+	a.ctx = ctx
 	defer cancel()
 
 	port, err := PickPort(a.opt.Port, a.log)
@@ -274,6 +278,9 @@ func (a *app) startRuntime(parent context.Context, port int) (*boot.Runtime, err
 			}
 		},
 		Fatalf: a.fatalf,
+		// 浏览器档案「打开目录」：只有桌面壳能开资源管理器。
+		// 服务端形态 opt.OpenPath 为空 → 该端点明确回 501（不假装成功）。
+		OpenPath: func(p string) error { return openPath(p) },
 	})
 	if err != nil {
 		cancel()
@@ -554,7 +561,46 @@ func (a *app) onTrayAction(act trayAction) {
 }
 
 // backupNow 打包备份并打开备份目录。
+//
+// # 为什么走 Runtime 的 Manager 而不是 Layout.Backup()
+//
+// Layout.Backup() 只会打本地 zip。管理台（/admin/backup）配了 s3/openlist
+// 之后，托盘那个按钮如果还只落本地，就会出现"同一个动作两个结果":
+// 用户以为按了按钮就传上去了。两条路径必须共用一个 Manager —— 保留策略
+// 与通道表因此只有一份。
+//
+// 未接线的部署（rt 为空，理论上只在极端启动失败时）才回落 Layout.Backup()。
 func (a *app) backupNow() {
+	ctx, cancel := context.WithTimeout(a.baseContext(), 30*time.Minute)
+	defer cancel()
+	if a.rt != nil && a.rt.Backup != nil {
+		res, err := a.rt.Backup.Run(ctx, nil)
+		if err != nil {
+			a.log.Printf("备份失败：%v", err)
+			messageBox("NaiBox 备份失败", err.Error(), mbIconError)
+			return
+		}
+		okCount, badCount := 0, 0
+		for _, r := range res {
+			if r.Err != "" {
+				badCount++
+				a.log.Printf("备份通道 %s(%s) 失败：%s", r.Channel, r.Kind, r.Err)
+				continue
+			}
+			okCount++
+			a.log.Printf("备份通道 %s(%s) 完成：%s", r.Channel, r.Kind, r.Location)
+		}
+		a.log.Printf("备份完成：成功 %d 条通道，失败 %d 条", okCount, badCount)
+		if okCount == 0 {
+			messageBox("NaiBox 备份失败", "所有备份通道都失败了，详见日志。", mbIconError)
+			return
+		}
+		if err := openPath(a.layout.BackupDir); err != nil {
+			a.log.Printf("打开备份目录失败：%v", err)
+		}
+		return
+	}
+
 	path, err := a.layout.Backup()
 	if err != nil {
 		a.log.Printf("备份失败：%v", err)
@@ -565,6 +611,14 @@ func (a *app) backupNow() {
 	if err := openPath(a.layout.BackupDir); err != nil {
 		a.log.Printf("打开备份目录失败：%v", err)
 	}
+}
+
+// baseContext 托盘动作可用的根 ctx（未启动时回落 Background）。
+func (a *app) baseContext() context.Context {
+	if a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
 }
 
 // toggleAutostart 切换开机自启（以注册表实际状态为准，不信内存）。

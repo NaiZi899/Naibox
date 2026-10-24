@@ -1431,6 +1431,32 @@ func (p *Pool) weightOf(e *entry, maxCredits int64, now time.Time, model string)
 	return w
 }
 
+// SetEgress 更新账号绑定的出站线路（空串 = 解绑，回到共用出口）。
+//
+// # 为什么需要它（而不是让调用方改完 auth 再整池 Sync）
+//
+// 管理台的「绑定线路」是一次**单账号**操作：整池 Sync 会重读目录、
+// 重新装载所有账号的 secret，代价与风险都不成比例（它会顺手把别的账号
+// 的运行态也刷新一遍）。这里只改内存里的一个字段 + 标脏，
+// 落盘的真相在 auth.Auth.EgressID（由调用方 SaveAtomic 负责）。
+//
+// 返回值表示账号是否在池里 —— 不在池里时调用方应当先同步再重试，
+// 而不是让用户看到"绑定成功"却查不到。
+func (p *Pool) SetEgress(uid, egressID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	e.egress = egressID
+	if e.a != nil {
+		e.a.EgressID = egressID
+	}
+	p.dirty.Store(true)
+	return true
+}
+
 // SetQuota 更新账号额度视图（真相来源）。
 //
 // 同一条路径同时维护派生标量 credits，保证旧消费者（前端/统计/既有测试）继续工作。

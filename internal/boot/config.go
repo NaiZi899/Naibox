@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -169,6 +170,18 @@ type Config struct {
 		//
 		// false = 复用用户自己的 profile，只开一个无痕窗口。
 		Isolated bool `json:"isolated"`
+
+		// ProfileMode 加号时用哪种浏览器档案："temp"（默认）或 "reuse"。
+		//
+		//	temp  browseropen 的老行为：无痕 + 一次性临时目录，48h 清理。
+		//	      语义是"这次授权绝不复用任何已有登录态"，代价是**登录态不留存**。
+		//	reuse 用 internal/browserprofile 的**持久档案**：cookie 留在
+		//	      <数据根>/browser/login/ 下，下次加号/续期还能用它。
+		//	      代价是同一档案里可能残留上次的登录态 —— 这正是它想要的语义，
+		//	      但如果你在"给不同人加号"，那不是你该选的模式。
+		//
+		// 空 = temp（升级上来的配置行为逐字节不变）。
+		ProfileMode string `json:"profile_mode"`
 	} `json:"login"`
 
 	// ServiceName 网关身份标识（顶栏标题、/healthz 的 service 字段与
@@ -453,6 +466,37 @@ type Config struct {
 	// 它描述的是部署拓扑（哪台机器、哪个代理端口），属于"跟机房一起变"的
 	// 配置，不是运行期调参。放在 config.json 里由部署者维护，管理台只读展示。
 	Egress []EgressConfig `json:"egress"`
+
+	// Backup 数据备份：通道 / 定时 / 保留份数。
+	//
+	// # 与 desktop 的 Layout.Backup() 的关系
+	//
+	// 改造前打包逻辑只存在于桌面壳里（托盘一个按钮、只落本地 zip、只留 10 份）。
+	// 服务器形态没有托盘，于是"账号池异地留一份"这件事在 Linux 部署上等于没有。
+	//
+	// 现在打包与分发都在 internal/backup 里，本段只描述策略：
+	//
+	//	enabled=false（默认） 定时不跑，管理台的「立即备份」仍可用
+	//	channels[]            送到哪（local / s3 / openlist，可多条）
+	//	keep                  每个通道保留最近几份
+	//
+	// 空 channels = 没有任何备份通道（此时「立即备份」会明确报错，
+	// 而不是打一个谁也不收的包）。
+	Backup struct {
+		// Enabled 是否按 hours 定时备份。
+		//
+		// 缺省 false：升级上来的部署不该在夜里突然开始往网络上传东西。
+		Enabled bool `json:"enabled"`
+		// Hours 每天哪几个整点跑（0-23）。空 = 只手动备份。
+		//
+		// 语义与 schedule.checkin_hours 一致：整点触发，去重、排序；
+		// 非法值（负数/超过 23）直接报错 —— 静默忽略会让用户以为设了定时。
+		Hours []int `json:"hours"`
+		// Keep 每个通道保留最近几份，默认 10。
+		Keep int `json:"keep"`
+		// Channels 备份通道。
+		Channels []BackupChannelConfig `json:"channels"`
+	} `json:"backup"`
 
 	// Admin 管理台（/admin/*，仅本机可访问）相关配置。
 	Admin struct {
@@ -1386,6 +1430,143 @@ var egressSchemes = map[string]bool{
 //
 // 静默忽略的表现是"账号还是走共用出口"——而共用出口正是本层要消掉的
 // 东西。用户配了却没生效，比配错更难查（没有任何报错）。
+// BackupChannelConfig 一条备份通道（config.json 的 backup.channels[] 元素）。
+//
+// # 为什么三种通道共用一份结构而不是各自一段
+//
+// 管理台对它们做的事是同一件：填几个字段、点「测试」、点「立即备份」。
+// 拆成 `backup.s3{}` / `backup.openlist{}` / `backup.local{}` 会让前端要为
+// 每种通道各写一遍表单，而新增第四种通道（WebDAV？）就要再改一次前端 ——
+// 与"通道可插拔"的判据相反。
+//
+// 用不到的字段留空即可，`kind` 决定哪些字段有效。
+type BackupChannelConfig struct {
+	// ID 通道标识（必填、唯一）。结果里用它区分"哪条通道失败了"。
+	ID string `json:"id"`
+	// Kind 通道类型：local / s3 / openlist。
+	Kind string `json:"kind"`
+	// Enabled 是否参与备份。缺省（null）= true。
+	//
+	// 用指针是为了区分"没写"与"写了 false"：前者应当默认启用，
+	// 后者是用户明确停用 —— 与 travel_auto_claim 同一手法。
+	Enabled *bool `json:"enabled"`
+	// Dir local 通道的目录（空 = 数据根下的 backups/）。
+	Dir string `json:"dir"`
+
+	// Endpoint s3 / openlist 的服务地址。
+	//
+	// s3 必须是 https（包内含账号凭据）；openlist 允许 http（它通常就跑在
+	// 本机 5244 端口，强求 https 会让这个通道在真实部署里不可用）。
+	Endpoint string `json:"endpoint"`
+	// Bucket s3 的桶名。
+	Bucket string `json:"bucket"`
+	// Region s3 区域（空 = us-east-1）。
+	Region string `json:"region"`
+	// Prefix s3 对象名前缀（空 = 根）。
+	Prefix string `json:"prefix"`
+	// AccessKey / SecretKey s3 凭据。
+	AccessKey string `json:"access_key"`
+	SecretKey string `json:"secret_key"`
+	// Token openlist 的访问令牌。
+	Token string `json:"token"`
+	// RemoteDir openlist 的远端目录（空 = /naibox-backups）。
+	RemoteDir string `json:"remote_dir"`
+}
+
+// IsEnabled 通道是否启用（缺省 true）。
+func (c BackupChannelConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// normalizeBackup 校验并归一 backup 段。
+//
+// # 为什么坏项 fail fast
+//
+// 与 egress 同一条理由：静默忽略的表现是"夜里定时没跑"或"通道一直失败"，
+// 而配置看起来是配好的。用户唯一能看到的线索是一行日志 —— 那太晚了。
+func (c *Config) normalizeBackup() error {
+	b := &c.Backup
+	if b.Keep < 0 {
+		return fmt.Errorf("backup.keep=%d 非法（>= 0，0 = 默认 10）", b.Keep)
+	}
+	if b.Keep == 0 {
+		b.Keep = 10
+	}
+	hours := make([]int, 0, len(b.Hours))
+	seen := map[int]bool{}
+	for _, h := range b.Hours {
+		if h < 0 || h > 23 {
+			return fmt.Errorf("backup.hours 含非法值 %d（只接受 0-23）", h)
+		}
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		hours = append(hours, h)
+	}
+	sort.Ints(hours)
+	b.Hours = hours
+
+	ids := make(map[string]bool, len(b.Channels))
+	for i := range b.Channels {
+		ch := &b.Channels[i]
+		ch.ID = strings.TrimSpace(ch.ID)
+		ch.Kind = strings.ToLower(strings.TrimSpace(ch.Kind))
+		ch.Endpoint = strings.TrimRight(strings.TrimSpace(ch.Endpoint), "/")
+		ch.Bucket = strings.TrimSpace(ch.Bucket)
+		ch.Region = strings.TrimSpace(ch.Region)
+		ch.Prefix = strings.Trim(strings.TrimSpace(ch.Prefix), "/")
+		ch.RemoteDir = strings.TrimSpace(ch.RemoteDir)
+		ch.Dir = strings.TrimSpace(ch.Dir)
+		ch.AccessKey = strings.TrimSpace(ch.AccessKey)
+		ch.SecretKey = strings.TrimSpace(ch.SecretKey)
+		ch.Token = strings.TrimSpace(ch.Token)
+
+		if ch.ID == "" {
+			return fmt.Errorf("backup.channels[%d]: id 不能为空（结果与日志靠它区分通道）", i)
+		}
+		if ids[ch.ID] {
+			return fmt.Errorf("backup.channels[%d]: id=%q 重复", i, ch.ID)
+		}
+		ids[ch.ID] = true
+		switch ch.Kind {
+		case "local":
+			// dir 空 = 数据根下的 backups/，由装配层补。
+		case "s3":
+			if ch.Endpoint == "" || ch.Bucket == "" {
+				return fmt.Errorf("backup.channels[%s]: s3 需要 endpoint 与 bucket", ch.ID)
+			}
+			if !strings.HasPrefix(ch.Endpoint, "https://") {
+				return fmt.Errorf("backup.channels[%s]: s3 endpoint 必须是 https"+
+					"（包内含账号凭据，明文链路不可接受）", ch.ID)
+			}
+			if ch.AccessKey == "" || ch.SecretKey == "" {
+				return fmt.Errorf("backup.channels[%s]: s3 需要 access_key 与 secret_key", ch.ID)
+			}
+		case "openlist":
+			if ch.Endpoint == "" {
+				return fmt.Errorf("backup.channels[%s]: openlist 需要 endpoint", ch.ID)
+			}
+			if ch.Token == "" {
+				return fmt.Errorf("backup.channels[%s]: openlist 需要 token", ch.ID)
+			}
+			if ch.RemoteDir == "" {
+				ch.RemoteDir = "/naibox-backups"
+			}
+			if !strings.HasPrefix(ch.RemoteDir, "/") {
+				ch.RemoteDir = "/" + ch.RemoteDir
+			}
+			ch.RemoteDir = strings.TrimRight(ch.RemoteDir, "/")
+		default:
+			return fmt.Errorf("backup.channels[%s]: kind=%q 不支持（local / s3 / openlist）", ch.ID, ch.Kind)
+		}
+	}
+	if b.Enabled && len(b.Channels) == 0 {
+		return fmt.Errorf("backup.enabled=true 但没有任何通道 —— 定时备份无处可送")
+	}
+	return nil
+}
+
 func (c *Config) normalizeEgress() error {
 	if len(c.Egress) == 0 {
 		return nil
@@ -1495,9 +1676,27 @@ func (c *Config) normalize() error {
 		return fmt.Errorf("pool.restricted_rotate_max=%d 非法：必须是 >= 0（0 = 风控命中后立即停手）",
 			c.Pool.RestrictedRotateMax)
 	}
+	// 登录档案模式：空 = temp（老行为）；只接受 temp / reuse，写错直接报错。
+	//
+	// 为什么写错要报错而不是回落：这两者的语义是**相反**的
+	//（一次性 vs 留存），静默回落会让"我明明配了 reuse 却没留下登录态"
+	// 变成一个查不出原因的谜。
+	switch strings.ToLower(strings.TrimSpace(c.Login.ProfileMode)) {
+	case "":
+		c.Login.ProfileMode = "temp"
+	case "temp", "reuse":
+		c.Login.ProfileMode = strings.ToLower(strings.TrimSpace(c.Login.ProfileMode))
+	default:
+		return fmt.Errorf("login.profile_mode=%q 非法（只接受 temp / reuse）", c.Login.ProfileMode)
+	}
+
 	// 出站线路表：坏项 fail fast（理由同 ua_model_families —— 静默忽略的
 	// 表现是"账号还是走共用出口"，而这正是本层要消掉的东西）。
 	if err := c.normalizeEgress(); err != nil {
+		return err
+	}
+	// 备份段：通道/时点/保留份数（坏项 fail fast，理由同上）。
+	if err := c.normalizeBackup(); err != nil {
 		return err
 	}
 	// 管理面基址：空 = 用官方域名；非空必须是 http/https 且带主机名。

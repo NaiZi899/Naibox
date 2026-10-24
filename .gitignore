@@ -13,6 +13,15 @@ data/
 # request-log.jsonl 尤其危险：每行含 uid / 模型 / token 用量 / 上游标识，
 # 等于把账号活动全量公开。*（任意层级）而不是根锚定 —— 它也可能被指到子目录。
 *.jsonl
+# 账号导出文件（/admin/accounts/export 的落点）。
+#
+# 含凭据导出的 json/zip **就是账号口令**：accessToken + refreshToken 在里面，
+# 拿到即可冒充该账号。csv/txt 虽不含凭据，但也有 uid/昵称/额度/线路。
+# 命名前缀由后端固定生成（naibox-accounts-<时间戳>），这里按前缀挡；
+# workbuddy-<uid>.json 是"单账号导出"的形态（与 auths/ 里的凭证同名同构，
+# 用户会顺手存到随手打开的目录）。两条都必写 —— 只挡一条等于没挡。
+naibox-accounts-*
+workbuddy-*.json
 # state.json 是账号池运行态（UID、冷却、额度、熔断计数）。
 # 根锚定：测试夹具里同名文件不该被误伤。
 /state.json
@@ -151,3 +160,10 @@ loomy-import.json
 deploy-config/
 deploy-*.sh
 .test-container-record.txt
+
+# 逆向拆解产物（AntWorkBuddy.exe 拆解，2026-10）。
+# antwb/ 里是派生数据：24 MB 内嵌前端与 Next.js 面板全文、55,760 条函数映射、
+# 字符串表与解体脚本。它既不是编译输入也不是交付物，入库只会让仓库多背二十几 MB
+# 与一份别人的前端代码。整目录忽略；不写 "/antwb/" 是为了连子目录里的同名副本
+# 一起挡住（历史上生成器写错写路径那类事故就是这么进的库）。
+antwb/

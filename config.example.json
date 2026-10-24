@@ -10,7 +10,8 @@
   "login": {
     "open_browser": true,
     "browser": "",
-    "isolated": true
+    "isolated": true,
+    "profile_mode": "temp"
   },
   "cooldown": {
     "soft_rate": "60s",
@@ -146,6 +147,43 @@
     "enabled": true,
     "ttl": "30m",
     "gc_interval": "5m"
+  },
+  "backup": {
+    "_comment_enabled": "按 hours 定时备份。缺省 false：升级上来的部署不该在夜里突然往网络上传东西。",
+    "enabled": false,
+    "_comment_hours": "每天哪几个整点跑（0-23）。空 = 只手动备份。",
+    "hours": [],
+    "keep": 10,
+    "channels": [
+      {
+        "_comment": "local 通道永远可用：远端挂了，本地还留着一份能立刻恢复的包。",
+        "id": "local",
+        "kind": "local",
+        "dir": "",
+        "enabled": true
+      },
+      {
+        "_comment": "s3：bucket/region/prefix 按你的对象存储填；endpoint 必须是 https。启用前把 enabled 改成 true。",
+        "id": "s3",
+        "kind": "s3",
+        "enabled": false,
+        "endpoint": "",
+        "bucket": "",
+        "region": "",
+        "prefix": "naibox/",
+        "access_key": "",
+        "secret_key": ""
+      },
+      {
+        "_comment": "openlist：本机 AList/OpenList 默认 http://127.0.0.1:5244，token 在「其他设置 → 令牌」。",
+        "id": "openlist",
+        "kind": "openlist",
+        "enabled": false,
+        "endpoint": "http://127.0.0.1:5244",
+        "token": "",
+        "remote_dir": "/naibox-backups"
+      }
+    ]
   },
   "egress": []
 }

@@ -993,6 +993,18 @@
       <button id="btnAllCheckinAll" style="padding:3px 10px;font-size:12px"
         title="触发**所有**上游各自的全量签到（后台执行，顶部显示进度）；只想签某一个上游用那张卡片上的「全部签到」">全部签到</button>
       <button id="btnAllCredits" style="padding:3px 10px;font-size:12px" title="重新探测所有账号的剩余额度">刷新全部额度</button>
+      <!-- 导出（2026-10 新增）。
+           CSV / TXT 是**清单**：provider/uid/昵称/额度/状态/线路，永远不含凭据。
+           JSON 是**迁移**格式：含凭据时等同账号口令，所以先弹二次确认，
+           并且后端还要求回传 confirm="export-secrets"（两道闸门，缺一不可）。
+           为什么不在同一个按钮上做"格式下拉"：三个按钮比一个下拉少一次点击，
+           而这里的高频操作是"导个 CSV 看看"，不是"挑格式"。 -->
+      <button id="btnExportCSV" style="padding:3px 10px;font-size:12px"
+        title="导出账号清单（CSV，Excel 可直接打开）：不含任何凭据">导出 CSV</button>
+      <button id="btnExportTXT" style="padding:3px 10px;font-size:12px"
+        title="导出人读清单（TXT）：按上游分组，不含凭据">TXT</button>
+      <button id="btnExportJSON" style="padding:3px 10px;font-size:12px"
+        title="导出含凭据的 JSON（单账号 / 全部打成 zip）：等同账号口令，会先要你确认">JSON（含凭据）</button>
       <!--
         原先这里还有一个「全部保活」按钮，已删除（用户决定）。
 
@@ -1448,6 +1460,312 @@
         <button id="customTest" style="padding:3px 10px;font-size:12px">测试连通性</button>
         <button id="customSave" class="primary" style="padding:3px 12px;font-size:12px">保存</button>
         <button id="customCancel" style="padding:3px 10px;font-size:12px">取消</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 备份（通道 / 定时 / 立即备份 / 取回）。
+       #
+       # 为什么它是独立 section，而不是「设置」里的一块
+       「设置」的保存是逐字段 patch（PUT /admin/settings），这里的保存是
+       **整段覆盖**（PUT /admin/backup 提交 enabled/hours/keep/channels）。
+       两种保存语义混在一页，会让人以为「保存设置」也会把通道表一起写掉 ——
+       而它不会。与「自定义上游」同一条理由。
+       #
+       # 凭据
+       表格只显示服务端给的掩码；输入框留空 = **沿用旧值**（后端语义）。
+       所以保存时对"没有重填"的通道提交空串，绝不把掩码当新密钥发回去。 -->
+  <section data-key="backup">
+    <h2>备份
+      <span class="spacer"></span>
+      <button id="btnBackupSave" class="primary" style="padding:3px 12px;font-size:12px">保存</button>
+      <button id="btnBackupRun" style="padding:3px 10px;font-size:12px">立即备份</button>
+      <button id="btnBackupAdd" style="padding:3px 10px;font-size:12px">新增通道</button>
+    </h2>
+    <div class="body">
+      <p class="info-line">
+        备份内容：<code class="mono">config.json</code> + 全部上游的 <code class="mono">auths/</code> +
+        <code class="mono">data/</code>（<strong>不含</strong>日志）。包内含账号凭据，只送到你自己控制的存储。
+        定时按整点触发；本地通道默认可用，远端通道要先勾上「启用」。
+      </p>
+      <div class="fieldgroup">
+        <div class="field chk">
+          <input type="checkbox" id="backupEnabled">
+          <label for="backupEnabled">按下面的整点定时备份</label>
+        </div>
+        <div class="field">
+          <label>整点（逗号分隔，0-23；留空 = 只手动备份）</label>
+          <input type="text" id="backupHours" placeholder="3,15">
+        </div>
+        <div class="field">
+          <label>每个通道保留份数</label>
+          <input type="number" id="backupKeep" min="1" max="100" value="10">
+        </div>
+      </div>
+      <table>
+        <thead><tr>
+          <th>通道 / 类型</th><th>目标</th><th>凭据</th><th>启用</th><th>操作</th>
+        </tr></thead>
+        <!-- 加载中 / 空态 / 失败三种占位行都由 renderBackupChannels 写入，
+             colspan 与上面 5 个表头对齐（改列数时两处都要改）。 -->
+        <tbody id="backupRows"><tr><td colspan="5" class="dim">加载中…</td></tr></tbody>
+      </table>
+      <!-- 上一次执行结果：定时与手动都会写在这里，便于回答"昨晚到底传没传上去" -->
+      <div id="backupLast"></div>
+    </div>
+
+    <!-- 通道编辑器（新增与编辑共用），默认 hidden。
+         ⚠ kind 决定哪些字段有效：s3 要 endpoint/bucket/凭据，openlist 要
+         endpoint/token/remote_dir，local 只要 dir。显示哪几行由 JS 切换，
+         三条通道之外不再新增分支 —— 加第四种通道只改 renderBackupEditorKind。 -->
+    <div class="ceditor" id="backupEditor" hidden>
+      <h2><b id="backupEditorTitle">新增通道</b><span>保存后立即生效，不需要重启</span></h2>
+      <div class="body">
+        <div class="fieldgroup">
+          <div class="field">
+            <label>类型</label>
+            <select id="bfKind">
+              <option value="local">local（本机目录）</option>
+              <option value="s3">s3（S3 兼容对象存储）</option>
+              <option value="openlist">openlist（AList / OpenList）</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>通道 ID（唯一）</label>
+            <input type="text" id="bfId" placeholder="local / s3-main / ol-home">
+          </div>
+          <div class="field" data-kind="local">
+            <label>目录（留空 = 数据根下的 backups/）</label>
+            <input type="text" id="bfDir" placeholder="D:\NaiBox-backups">
+          </div>
+          <div class="field" data-kind="s3 openlist">
+            <label>端点（s3 必须 https）</label>
+            <input type="text" id="bfEndpoint" placeholder="https://s3.example.com">
+          </div>
+          <div class="field" data-kind="s3">
+            <label>桶</label>
+            <input type="text" id="bfBucket" placeholder="naibox-backups">
+          </div>
+          <div class="field" data-kind="s3">
+            <label>区域（留空 = us-east-1）</label>
+            <input type="text" id="bfRegion" placeholder="cn-north-4">
+          </div>
+          <div class="field" data-kind="s3">
+            <label>对象前缀（留空 = 根）</label>
+            <input type="text" id="bfPrefix" placeholder="naibox/">
+          </div>
+          <div class="field" data-kind="s3">
+            <label>Access Key（留空 = 沿用旧值）</label>
+            <input type="text" id="bfAccess" placeholder="AKIA…">
+          </div>
+          <div class="field" data-kind="s3">
+            <label>Secret Key（留空 = 沿用旧值）</label>
+            <input type="password" id="bfSecret" placeholder="••••••••">
+          </div>
+          <div class="field" data-kind="openlist">
+            <label>Token（留空 = 沿用旧值）</label>
+            <input type="password" id="bfToken" placeholder="openlist token">
+          </div>
+          <div class="field" data-kind="openlist">
+            <label>远端目录</label>
+            <input type="text" id="bfRemoteDir" placeholder="/naibox-backups">
+          </div>
+          <div class="field chk">
+            <input type="checkbox" id="bfEnabled" checked>
+            <label for="bfEnabled">启用这条通道</label>
+          </div>
+        </div>
+      </div>
+      <div class="foot">
+        <span class="dim" style="font-size:11px">凭据只落 config.json（权限 600），页面只显示尾 4 位。</span>
+        <span class="spacer"></span>
+        <button id="backupTest" style="padding:3px 10px;font-size:12px">测试连通性</button>
+        <button id="backupSave" class="primary" style="padding:3px 12px;font-size:12px">保存</button>
+        <button id="backupCancel" style="padding:3px 10px;font-size:12px">取消</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 出口线路（egress）：账号与出口 IP 的绑定。
+       #
+       # 为什么它是独立 section
+       它改的是 config.json 的 egress 段（**需重启才生效**），而「设置」的保存
+       走的是逐字段 patch 且多数立即生效。两种语义混一页会让人以为点了「保存设置」
+       线路也生效了。与「自定义上游」「备份」同一条理由。
+       #
+       # 为什么探活**不需要**重启
+       探活现场搭一个一次性 Transport 去试（boot/egressstore.go），
+       所以能先验证再重启 —— 这是这个面板存在的主要价值。
+       #
+       # 为什么代理地址是脱敏的
+       页面没有理由持有代理口令（改它就重填）。与「自定义上游只显示 key 尾号」同一纪律。 -->
+  <section data-key="egress">
+    <h2>出口线路
+      <span class="spacer"></span>
+      <button id="btnEgressSave" class="primary" style="padding:3px 12px;font-size:12px">保存</button>
+      <button id="btnEgressProbeAll" style="padding:3px 10px;font-size:12px">全部探活</button>
+      <button id="btnEgressAdd" style="padding:3px 10px;font-size:12px">新增线路</button>
+    </h2>
+    <div class="body">
+      <p class="info-line">
+        一条线路 = 上游眼里的一个<b>出口身份</b>（IP + 地区）。账号绑哪条线走哪个出口；
+        未绑定的走共用出口。<b>保存后需重启网关</b>才对出站生效；<b>探活随时可用</b>。
+        <code class="mono">max_accounts</code> 上限 3：同一出口上的账号越多，「IP 复用」这条关联证据越硬。
+      </p>
+      <table>
+        <thead><tr>
+          <th>线路 / 地区</th><th>代理（脱敏）</th><th>绑定数</th><th>探活</th><th>操作</th>
+        </tr></thead>
+        <tbody id="egressRows"><tr><td colspan="5" class="dim">加载中…</td></tr></tbody>
+      </table>
+
+      <p class="info-line" style="margin-top:18px">
+        <b>给账号绑线路</b>：从右边选一条线 —— 满员、地区不符会被后端直接拒绝（并说明原因），
+        不是静默失败。
+      </p>
+      <div class="fieldgroup">
+        <div class="field">
+          <label>账号</label>
+          <select id="egressAccount"></select>
+        </div>
+        <div class="field">
+          <label>线路（留空 = 解绑，回到共用出口）</label>
+          <select id="egressTarget"></select>
+        </div>
+        <div class="field chk">
+          <span></span>
+          <button id="btnEgressBind" style="padding:3px 10px;font-size:12px">绑定</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 线路编辑器（新增与编辑共用），默认 hidden。 -->
+    <div class="ceditor" id="egressEditor" hidden>
+      <h2><b id="egressEditorTitle">新增线路</b><span>保存后需重启网关才对出站生效</span></h2>
+      <div class="body">
+        <div class="fieldgroup">
+          <div class="field">
+            <label>线路 ID（必填、唯一）</label>
+            <input type="text" id="egId" placeholder="cn-zj-1">
+          </div>
+          <div class="field wide">
+            <label>代理 URL（支持 http / https / socks5 / socks5h）</label>
+            <input type="text" id="egProxy" placeholder="socks5://user:pass@1.2.3.4:1080">
+          </div>
+          <div class="field">
+            <label>渠道（realm）</label>
+            <select id="egRealm">
+              <option value="">不限</option>
+              <option value="cn">cn（国内）</option>
+              <option value="intl">intl（海外）</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>地区标签（展示用，不参与路由）</label>
+            <input type="text" id="egRegion" placeholder="CN-ZJ">
+          </div>
+          <div class="field">
+            <label>最多绑定账号数（0 = 默认 1，上限 3）</label>
+            <input type="number" id="egMax" min="0" max="3" value="1">
+          </div>
+          <div class="field wide">
+            <label>探活端点（可选；空 = 不探测）</label>
+            <input type="text" id="egProbe" placeholder="https://api.ipify.org?format=json">
+          </div>
+        </div>
+      </div>
+      <div class="foot">
+        <span class="dim" style="font-size:11px">代理口令只落 config.json；页面只显示 ***。</span>
+        <span class="spacer"></span>
+        <button id="egressEditorTest" style="padding:3px 10px;font-size:12px">试探活（保存前）</button>
+        <button id="egressEditorSave" class="primary" style="padding:3px 12px;font-size:12px">保存</button>
+        <button id="egressEditorCancel" style="padding:3px 10px;font-size:12px">取消</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 浏览器档案（持久浏览器画像 + 绑定账号 + 绑定出口）。
+       #
+       # 设计稿：dist/mockups/browser-profiles-ui.html（三态：列表 / 编辑 / 启动后）
+       # 后端：internal/admin/profiles.go + internal/boot/profilestore.go
+       #
+       # 为什么它是独立 section
+       它管的是"设备画像"（cookie / 出口 / 浏览器版本），改的是数据根下的
+       browser-profiles.json 与 browser/<id>/ 目录，与「设置」的逐字段 patch 不是一回事。
+       #
+       # 两条会被后端拒绝的配置（这里也提前挡，省一次往返）
+       1. 附加参数里写 --user-data-dir / --proxy-server：档案目录与出口由面板决定。
+       2. 绑一条不存在的线路：启动时才炸等于"配好了却起不来"。 -->
+  <section data-key="profiles">
+    <h2>浏览器档案
+      <span class="spacer"></span>
+      <button id="btnProfileSave" class="primary" style="padding:3px 12px;font-size:12px">保存</button>
+      <button id="btnProfileAdd" style="padding:3px 10px;font-size:12px">新建档案</button>
+    </h2>
+    <div class="body">
+      <p class="info-line">
+        一份档案 = 一份独立的浏览器配置（cookie / localStorage 都在 <code class="mono">browser/&lt;id&gt;/</code> 里）。
+        加号时用它打开授权页，之后续期、签到不用重新输密码；<b>它不是无痕窗口</b> ——
+        要让它生效得把「设置 → 登录」的 <code class="mono">profile_mode</code> 切成 <code class="mono">reuse</code>。
+        档案可以绑<b>具体账号</b>（uid）与<b>出口线路</b>：浏览器和网关里这个号的出口保持一致，风控才看不到两个矛盾画像。
+      </p>
+      <p class="info-line" id="profileBrowserHint" style="margin-top:-4px"></p>
+      <table>
+        <thead><tr>
+          <th>档案</th><th>账号</th><th>上游</th><th>线路</th>
+          <th>最近使用</th><th>调试端口</th><th>磁盘</th><th>操作</th>
+        </tr></thead>
+        <tbody id="profileRows"><tr><td colspan="8" class="dim">加载中…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- 档案编辑器（新增与编辑共用）。字段与后端 profilePatch 一一对应。 -->
+    <div class="ceditor" id="profileEditor" hidden>
+      <h2><b id="profileEditorTitle">新建档案</b><span>保存后立即写入 browser-profiles.json，不需要重启</span></h2>
+      <div class="body">
+        <div class="fieldgroup">
+          <div class="field">
+            <label>档案 ID（同时是目录名，创建后不可改）</label>
+            <input type="text" id="pfId" placeholder="workbuddy">
+            <span class="hint">只允许字母 / 数字 / <code class="mono">- _ .</code></span>
+          </div>
+          <div class="field">
+            <label>绑定账号（uid）</label>
+            <select id="pfUid"></select>
+            <span class="hint">绑了就把账号名一起记上；留空 = 只做一份通用档案</span>
+          </div>
+          <div class="field">
+            <label>标签（展示用，留空 = 用账号名）</label>
+            <input type="text" id="pfLabel" placeholder="主号档案">
+          </div>
+          <div class="field">
+            <label>出站线路</label>
+            <select id="pfEgress"></select>
+            <span class="hint">带认证的代理会被拒绝：Chrome 的 <code class="mono">--proxy-server</code> 不处理认证</span>
+          </div>
+          <div class="field">
+            <label>启动时打开的地址（可空）</label>
+            <input type="text" id="pfStartURL" placeholder="留空 = about:blank">
+          </div>
+          <div class="field">
+            <label>归属上游（随账号自动带出）</label>
+            <input type="text" id="pfProvider" placeholder="留空 = 不绑定">
+          </div>
+          <div class="field wide">
+            <label>附加参数（每行一个，排障用）</label>
+            <textarea id="pfExtra" placeholder="--window-size=1280,900"></textarea>
+            <span class="hint">会原样拼到命令行末尾。<b>不能</b>写 <code class="mono">--user-data-dir</code> / <code class="mono">--proxy-server</code>（那两个由档案与线路决定）。</span>
+          </div>
+        </div>
+      </div>
+      <div class="foot">
+        <span class="dim" style="font-size:11px">删除时默认连目录一起删（那是几百 MB cookie）；想留着抢救就勾下面这个。</span>
+        <span class="spacer"></span>
+        <label class="dim" style="font-size:11px;display:inline-flex;align-items:center;gap:6px">
+          <input type="checkbox" id="pfKeepDir"> 删除时保留目录
+        </label>
+        <button id="pfCancel" style="padding:3px 10px;font-size:12px">取消</button>
+        <button id="pfSave" class="primary" style="padding:3px 12px;font-size:12px">保存</button>
       </div>
     </div>
   </section>
@@ -4994,6 +5312,12 @@ let loginProvider = '';
     // 这块数据来自 config.json 的 custom_upstreams，只有用户真的打开这个
     // 面板时才需要 —— 首屏就拉等于让每个会话多付一次读取。
     if (key === 'custom-upstreams') loadCustomUpstreams();
+    // 备份：按需拉（GET /admin/backup 不打网络，但仍遵守"看不见的面板不产生流量"）
+    if (key === 'backup') loadBackup();
+    // 出口线路：按需拉（探活结果只取缓存，不打网络）
+    if (key === 'egress') loadEgress();
+    // 浏览器档案：按需拉（顺带取线路表填下拉，探活只读缓存）
+    if (key === 'profiles') loadProfiles();
     // 仪表盘的统计卡片与趋势图：30s 轮询现在**只在仪表盘可见时**跑
     //（见 boot 里那个定时器），所以切回来必须立刻补一次，
     // 否则用户看到的是上次离开时的旧数。
@@ -6325,6 +6649,935 @@ let loginProvider = '';
     } finally {
       btn.disabled = false;
     }
+  }
+
+  // ---------------------------------------------------------------- 账号导出
+  //
+  // 端点：POST /admin/accounts/export（internal/admin/account_export.go）
+  //
+  // # 为什么不用 admin()
+  //
+  // admin() 把响应体当 JSON 解析（它会 r.text() + JSON.parse）。而这里的
+  // 响应是**文件本体**（zip / csv / txt），走它会把二进制当文本读坏、
+  // 还会因为解析失败抛一个看不懂的错。所以单独一次 fetch + blob。
+  //
+  // # 为什么含凭据要先 confirm
+  //
+  // 后端已经要求 confirm 必须等于 export-secrets（防脚本误调）。前端这一层解决的是
+  // 人的误触：那个文件等同账号口令，用户点下去之前应该有一次明确的停顿。
+  async function exportAccounts(format, withSecrets) {
+    const body = { format };
+    if (withSecrets) {
+      const ok = confirm('即将导出**含凭据**的账号数据：\n\n'
+        + '· accessToken / refreshToken 都在文件里，等同账号口令\n'
+        + '· 只放到你自己控制的介质；不要发群、不要进 git 仓库\n'
+        + '· 导入回来的方式：POST /admin/accounts/import，或直接放回 auths/<上游>/\n\n继续导出？');
+      if (!ok) return;
+      body.include_secrets = true;
+      body.confirm = 'export-secrets';
+    }
+    try {
+      const r = await fetch('/admin/accounts/export', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, hdr()),
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const txt = await r.text();
+        let msg = txt;
+        try { const j = JSON.parse(txt); if (j && j.error) msg = j.error; } catch (e) { /* 非 JSON 原样显示 */ }
+        throw new Error(msg || ('HTTP ' + r.status));
+      }
+      const blob = await r.blob();
+      const cd = r.headers.get('Content-Disposition') || '';
+      // ⚠ 这里**不用正则**取文件名：正则字面量里的引号会干扰仓库的源码守卫
+      //（internal/server 的 stripJSCommentsDeep 不认识正则，会把引号当字符串起点，
+      //  于是把后面的源码一起吃掉 —— 实测会让两个 webui 守卫报"找不到函数"）。
+      let name = 'naibox-accounts.' + format;
+      const at = cd.indexOf('filename=');
+      if (at >= 0) {
+        let v = cd.slice(at + 9).trim();
+        while (v.length && (v.charAt(0) === '"' || v.charAt(0) === "'")) v = v.slice(1);
+        while (v.length && (v.charAt(v.length - 1) === '"' || v.charAt(v.length - 1) === "'")) v = v.slice(0, -1);
+        if (v) name = v;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // 立刻 revoke 会让部分浏览器（Safari）下载失败，10s 是稳妥值。
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      toast(`已导出 ${name}`, false);
+    } catch (e) {
+      toast('导出失败：' + ((e && e.message) || e), true);
+    }
+  }
+
+  function wireExportButtons() {
+    const csv = $('btnExportCSV');
+    if (csv) csv.addEventListener('click', () => exportAccounts('csv', false));
+    const txt = $('btnExportTXT');
+    if (txt) txt.addEventListener('click', () => exportAccounts('txt', false));
+    const js = $('btnExportJSON');
+    if (js) js.addEventListener('click', () => {
+      // 含凭据：账号多时打成 zip，单个账号时后端会回一个可直接丢回 auths/ 的 json。
+      exportAccounts('zip', true);
+    });
+  }
+
+  // ---------------------------------------------------------------- 出口线路
+  //
+  // 契约（internal/admin/egress.go）：
+  //   GET  /admin/egress                       -> {lines:[{id,proxy,realm,region,max_accounts,bound,probe}],accounts:[…]}
+  //   POST /admin/egress/probe {ids,force}     -> {lines:[…]}
+  //   PUT  /admin/egress  [line…] 或 {lines:[…]} -> {ok,applied,need_restart}
+  //   POST /admin/accounts/{uid}/egress {egress_id} -> {ok,uid,egress}
+  //
+  // 三条纪律：
+  //   1. **PUT 是整表覆盖**：始终从 egressState.lines 复制一份改完再提交。
+  //   2. 代理地址是**脱敏**的（服务端只回 socks5://***@host:port）。编辑时
+  //      输入框留空 = 沿用旧值？—— 不。线路与账号不同：proxy 是必填项，
+  //      没有"空串=沿用"的语义（后端 normalizeEgress 会直接拒绝空 proxy）。
+  //      所以编辑器**总是要求重填完整 URL**，并在提示里写清楚。
+  //   3. 绑定失败的原因必须原样显示（满员 / 地区不符 / 不存在三种，
+  //      后端分别回 409 / 400 / 400）。
+  let egressState = { lines: [], accounts: [] };
+  let egressEditing = null;   // 正在编辑的线路 id（null = 新增）
+
+  async function loadEgress() {
+    const host = $('egressRows');
+    if (!host) return;
+    try {
+      const d = await admin('/admin/egress');
+      egressState.lines = (d && d.lines) || [];
+      egressState.accounts = (d && d.accounts) || [];
+      renderEgress();
+    } catch (e) {
+      host.innerHTML = `<tr><td colspan="5" class="err">读取失败：${esc((e && e.message) || e)}</td></tr>`;
+    }
+  }
+
+  function egressProbeCell(pr) {
+    if (!pr) return '<span class="dim">未探活</span>';
+    if (!pr.at && !pr.error) return '<span class="dim">未探活</span>';
+    if (pr.ok) {
+      const who = [pr.ip || '', pr.country || ''].filter(Boolean).join(' ');
+      const ms = pr.latency_ms == null ? '' : (' · ' + pr.latency_ms + 'ms');
+      return `<span class="pill ok">通</span> <span class="mono" style="font-size:11px">${esc(who)}</span><span class="dim">${esc(ms)}</span>`;
+    }
+    return `<span class="pill err">失败</span> <span class="dim" title="${escAttr(pr.error || '')}">${esc(shorten(pr.error || '未知原因', 40))}</span>`;
+  }
+
+  function renderEgress() {
+    const host = $('egressRows');
+    if (!host) return;
+    const lines = egressState.lines || [];
+    if (!lines.length) {
+      host.innerHTML = '<tr><td colspan="5" class="dim">还没有出口线路 —— 所有账号都走共用出口。点右上角「新增线路」加一条。</td></tr>';
+    } else {
+      host.innerHTML = lines.map(l => {
+        const id = String(l.id || '');
+        const where = [l.realm || '不限', l.region || ''].filter(Boolean).join(' / ');
+        const bound = l.bound || 0;
+        const max = l.max_accounts || 1;
+        const over = bound > max;
+        return `<tr>
+          <td><b>${esc(id)}</b><br><span class="dim">${esc(where)}</span></td>
+          <td class="mono" style="font-size:11px">${esc(shorten(l.proxy || '', 54))}</td>
+          <td>${over
+            ? `<span class="pill err">${esc(String(bound))}/${esc(String(max))}</span>`
+            : `<span class="mono">${esc(String(bound))}/${esc(String(max))}</span>`}</td>
+          <td>${egressProbeCell(l.probe)}</td>
+          <td><span class="row-actions">
+            <button data-egact="probe" data-id="${escAttr(id)}">探活</button>
+            <button data-egact="edit" data-id="${escAttr(id)}">编辑</button>
+            <button data-egact="del" data-id="${escAttr(id)}">删除</button>
+          </span></td>
+        </tr>`;
+      }).join('');
+    }
+    renderEgressSelects();
+  }
+
+  // renderEgressSelects 填「账号 → 线路」两个下拉。
+  //
+  // 账号下拉带当前绑定信息（uid · 渠道 · 线路），否则同名账号分不清。
+  function renderEgressSelects() {
+    const acc = $('egressAccount');
+    if (!acc) return;
+    const cur = acc.value;
+    acc.innerHTML = (egressState.accounts || []).map(a => {
+      const label = [a.uid, a.nickname, a.channel, a.egress ? ('→' + a.egress) : '共用出口']
+        .filter(Boolean).join(' · ');
+      return `<option value="${escAttr(a.uid)}" data-egress="${escAttr(a.egress || '')}">${esc(label)}</option>`;
+    }).join('');
+    if (cur) acc.value = cur;
+    const tgt = $('egressTarget');
+    if (tgt) {
+      const curT = tgt.value;
+      tgt.innerHTML = '<option value="">（解绑，回到共用出口）</option>'
+        + (egressState.lines || []).map(l => {
+          const b = l.bound || 0, m = l.max_accounts || 1;
+          return `<option value="${escAttr(l.id)}">${esc(l.id)}（${esc(String(b))}/${esc(String(m))}）</option>`;
+        }).join('');
+      if (curT) tgt.value = curT;
+    }
+    syncEgressAccountPick();
+  }
+
+  // syncEgressAccountPick 切账号时把它的当前线路带到右侧下拉上。
+  function syncEgressAccountPick() {
+    const acc = $('egressAccount');
+    const tgt = $('egressTarget');
+    if (!acc || !tgt) return;
+    const opt = acc.options[acc.selectedIndex];
+    if (opt) tgt.value = opt.dataset.egress || '';
+  }
+
+  async function probeEgress(ids, force) {
+    try {
+      const d = await admin('/admin/egress/probe', { method: 'POST', body: JSON.stringify({ ids: ids || [], force: !!force }) });
+      const lines = (d && d.lines) || [];
+      const byID = {};
+      lines.forEach(l => { byID[l.id] = l; });
+      egressState.lines = (egressState.lines || []).map(l => byID[l.id] ? Object.assign({}, l, byID[l.id]) : l);
+      renderEgress();
+      const bad = lines.filter(l => l.probe && !l.probe.ok);
+      toast(bad.length ? `探活完成：${lines.length - bad.length} 条通，${bad.length} 条失败`
+        : `探活完成：${lines.length} 条线路全部连通`, bad.length > 0);
+    } catch (e) {
+      toast('探活失败：' + ((e && e.message) || e), true);
+    }
+  }
+
+  function openEgressEditor(id) {
+    const line = id ? (egressState.lines || []).find(x => x.id === id) : null;
+    egressEditing = line ? line.id : null;
+    $('egressEditorTitle').textContent = line ? ('编辑线路 ' + line.id) : '新增线路';
+    $('egId').value = line ? line.id : '';
+    $('egId').disabled = !!line;   // id 是绑定的外键，改它等于换一条线
+    // ⚠ proxy 不回填：服务端只给脱敏值（socks5://***@host），回填再保存
+    // 会把 *** 当口令写回去 —— 那是不可逆的破坏。所以永远要求重填。
+    $('egProxy').value = '';
+    $('egProxy').placeholder = line && line.proxy ? ('当前 ' + line.proxy + '（需重新填写完整 URL）') : 'socks5://user:pass@1.2.3.4:1080';
+    $('egRealm').value = line ? (line.realm || '') : '';
+    $('egRegion').value = line ? (line.region || '') : '';
+    $('egMax').value = line ? (line.max_accounts || 1) : 1;
+    $('egProbe').value = line ? (line.probe_url || '') : '';
+    $('egressEditor').hidden = false;
+    $('egressEditor').scrollIntoView({ block: 'nearest' });
+  }
+
+  function closeEgressEditor() {
+    $('egressEditor').hidden = true;
+    egressEditing = null;
+  }
+
+  // collectEgressLines 把内存表格拼回后端要的整表。
+  //
+  // # 脱敏与整表覆盖的冲突怎么解（**这条必须看懂再改**）
+  //
+  // 接口下发的 proxy 是脱敏值（socks5://***@host）。PUT 是整表覆盖 ——
+  // 如果前端把展示值原样提交，*** 就会被当成真用户名写进 config.json，
+  // 下一跳直接 407，而且不可逆。
+  //
+  // 所以约定（与「自定义上游的 api_key」同一条）：**空 proxy = 沿用同 id 旧值**
+  // （后端 boot/egressstore.go 的 Save 里做合并）。于是前端只需要保证
+  // "被改动的那一条带完整 URL"，其余线路的 proxy 一律提交空串。
+  //
+  // 新增线路没有旧值可继承 → 空 proxy 会被后端明确拒绝（不会静默写成空）。
+  function collectEgressLines(patchLine, deletedID) {
+    const out = [];
+    (egressState.lines || []).forEach(l => {
+      if (deletedID && l.id === deletedID) return;
+      if (patchLine && patchLine.id === l.id) {
+        out.push(patchLine);
+        return;
+      }
+      out.push({
+        id: l.id, proxy: '', realm: l.realm || '', region: l.region || '',
+        max_accounts: l.max_accounts || 1, probe_url: l.probe_url || '',
+      });
+    });
+    return out;
+  }
+
+  async function saveEgress(patchLine, deletedID) {
+    const body = collectEgressLines(patchLine, deletedID);
+    try {
+      const r = await admin('/admin/egress', { method: 'PUT', body: JSON.stringify(body) });
+      const nr = (r && r.need_restart) || [];
+      toast('线路已保存并写入 config.json' + (nr.length ? '：**重启网关**后对出站生效（探活可先验证）' : ''), false);
+      await loadEgress();
+      return true;
+    } catch (e) {
+      toast('保存失败：' + ((e && e.message) || e), true);
+      return false;
+    }
+  }
+
+  async function saveEgressEditor() {
+    const id = ($('egId').value || '').trim();
+    const proxy = ($('egProxy').value || '').trim();
+    if (!id) { toast('线路 ID 不能为空', true); return; }
+    if (!proxy) { toast('请填写完整的代理 URL（服务端只回脱敏值，无法沿用）', true); return; }
+    const line = {
+      id,
+      proxy,
+      realm: $('egRealm').value,
+      region: ($('egRegion').value || '').trim(),
+      max_accounts: Number($('egMax').value) || 0,
+      probe_url: ($('egProbe').value || '').trim(),
+    };
+    if (await saveEgress(line, null)) closeEgressEditor();
+  }
+
+  async function bindEgress() {
+    const acc = $('egressAccount');
+    const tgt = $('egressTarget');
+    if (!acc || !tgt || !acc.value) { toast('先选一个账号', true); return; }
+    try {
+      await admin('/admin/accounts/' + encodeURIComponent(acc.value) + '/egress',
+        { method: 'POST', body: JSON.stringify({ egress_id: tgt.value }) });
+      toast(tgt.value ? `已把 ${acc.value} 绑到 ${tgt.value}` : `已把 ${acc.value} 解绑（回到共用出口）`, false);
+      await loadEgress();
+    } catch (e) {
+      toast('绑定失败：' + ((e && e.message) || e), true);
+    }
+  }
+
+  function wireEgressPanel() {
+    const save = $('btnEgressSave');
+    if (save) save.addEventListener('click', () => { saveEgress(null, null); });
+    const probeAll = $('btnEgressProbeAll');
+    if (probeAll) probeAll.addEventListener('click', () => probeEgress([], true));
+    const add = $('btnEgressAdd');
+    if (add) add.addEventListener('click', () => openEgressEditor(null));
+    const editorSave = $('egressEditorSave');
+    if (editorSave) editorSave.addEventListener('click', saveEgressEditor);
+    const editorCancel = $('egressEditorCancel');
+    if (editorCancel) editorCancel.addEventListener('click', closeEgressEditor);
+    const editorTest = $('egressEditorTest');
+    if (editorTest) editorTest.addEventListener('click', () => {
+      const id = ($('egId').value || '').trim();
+      if (!id) { toast('先填线路 ID', true); return; }
+      // 保存前试探活：只能测**已保存**的线路（探活读的是服务端配置）。
+      // 所以这里先保存再探活，避免"看起来能测其实测的是旧 URL"。
+      toast('试探活读的是已保存的配置：正在先保存再探活', false);
+      saveEgressEditor().then(() => probeEgress([id], true));
+    });
+    const bind = $('btnEgressBind');
+    if (bind) bind.addEventListener('click', bindEgress);
+    const acc = $('egressAccount');
+    if (acc) acc.addEventListener('change', syncEgressAccountPick);
+    const rows = $('egressRows');
+    if (rows) rows.addEventListener('click', ev => {
+      const btn = ev.target.closest('button[data-egact]');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      if (btn.dataset.egact === 'probe') probeEgress([id], true);
+      if (btn.dataset.egact === 'edit') openEgressEditor(id);
+      if (btn.dataset.egact === 'del') {
+        if (!confirm('删除线路 ' + id + '？还绑在它上面的账号会回落共用出口。')) return;
+        saveEgress(null, id);
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------- 浏览器档案
+  //
+  // 契约（internal/admin/profiles.go）：
+  //   GET    /admin/browser-profiles                        -> {profiles:[…], browser:{ok,name,path,error}, accounts:[…]}
+  //   POST   /admin/browser-profiles  {id,uid,provider,label,egress_id,start_url,extra_args[]}
+  //   DELETE /admin/browser-profiles/{id}?keep_dir=1
+  //   POST   /admin/browser-profiles/{id}/launch {url}
+  //   POST   /admin/browser-profiles/{id}/open-dir          （服务端形态明确 501）
+  //
+  // 三条纪律：
+  //   1. 绑 uid 会把账号名带进标签（后端做，前端只负责把 uid 传对）。
+  //   2. 附加参数里不能有 --user-data-dir / --proxy-server，前端先挡一次。
+  //   3. 启动是**有副作用**的动作：按钮要立刻变"启动中…"，不能让人连点开五个窗口。
+  let profileState = { profiles: [], accounts: [], browser: null, lines: [] };
+  let profileEditing = null;
+
+  async function loadProfiles() {
+    const host = $('profileRows');
+    if (!host) return;
+    try {
+      const [d, eg] = await Promise.all([
+        admin('/admin/browser-profiles'),
+        admin('/admin/egress').catch(() => null),
+      ]);
+      profileState.profiles = (d && d.profiles) || [];
+      profileState.accounts = (d && d.accounts) || [];
+      profileState.browser = (d && d.browser) || null;
+      profileState.lines = (eg && eg.lines) || [];
+      const b = profileState.browser;
+      const hint = $('profileBrowserHint');
+      if (hint) {
+        hint.innerHTML = b && b.ok
+          ? `本机浏览器：<b>${esc(b.name)}</b> <span class="mono">${esc(b.path)}</span>（可在编辑器的“浏览器”里手写路径覆盖）`
+          : `<span class="err">没有探测到可用浏览器：${esc((b && b.error) || '未知原因')}</span> —— 档案仍然可以保存，但启动会失败。`;
+      }
+      renderProfiles();
+      renderProfileSelects();
+    } catch (e) {
+      host.innerHTML = `<tr><td colspan="8" class="err">读取失败：${esc((e && e.message) || e)}</td></tr>`;
+    }
+  }
+
+  function profileBytes(n) {
+    if (!n) return '—';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  function profileTime(iso) {
+    if (!iso) return '从未使用';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    const pad = v => (v < 10 ? '0' + v : '' + v);
+    return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function renderProfiles() {
+    const host = $('profileRows');
+    if (!host) return;
+    const list = profileState.profiles || [];
+    if (!list.length) {
+      host.innerHTML = '<tr><td colspan="8" class="dim">还没有浏览器档案 —— 点右上角「新建档案」。'
+        + '不建也能用：默认的「一次性无痕」模式不需要档案。</td></tr>';
+      return;
+    }
+    host.innerHTML = list.map(p => {
+      const id = String(p.id || '');
+      const who = p.account_name
+        ? `${esc(p.account_name)}<br><span class="dim mono" style="font-size:11px">${esc(p.uid || '')}</span>`
+        : (p.uid ? `<span class="mono" style="font-size:11px">${esc(p.uid)}</span>` : '<span class="dim">未绑定</span>');
+      const running = p.last_debug_port
+        ? `<span class="mono">${esc(String(p.last_debug_port))}</span>`
+        : '<span class="dim">—</span>';
+      const label = p.label ? esc(p.label) : esc(id);
+      return `<tr>
+        <td><b>${label}</b><br><span class="dim mono" style="font-size:11px">${esc(id)}</span></td>
+        <td style="font-size:12px">${who}</td>
+        <td style="font-size:12px">${p.provider ? esc(p.provider) : '<span class="dim">—</span>'}</td>
+        <td style="font-size:12px">${p.egress_id ? `<span class="mono">${esc(p.egress_id)}</span>` : '<span class="dim">直连</span>'}</td>
+        <td style="font-size:12px">${esc(profileTime(p.last_used_at))}
+          ${p.last_url ? `<br><span class="dim" style="font-size:11px">${esc(shorten(p.last_url, 28))}</span>` : ''}</td>
+        <td>${running}</td>
+        <td class="dim" style="font-size:12px">${esc(profileBytes(p.disk_bytes))}</td>
+        <td><span class="row-actions">
+          <button data-pf="launch" data-id="${escAttr(id)}">启动</button>
+          <button data-pf="edit" data-id="${escAttr(id)}">编辑</button>
+          <button data-pf="dir" data-id="${escAttr(id)}">目录</button>
+          <button data-pf="del" data-id="${escAttr(id)}">删除</button>
+        </span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  // renderProfileSelects 填「账号」与「线路」两个下拉（编辑器用）。
+  function renderProfileSelects() {
+    const uid = $('pfUid');
+    if (uid) {
+      const cur = uid.value;
+      uid.innerHTML = '<option value="">（不绑定账号）</option>'
+        + (profileState.accounts || []).map(a => {
+          const t = [a.uid, a.nickname, a.provider].filter(Boolean).join(' · ');
+          return `<option value="${escAttr(a.uid)}">${esc(t)}</option>`;
+        }).join('');
+      if (cur) uid.value = cur;
+    }
+    const eg = $('pfEgress');
+    if (eg) {
+      const cur = eg.value;
+      eg.innerHTML = '<option value="">（直连，不绑定）</option>'
+        + (profileState.lines || []).map(l => {
+          const b = l.bound || 0, m = l.max_accounts || 1;
+          const where = l.region ? ` · ${l.region}` : '';
+          return `<option value="${escAttr(l.id)}">${esc(l.id)}（${esc(String(b))}/${esc(String(m))}${esc(where)}）</option>`;
+        }).join('');
+      if (cur) eg.value = cur;
+    }
+  }
+
+  function openProfileEditor(id) {
+    const p = id ? (profileState.profiles || []).find(x => x.id === id) : null;
+    profileEditing = p ? p.id : null;
+    renderProfileSelects();
+    $('profileEditorTitle').textContent = p ? ('编辑档案 ' + p.id) : '新建档案';
+    $('pfId').value = p ? p.id : '';
+    $('pfId').disabled = !!p;         // id 是目录名与绑定外键，创建后不可改
+    $('pfUid').value = p ? (p.uid || '') : '';
+    $('pfLabel').value = p ? (p.label || '') : '';
+    $('pfEgress').value = p ? (p.egress_id || '') : '';
+    $('pfStartURL').value = p ? (p.start_url || '') : '';
+    $('pfProvider').value = p ? (p.provider || '') : '';
+    $('pfExtra').value = p && p.extra_args ? p.extra_args.join('\n') : '';
+    $('profileEditor').hidden = false;
+    $('profileEditor').scrollIntoView({ block: 'nearest' });
+  }
+
+  function closeProfileEditor() {
+    $('profileEditor').hidden = true;
+    profileEditing = null;
+  }
+
+  async function saveProfile() {
+    const id = ($('pfId').value || '').trim();
+    if (!id) { toast('档案 ID 不能为空', true); return; }
+    const extra = ($('pfExtra').value || '').split('\n').map(x => x.trim()).filter(Boolean);
+    for (const a of extra) {
+      const low = a.toLowerCase();
+      if (low.indexOf('--user-data-dir') === 0 || low.indexOf('--proxy-server') === 0) {
+        toast('附加参数里不能写 ' + a.split('=')[0] + '：档案目录与出口由面板决定', true);
+        return;
+      }
+    }
+    const body = {
+      id,
+      uid: $('pfUid').value || '',
+      provider: ($('pfProvider').value || '').trim(),
+      label: ($('pfLabel').value || '').trim(),
+      egress_id: $('pfEgress').value || '',
+      start_url: ($('pfStartURL').value || '').trim(),
+      extra_args: extra,
+    };
+    const btn = $('pfSave');
+    if (btn) btn.disabled = true;
+    try {
+      await admin('/admin/browser-profiles', { method: 'POST', body: JSON.stringify(body) });
+      toast('档案已保存：' + id, false);
+      closeProfileEditor();
+      await loadProfiles();
+    } catch (e) {
+      toast('保存失败：' + ((e && e.message) || e), true);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function deleteProfile(id, keepDir) {
+    const msg = keepDir
+      ? `把档案 ${id} 从索引里移除（目录保留）？`
+      : `删除档案 ${id} 并**连目录一起删**？cookie 会一起消失，只清索引请勾「删除时保留目录」。`;
+    if (!confirm(msg)) return;
+    try {
+      await admin('/admin/browser-profiles/' + encodeURIComponent(id) + (keepDir ? '?keep_dir=1' : ''),
+        { method: 'DELETE' });
+      toast('已删除档案 ' + id, false);
+      await loadProfiles();
+    } catch (e) {
+      toast('删除失败：' + ((e && e.message) || e), true);
+    }
+  }
+
+  async function launchProfile(id) {
+    const buttons = document.querySelectorAll('#profileRows button[data-pf="launch"]');
+    buttons.forEach(b => { if (b.dataset.id === id) { b.disabled = true; b.textContent = '启动中…'; } });
+    try {
+      const r = await admin('/admin/browser-profiles/' + encodeURIComponent(id) + '/launch',
+        { method: 'POST', body: JSON.stringify({}) });
+      const port = r && r.debug_port ? `调试端口 ${r.debug_port}` : '未读到调试端口（浏览器可能还在起）';
+      toast(`已启动 ${(r && r.browser) || '浏览器'}（${port}）`, false);
+      await loadProfiles();
+    } catch (e) {
+      toast('启动失败：' + ((e && e.message) || e), true);
+    } finally {
+      buttons.forEach(b => { b.disabled = false; b.textContent = '启动'; });
+    }
+  }
+
+  async function openProfileDir(id) {
+    try {
+      await admin('/admin/browser-profiles/' + encodeURIComponent(id) + '/open-dir', { method: 'POST' });
+      toast('已打开档案目录', false);
+    } catch (e) {
+      // 服务端形态回 501 —— 这不是错误，是"这个形态没有桌面"。
+      toast('打开目录不可用：' + ((e && e.message) || e), true);
+    }
+  }
+
+  function wireProfilePanel() {
+    const save = $('btnProfileSave');
+    if (save) save.addEventListener('click', () => {
+      // 顶部「保存」= 提交编辑器里当前这条（与「备份」「出口线路」的按钮语义保持一致）。
+      if ($('profileEditor').hidden) { openProfileEditor(null); return; }
+      saveProfile();
+    });
+    const add = $('btnProfileAdd');
+    if (add) add.addEventListener('click', () => openProfileEditor(null));
+    const pfSave = $('pfSave');
+    if (pfSave) pfSave.addEventListener('click', saveProfile);
+    const cancel = $('pfCancel');
+    if (cancel) cancel.addEventListener('click', closeProfileEditor);
+    const rows = $('profileRows');
+    if (rows) rows.addEventListener('click', ev => {
+      const btn = ev.target.closest('button[data-pf]');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      const act = btn.dataset.pf;
+      if (act === 'launch') launchProfile(id);
+      if (act === 'edit') openProfileEditor(id);
+      if (act === 'dir') openProfileDir(id);
+      if (act === 'del') deleteProfile(id, $('pfKeepDir').checked);
+    });
+  }
+
+  // ---------------------------------------------------------------- 备份
+  //
+  // 契约（后端 internal/admin/backup.go）：
+  //
+  //   GET  /admin/backup                    -> {backup:{enabled,hours,keep,channels[],last[]}}
+  //   PUT  /admin/backup                    body {enabled,hours,keep,channels[]}
+  //   POST /admin/backup/run                body {channels?:[]}  -> {ok,results[]}
+  //   POST /admin/backup/channels/test      body {id}            -> {ok,latency_ms,error,at}
+  //   GET  /admin/backup/objects?channel=id  -> {objects:[{name,size,mod_time}]}
+  //   GET  /admin/backup/download?channel=&name=  （二进制 zip）
+  //
+  // 三条纪律：
+  //   1. **PUT 是整段覆盖**：enabled/hours/keep/channels 全都要带上，
+  //      所以每次改通道都从 backupState 复制一份再提交（与自定义上游同一手法）。
+  //   2. **凭据只出不进**：服务端 GET 回来的是掩码（…abcd）。保存时对
+  //      "这次没有重填"的通道提交**空串** —— 后端把空串解释成"沿用旧值"。
+  //      把掩码原样发回去会被当成新密钥写盘，那是不可逆的破坏。
+  //   3. **包列表按需拉**：GET /admin/backup 不打网络（S3 List 会让设置页转圈），
+  //      只有点「包」时才取那一条通道的对象列表。
+  let backupState = null;    // 服务端最近下发的 backup 段
+  let backupEditing = null;  // 正在编辑的通道 id（null = 新增）
+  let backupProbes = {};     // id -> {ok,latency_ms,error,at}
+  let backupSecrets = {};    // id -> {access_key,secret_key,token}：本次新填的密钥
+  let backupObjects = null;  // {id, list}：正在查看的那条通道的包
+
+  async function loadBackup() {
+    const host = $('backupRows');
+    if (!host) return;
+    try {
+      const d = await admin('/admin/backup');
+      backupState = (d && d.backup) || { enabled: false, hours: [], keep: 10, channels: [], last: [] };
+      if (!Array.isArray(backupState.channels)) backupState.channels = [];
+      if (!Array.isArray(backupState.last)) backupState.last = [];
+      if (!Array.isArray(backupState.hours)) backupState.hours = [];
+      $('backupEnabled').checked = !!backupState.enabled;
+      $('backupHours').value = backupState.hours.join(',');
+      $('backupKeep').value = backupState.keep || 10;
+      renderBackupChannels();
+      renderBackupLast();
+    } catch (e) {
+      host.innerHTML = `<tr><td colspan="5" class="err">读取失败：${esc((e && e.message) || e)}</td></tr>`;
+    }
+  }
+
+  function backupTargetText(ch) {
+    if (ch.kind === 'local') return ch.dir ? ch.dir : '数据根下的 backups/';
+    if (ch.kind === 's3') return `${ch.endpoint || '?'} / ${ch.bucket || '?'} ${ch.prefix ? '（' + ch.prefix + '）' : ''}`;
+    if (ch.kind === 'openlist') return `${ch.endpoint || '?'} ${ch.remote_dir || '/naibox-backups'}`;
+    return '?';
+  }
+
+  function backupCredText(ch) {
+    if (ch.kind === 'local') return '<span class="dim">—</span>';
+    if (ch.kind === 's3') {
+      return `AK <span class="mono">${esc(ch.access_key || '未配')}</span> · SK <span class="mono">${esc(ch.secret_key || '未配')}</span>`;
+    }
+    if (ch.kind === 'openlist') return `token <span class="mono">${esc(ch.token || '未配')}</span>`;
+    return '<span class="dim">—</span>';
+  }
+
+  function renderBackupChannels() {
+    const host = $('backupRows');
+    if (!host) return;
+    const list = (backupState && backupState.channels) || [];
+    if (!list.length) {
+      host.innerHTML = '<tr><td colspan="5" class="dim">还没有备份通道 —— 点右上角「新增通道」。</td></tr>';
+      return;
+    }
+    host.innerHTML = list.map(ch => {
+      const id = String(ch.id || '');
+      const pr = backupProbes[id];
+      // 「没测过 / 成功 / 失败」三种状态不能合并：把没测过画成失败，
+      // 会让人去查一条根本没跑过的通道。
+      const probeCell = !pr
+        ? '<span class="dim">未测试</span>'
+        : (pr.ok
+            ? `<span class="pill ok">通</span> <span class="dim">${esc(pr.latency_ms == null ? '' : pr.latency_ms + ' ms')}</span>`
+            : `<span class="pill err">失败</span> <span class="dim">${esc(shorten(pr.error || '未知原因', 40))}</span>`);
+      const probeTitle = pr && pr.error ? ` title="${escAttr(pr.error)}"` : '';
+      const enabled = ch.enabled ? '<span class="pill ok">启用</span>' : '<span class="dim">停用</span>';
+      return `<tr>
+        <td><b>${esc(id)}</b><br><span class="dim">${esc(ch.kind || '')}</span></td>
+        <td class="mono" style="font-size:11px">${esc(shorten(backupTargetText(ch), 60))}</td>
+        <td style="font-size:11px">${backupCredText(ch)}</td>
+        <td>${enabled}</td>
+        <td><span class="row-actions">
+          <button data-act="test" data-id="${escAttr(id)}">测试</button>
+          <button data-act="objects" data-id="${escAttr(id)}">包</button>
+          <button data-act="edit" data-id="${escAttr(id)}">编辑</button>
+          <button data-act="del" data-id="${escAttr(id)}">删除</button>
+        </span><div style="margin-top:3px;font-size:11px"${probeTitle}>${probeCell}</div></td>
+      </tr>`;
+    }).join('');
+    renderBackupObjects();
+  }
+
+  function renderBackupObjects() {
+    const host = $('backupRows');
+    if (!host || !backupObjects) return;
+    const { id, list } = backupObjects;
+    const row = document.createElement('tr');
+    const cells = list.length
+      ? list.map(o => `<div><a href="/admin/backup/download?channel=${encodeURIComponent(id)}&name=${encodeURIComponent(o.name)}">${esc(o.name)}</a>
+          <span class="dim">${esc(o.mod_time || '')} · ${esc(o.size == null ? '' : Math.round(o.size / 1024) + ' KB')}</span></div>`).join('')
+      : '<span class="dim">这条通道里还没有备份包。</span>';
+    row.innerHTML = `<td colspan="5" style="background:var(--panel2)"><b>${esc(id)}</b> 的备份包：${cells}</td>`;
+    host.appendChild(row);
+  }
+
+  function renderBackupLast() {
+    const host = $('backupLast');
+    if (!host) return;
+    const last = (backupState && backupState.last) || [];
+    if (!last.length) {
+      host.innerHTML = '<p class="dim" style="font-size:11px;margin:10px 0 0">本次进程还没有执行过备份。</p>';
+      return;
+    }
+    host.innerHTML = '<p class="dim" style="font-size:11px;margin:14px 0 4px">上一次执行</p>'
+      + '<table><thead><tr><th>通道</th><th>结果</th><th>位置</th><th>时间</th></tr></thead><tbody>'
+      + last.map(r => `<tr>
+          <td>${esc(r.channel)}<br><span class="dim">${esc(r.kind || '')}</span></td>
+          <td>${r.ok ? '<span class="pill ok">成功</span>' : `<span class="pill err">失败</span> <span class="dim">${esc(shorten(r.error || '', 60))}</span>`}</td>
+          <td class="mono" style="font-size:11px">${esc(shorten(r.location || '—', 60))}</td>
+          <td class="dim" style="font-size:11px">${esc(r.at || '')}</td>
+        </tr>`).join('')
+      + '</tbody></table>';
+  }
+
+  // parseHours 把 "3, 15,3" 规整成 [3,15]。
+  //
+  // 非法值在这里就挡下并抛错：后端也会校验（0-23），但一路 round-trip 到
+  // 后端才报错，用户的输入框已经滚出视野了。
+  function backupParseHours(raw) {
+    const out = [];
+    for (const part of String(raw || '').split(',')) {
+      const t = part.trim();
+      if (!t) continue;
+      const n = Number(t);
+      if (!Number.isInteger(n) || n < 0 || n > 23) {
+        throw new Error('整点必须是 0-23 的整数：' + t);
+      }
+      if (!out.includes(n)) out.push(n);
+    }
+    out.sort((a, b) => a - b);
+    return out;
+  }
+
+  // sanitizeChannelsForSave 把"没重填的密钥"清成空串（后端据此沿用旧值）。
+  function sanitizeChannelsForSave() {
+    const list = (backupState && backupState.channels) || [];
+    return list.map(ch => {
+      const fresh = backupSecrets[ch.id] || {};
+      const out = {
+        id: ch.id, kind: ch.kind, enabled: !!ch.enabled,
+        dir: ch.dir || '', endpoint: ch.endpoint || '', bucket: ch.bucket || '',
+        region: ch.region || '', prefix: ch.prefix || '', remote_dir: ch.remote_dir || '',
+        access_key: fresh.access_key || '', secret_key: fresh.secret_key || '', token: fresh.token || '',
+      };
+      return out;
+    });
+  }
+
+  async function saveBackupSegment() {
+    if (!backupState) return;
+    const btn = $('btnBackupSave');
+    if (btn) btn.disabled = true;
+    try {
+      const body = {
+        enabled: $('backupEnabled').checked,
+        hours: backupParseHours($('backupHours').value),
+        keep: Math.max(1, Number($('backupKeep').value) || 10),
+        channels: sanitizeChannelsForSave(),
+      };
+      await admin('/admin/backup', { method: 'PUT', body: JSON.stringify(body) });
+      // 保存成功后清掉"新密钥"标记：它们已经落盘，再提交一次没有意义。
+      backupSecrets = {};
+      toast('备份配置已保存并立即生效', false);
+      await loadBackup();
+    } catch (e) {
+      toast('保存失败：' + ((e && e.message) || e), true);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function runBackupNow() {
+    const btn = $('btnBackupRun');
+    if (btn) { btn.disabled = true; btn.textContent = '备份中…'; }
+    try {
+      const d = await admin('/admin/backup/run', { method: 'POST', body: '{}' });
+      const res = (d && d.results) || [];
+      const bad = res.filter(r => !r.ok);
+      toast(bad.length
+        ? `备份完成：${res.length - bad.length} 条成功，${bad.length} 条失败（详见下方「上一次执行」）`
+        : `备份完成：${res.length} 条通道全部成功`, bad.length > 0);
+      await loadBackup();
+    } catch (e) {
+      toast('备份失败：' + ((e && e.message) || e), true);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '立即备份'; }
+    }
+  }
+
+  async function testBackupChannel(id) {
+    try {
+      const d = await admin('/admin/backup/channels/test', { method: 'POST', body: JSON.stringify({ id }) });
+      backupProbes[id] = d || { ok: false, error: '空回执' };
+      renderBackupChannels();
+      toast(backupProbes[id].ok ? `通道 ${id} 可用` : `通道 ${id} 不可用：${backupProbes[id].error || ''}`, !backupProbes[id].ok);
+    } catch (e) {
+      backupProbes[id] = { ok: false, error: String((e && e.message) || e) };
+      renderBackupChannels();
+      toast('测试失败：' + backupProbes[id].error, true);
+    }
+  }
+
+  async function showBackupObjects(id) {
+    try {
+      const d = await admin('/admin/backup/objects?channel=' + encodeURIComponent(id));
+      backupObjects = { id, list: (d && d.objects) || [] };
+      renderBackupChannels();
+    } catch (e) {
+      toast('列举备份包失败：' + ((e && e.message) || e), true);
+    }
+  }
+
+  // renderBackupEditorKind 按 kind 显隐字段（local/s3/openlist 三选一）。
+  function renderBackupEditorKind() {
+    const kind = $('bfKind').value;
+    document.querySelectorAll('#backupEditor .field[data-kind]').forEach(el => {
+      const kinds = (el.dataset.kind || '').split(/\s+/);
+      el.hidden = !kinds.includes(kind);
+    });
+  }
+
+  function openBackupEditor(id) {
+    const list = (backupState && backupState.channels) || [];
+    const ch = id ? list.find(x => x.id === id) : null;
+    backupEditing = ch ? ch.id : null;
+    $('backupEditorTitle').textContent = ch ? ('编辑通道 ' + ch.id) : '新增通道';
+    $('bfKind').value = ch ? ch.kind : 'local';
+    $('bfId').value = ch ? ch.id : '';
+    $('bfId').disabled = !!ch; // id 是账号/结果/对象路径的主键，改它等于换一条通道
+    $('bfDir').value = (ch && ch.dir) || '';
+    $('bfEndpoint').value = (ch && ch.endpoint) || '';
+    $('bfBucket').value = (ch && ch.bucket) || '';
+    $('bfRegion').value = (ch && ch.region) || '';
+    $('bfPrefix').value = (ch && ch.prefix) || '';
+    $('bfRemoteDir').value = (ch && ch.remote_dir) || '';
+    $('bfEnabled').checked = ch ? !!ch.enabled : true;
+    // 密钥输入框**永远留空**：掩码不进输入框，进去就会被当新值提交。
+    $('bfAccess').value = '';
+    $('bfSecret').value = '';
+    $('bfToken').value = '';
+    $('bfAccess').placeholder = ch && ch.access_key ? ('当前 ' + ch.access_key + '（留空 = 不改）') : 'AKIA…';
+    $('bfSecret').placeholder = ch && ch.secret_key ? ('当前 ' + ch.secret_key + '（留空 = 不改）') : '••••••••';
+    $('bfToken').placeholder = ch && ch.token ? ('当前 ' + ch.token + '（留空 = 不改）') : 'openlist token';
+    renderBackupEditorKind();
+    $('backupEditor').hidden = false;
+    $('backupEditor').scrollIntoView({ block: 'nearest' });
+  }
+
+  function closeBackupEditor() {
+    $('backupEditor').hidden = true;
+    backupEditing = null;
+  }
+
+  // saveBackupEditor 只改内存里的 backupState，然后整段 PUT。
+  //
+  // 为什么不"新增一条就 PUT 一条"：后端 PUT 是整段覆盖，分两次提交会让
+  // 第二次把第一次的改动当成被删除。
+  async function saveBackupEditor() {
+    const id = $('bfId').value.trim();
+    const kind = $('bfKind').value;
+    if (!id) { toast('通道 ID 不能为空', true); return; }
+    if (!/^[a-z][a-z0-9-]*$/.test(id)) { toast('通道 ID 只能是小写字母/数字/连字符，且以字母开头', true); return; }
+    const ch = {
+      id, kind, enabled: $('bfEnabled').checked,
+      dir: $('bfDir').value.trim(),
+      endpoint: $('bfEndpoint').value.trim(),
+      bucket: $('bfBucket').value.trim(),
+      region: $('bfRegion').value.trim(),
+      prefix: $('bfPrefix').value.trim(),
+      remote_dir: $('bfRemoteDir').value.trim(),
+    };
+    const list = (backupState.channels || []).filter(x => x.id !== id);
+    if (list.length !== (backupState.channels || []).length && backupEditing === null) {
+      toast('通道 ID 已存在', true);
+      return;
+    }
+    // 新填的密钥单独记在 backupSecrets 里：saveBackupSegment 只对它发真值。
+    const fresh = {};
+    if ($('bfAccess').value.trim()) fresh.access_key = $('bfAccess').value.trim();
+    if ($('bfSecret').value.trim()) fresh.secret_key = $('bfSecret').value.trim();
+    if ($('bfToken').value.trim()) fresh.token = $('bfToken').value.trim();
+    if (Object.keys(fresh).length) backupSecrets[id] = fresh;
+    // 展示用掩码沿用旧的（新值只显示"已填写"）
+    const prev = (backupState.channels || []).find(x => x.id === id) || {};
+    ch.access_key = fresh.access_key ? '（新值）' : (prev.access_key || '');
+    ch.secret_key = fresh.secret_key ? '（新值）' : (prev.secret_key || '');
+    ch.token = fresh.token ? '（新值）' : (prev.token || '');
+    list.push(ch);
+    backupState.channels = list;
+    closeBackupEditor();
+    await saveBackupSegment();
+  }
+
+  async function removeBackupChannel(id) {
+    const list = (backupState.channels || []).filter(x => x.id !== id);
+    if (list.length === (backupState.channels || []).length) return;
+    backupState.channels = list;
+    delete backupSecrets[id];
+    await saveBackupSegment();
+  }
+
+  function wireBackupPanel() {
+    const btnSave = $('btnBackupSave');
+    if (btnSave) btnSave.addEventListener('click', saveBackupSegment);
+    const btnRun = $('btnBackupRun');
+    if (btnRun) btnRun.addEventListener('click', runBackupNow);
+    const btnAdd = $('btnBackupAdd');
+    if (btnAdd) btnAdd.addEventListener('click', () => openBackupEditor(null));
+    const kindSel = $('bfKind');
+    if (kindSel) kindSel.addEventListener('change', renderBackupEditorKind);
+    const btnEditorSave = $('backupSave');
+    if (btnEditorSave) btnEditorSave.addEventListener('click', saveBackupEditor);
+    const btnCancel = $('backupCancel');
+    if (btnCancel) btnCancel.addEventListener('click', closeBackupEditor);
+    const btnTest = $('backupTest');
+    if (btnTest) btnTest.addEventListener('click', () => {
+      const id = $('bfId').value.trim() || backupEditing || '';
+      if (!id) { toast('先填通道 ID', true); return; }
+      testBackupChannel(id);
+    });
+    // 行内操作按钮用委托：表格是 innerHTML 重绘的，逐行绑定会随重绘失效。
+    const rows = $('backupRows');
+    if (rows) rows.addEventListener('click', ev => {
+      const btn = ev.target.closest('button[data-act]');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      switch (btn.dataset.act) {
+        case 'test': testBackupChannel(id); break;
+        case 'objects': showBackupObjects(id); break;
+        case 'edit': openBackupEditor(id); break;
+        case 'del':
+          if (confirm(`删除备份通道 ${id}？已上传的包不会删。`)) removeBackupChannel(id);
+          break;
+      }
+    });
   }
 
   // ---------------------------------------------------------------- 关窗询问
@@ -10227,6 +11480,12 @@ let multCatalogFailed = false;
     $('customSave').onclick = () => saveCustomUpstreams();
     $('customCancel').onclick = () => { closeCustomEditor(); toast('已取消，未写入配置'); };
     $('customTest').onclick = () => testCustomDraft();
+    // 备份面板：控件绑定只做一次（表格行内按钮由 wireBackupPanel 里的委托处理）。
+    // 数据同样按需加载 —— 只有切到 data-key="backup" 时才调 loadBackup。
+    wireProfilePanel();
+    wireEgressPanel();
+    wireExportButtons();
+    wireBackupPanel();
     // 显示/隐藏 key：只切 input.type，**不**重绘编辑器（重绘会丢其它字段的输入）。
     $('cfKeyToggle').onclick = () => {
       const inp = $('cfKey');

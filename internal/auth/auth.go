@@ -111,6 +111,9 @@ func Parse(raw []byte) (*Auth, error) {
 				ExpiresAt    int64  `json:"expiresAt"`
 				Domain       string `json:"domain"`
 				Channel      string `json:"channel"`
+				// Realm 是 channel 的**别名**：用户手上流传的凭证样例里
+				// 渠道字段叫 realm。两者都有时以 channel 为准（本程序自己写的）。
+				Realm string `json:"realm"`
 			} `json:"auth"`
 			Account struct {
 				UID          string `json:"uid"`
@@ -123,12 +126,16 @@ func Parse(raw []byte) (*Auth, error) {
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
 		}
+		channel := n.Auth.Channel
+		if channel == "" {
+			channel = n.Auth.Realm
+		}
 		a = Auth{
 			AccessToken:  n.Auth.AccessToken,
 			RefreshToken: n.Auth.RefreshToken,
 			ExpiresAt:    n.Auth.ExpiresAt,
 			Domain:       n.Auth.Domain,
-			Channel:      n.Auth.Channel,
+			Channel:      channel,
 			UID:          n.Account.UID,
 			EnterpriseID: n.Account.EnterpriseID,
 			Nickname:     n.Account.Nickname,
@@ -142,6 +149,7 @@ func Parse(raw []byte) (*Auth, error) {
 			ExpiresAt    int64  `json:"expiresAt"`
 			Domain       string `json:"domain"`
 			Channel      string `json:"channel"`
+			Realm        string `json:"realm"`
 			UID          string `json:"uid"`
 			EnterpriseID string `json:"enterpriseId"`
 			Nickname     string `json:"nickname"`
@@ -151,12 +159,16 @@ func Parse(raw []byte) (*Auth, error) {
 		if err := json.Unmarshal(raw, &f); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
 		}
+		flatChannel := f.Channel
+		if flatChannel == "" {
+			flatChannel = f.Realm
+		}
 		a = Auth{
 			AccessToken:  f.AccessToken,
 			RefreshToken: f.RefreshToken,
 			ExpiresAt:    f.ExpiresAt,
 			Domain:       f.Domain,
-			Channel:      f.Channel,
+			Channel:      flatChannel,
 			UID:          f.UID,
 			EnterpriseID: f.EnterpriseID,
 			Nickname:     f.Nickname,
@@ -205,14 +217,35 @@ func (a *Auth) SaveAtomic() error {
 // 新对象，没有并发读者）。凭证为空时返回错误 —— 与 SaveAtomic 同一条
 // 防御（避免误用空凭证覆盖有效文件）。
 func (a *Auth) MarshalNested() ([]byte, error) {
+	if a.FilePath == "" {
+		return nil, fmt.Errorf("no FilePath set")
+	}
+	return RenderNested(a)
+}
+
+// RenderNested 把凭证渲染成嵌套形 JSON（**不要求 FilePath**）。
+//
+// # 为什么从 MarshalNested 里拆出来
+//
+// 导出（/admin/accounts/export）要把内存里的凭证渲染成文件内容，而那个
+// 凭证可能是刚从池里取出来的、没有 FilePath 的对象。为了导出去伪造一个
+// 假的 FilePath 是错的（MarshalNested 的 FilePath 检查是为了保证"写回哪里"
+// 明确），所以拆成纯函数：一个负责"写回",一个负责"渲染"。
+//
+// # 为什么 channel 与 realm 双写
+//
+// 本程序读 `channel`，而用户手上流传的凭证样例（以及其它消费者）用 `realm`。
+// 两个键同值双写，文件既能被本程序原样吃回，也不会在别的工具里丢掉渠道信息。
+func RenderNested(a *Auth) ([]byte, error) {
 	if a == nil {
 		return nil, fmt.Errorf("auth: 凭证为空")
 	}
 	if strings.TrimSpace(a.AccessToken) == "" {
 		return nil, fmt.Errorf("save refused: empty accessToken (uid=%s)", a.UID)
 	}
-	if a.FilePath == "" {
-		return nil, fmt.Errorf("no FilePath set")
+	channel := a.Channel
+	if channel == "" {
+		channel = DeriveChannel(a.Domain)
 	}
 	doc := map[string]any{
 		"auth": map[string]any{
@@ -220,7 +253,10 @@ func (a *Auth) MarshalNested() ([]byte, error) {
 			"refreshToken": a.RefreshToken,
 			"expiresAt":    a.ExpiresAt,
 			"domain":       a.Domain,
-			"channel":      a.Channel,
+			"channel":      channel,
+			// realm 与 channel 同值：外部流传的凭证样例用 realm，
+			// 两者都写才能既被本程序吃回、又不丢渠道信息。
+			"realm": channel,
 		},
 		"account": map[string]any{
 			"uid":          a.UID,

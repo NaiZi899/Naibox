@@ -207,6 +207,62 @@ func Plan(goos, rawURL string, opts Opts) (Cmd, error) {
 	return Cmd{}, errors.New("未找到可用于无痕打开的浏览器（Edge / Chrome / Brave / Chromium 均未安装）")
 }
 
+// Launcher 一个可用于启动的浏览器（**只描述怎么找到它**，不含参数）。
+//
+// # 为什么把"找浏览器"单列出来
+//
+// Plan 的语义是"用无痕临时 profile 打开一个 URL"，那是 OAuth 加号专用策略。
+// 持久档案（internal/browserprofile）要的是同一个"本机哪个浏览器可用"的
+// 事实，但参数向量完全不同（持久 user-data-dir、调试端口、代理，**且不带
+// 无痕**）。把发现逻辑抽出来复用，比在 Plan 里加一堆模式开关更安全：
+// Plan 的既有不变式（恒无痕、恒独立 profile）有测试钉着，不碰它。
+type Launcher struct {
+	// Path 可执行文件路径。darwin 上是 `/usr/bin/open`。
+	Path string
+	// Name 展示名（"Microsoft Edge" / "Google Chrome" / App 名）。
+	Name string
+	// Darwin true = 必须经 `open -n -a <Name> --args …` 启动。
+	//
+	// 为什么不直接跑 bundle 内二进制：见 buildDarwin 的注释（Gatekeeper /
+	// 签名 / 注册路径）。
+	Darwin bool
+}
+
+// Resolve 找本机可用的浏览器：显式指定优先，否则按候选顺序探测。
+//
+// lookup 为 nil 时用默认探测；测试注入即可完全离线。
+func Resolve(goos, explicit string, lookup func(string) (string, bool)) (Launcher, error) {
+	if p := strings.TrimSpace(explicit); p != "" {
+		if goos == "darwin" {
+			// darwin 上显式值可能给的是 App 名（"Google Chrome"）而不是路径。
+			if strings.HasSuffix(p, ".app") || !strings.Contains(p, "/") {
+				return Launcher{Path: "/usr/bin/open", Name: p, Darwin: true}, nil
+			}
+		}
+		return Launcher{Path: p, Name: nameFromPath(p)}, nil
+	}
+	if lookup == nil {
+		lookup = defaultLookup
+	}
+	switch goos {
+	case "windows", "linux":
+		for _, c := range candidates {
+			if p, ok := lookup(c.id); ok && p != "" {
+				return Launcher{Path: p, Name: c.name}, nil
+			}
+		}
+	case "darwin":
+		for _, c := range candidates {
+			if _, ok := lookup(c.id); ok {
+				return Launcher{Path: "/usr/bin/open", Name: c.mac, Darwin: true}, nil
+			}
+		}
+	default:
+		return Launcher{}, fmt.Errorf("不支持的平台 %q", goos)
+	}
+	return Launcher{}, errors.New("未找到可用浏览器（Edge / Chrome / Brave / Chromium 均未安装）")
+}
+
 // Open = Plan + 启动，且**不等待**浏览器退出。
 //
 // 为什么不等：无痕窗口通常不会自己关。等待会让 /admin/login/start
