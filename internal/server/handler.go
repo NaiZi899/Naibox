@@ -60,6 +60,20 @@ type Config struct {
 	// nil = 不启用多 key 管理（旧行为）。
 	APIKeys   *apikey.Store
 	MaxRotate int // 单请求最多换号次数，默认 3
+	// RestrictedRotateMax 上游**风控标记**（403 + 11140 的"账号级限制"语义）
+	// 命中之后，还允许换几个号继续试。
+	//
+	// # 默认 0 = 立即停手，这是刻意的缺省
+	//
+	// 风控标记打在账号上，但上游的认定看的是账号背后的东西：设备令牌、
+	// machineId、以及（当前部署形态下）同一条出口 IP。换号继续打，在上游
+	// 眼里只是同一个设备换了张脸 —— 社区复盘（workbuddy2api-hub CHANGELOG，
+	// 2026-10-15/16 收紧之后）的原话是「看到 11140 立即停手，解封前严禁
+	// 换号继续打同一设备——设备指纹会连坐」，实测一次任务把 7 个号全封。
+	//
+	// 非 0 只用于"怀疑上游误判"的现场排查（环境变量
+	// NAIBOX_RESTRICTED_ROTATE_MAX），不是可长期依赖的行为。
+	RestrictedRotateMax int
 
 	// MaxBodyMB 出站前允许的最大请求体（MiB），<=0 回落 8。
 	//
@@ -650,6 +664,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// restrictedRetries 本次请求因"上游风控标记"而额外换号的次数。
+	//
+	// 它守的是回滚通道（cfg.RestrictedRotateMax，默认 0）：默认值下
+	// 第一次命中就 break，本变量恒为 0；设成 >0 才回到旧行为。
+	// 与 MaxRotate 分开计数，是因为两者语义不同 —— MaxRotate 是
+	// "愿意为一次请求跑几个往返"的预算，restricted 是"敢不敢换号"，
+	// 后者默认不敢。
+	restrictedRetries := 0
+
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		// 选号：粘性号优先（已校验 **provider + health + 在途未满**），否则普通轮换。
 		//
@@ -921,6 +944,36 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
+			// 上游**风控标记**了账号（403 + 11140 的"账号级限制"语义）：
+			// 默认**不换号**，本轮就此结束。
+			//
+			// # 为什么这里不是 continue（这是与 429/5xx 的根本差别）
+			//
+			// 429/5xx 是"这一次没成"，换号有意义；风控是"这台设备/这条出口
+			// 上的这个账号被标记了"，而上游的认定把设备令牌、machineId 和
+			// 出口 IP 一起算进去 —— 换一个号继续打，等于同一个设备换张脸
+			// 再敲一次门，于是标记扩散到下一个号。
+			//
+			// 社区复盘（workbuddy2api-hub CHANGELOG）给的数字：旧实现
+			// 「11140 冷却该号后立刻换下一个号继续同一请求」，用户实测
+			// 一次任务里 7 个号全被封；红线是「看到 11140 立即停手」。
+			//
+			// # 为什么还要 applyErrorPolicy
+			//
+			// 停手不等于不记账：这个号必须被禁用（restrictedThreshold=1），
+			// 池子必须进入暂停（见 Pool.Suspend），否则下一次请求照样选它。
+			if kind == gateway.ErrKindAccountRestricted {
+				h.applyErrorPolicy(acct.UID, kind, reqProvider, status, respBody)
+				fail(acct.UID)
+				releaseHeld()
+				// 回滚通道：RestrictedRotateMax > 0 时允许额外换号（默认 0）。
+				// 只用于"怀疑上游误判"的现场排查，见 Config.RestrictedRotateMax。
+				if restrictedRetries < h.cfg.RestrictedRotateMax {
+					restrictedRetries++
+					continue
+				}
+				break
+			}
 			h.applyErrorPolicy(acct.UID, kind, reqProvider, status, respBody)
 			fail(acct.UID)
 			continue
@@ -1087,10 +1140,20 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msg := "all accounts unavailable (cooling/disabled)"
-	// 把"为什么一个都不可用"写进错误里（真实困惑：上游 402 触发冷却后，旧文案
-	// 只说 all accounts unavailable —— 用户据此怀疑"登录失败了"，而真相是
-	// "key 有效但账户没钱在冷却"。一句话的差别，省一轮客服）。
-	if hint := h.poolUnavailableHint(reqProvider); hint != "" {
+	// 池级暂停：把"我们主动停手"与"账号恰好都不可用"分开说，
+	// 并给出 Retry-After —— 客户端（CodeBuddy / Codex / DSH）大多会
+	// 按它退避，比让它们自己按秒级重试更接近"停手"的目的。
+	if until, reason := h.cfg.Pool.SuspendedUntil(); !until.IsZero() {
+		remain := int(time.Until(until).Seconds() + 0.999)
+		if remain < 60 {
+			remain = 60
+		}
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", remain))
+		msg = fmt.Sprintf("上游风控暂停中（约 %d 分钟后自动恢复）：%s", (remain+59)/60, reason)
+	} else if hint := h.poolUnavailableHint(reqProvider); hint != "" {
+		// 把"为什么一个都不可用"写进错误里（真实困惑：上游 402 触发冷却后，旧文案
+		// 只说 all accounts unavailable —— 用户据此怀疑"登录失败了"，而真相是
+		// "key 有效但账户没钱在冷却"。一句话的差别，省一轮客服）。
 		msg += " —— " + hint
 	}
 	// ⚠ 这里**逐一不**复述上游原文。
@@ -1487,7 +1550,10 @@ func upstreamFailureRedacted(e error) string {
 	var ce *chatError
 	if errors.As(e, &ce) && ce.Kind == gateway.ErrKindAccountRestricted {
 		// 连状态码都不给：客户端会把 message 里的 "403" 也当成鉴权信号。
-		return "上游账号被风控限制（已计入连续失败，达到阈值会自动禁用该账号）"
+		//
+		// 措辞同步"立即停手"的新语义：旧版写"达到阈值会自动禁用"，
+		// 而阈值现在是 1 —— 那句话会让运维以为还有两次缓冲。
+		return "上游账号被风控限制（已停手并暂停整池，需人工确认后恢复）"
 	}
 	return ""
 }
@@ -1840,13 +1906,26 @@ func (h *Handler) applyErrorPolicy(uid string, kind gateway.ErrorKind, provider 
 	case gateway.ErrKindAccountRestricted:
 		// 上游风控标记了这个号（403 + 11140 request illegal）。
 		//
-		// 交给 Pool 计数门控：连续 3 次才禁用，期间任何一次成功清零。
+		// 交给 Pool 计数门控（阈值 1：文案已经明确是账号级标记）：
+		// 达到即禁用，需人工确认后启用。
 		// 不直接 Cooldown —— 风控不是"等一会儿就好"的限流，也不是
 		// "额度会回血"的余额问题：主动健康检查（pool_health.go）探的是
 		// 额度端点，被标记的号额度是好的，就会把它提前恢复出来，
 		// 冷却等于白设。
 		if h.cfg.Pool.NoteUpstreamRestricted(uid) {
-			log.Printf("chat uid=%s provider=%s: 连续被上游风控拒绝，已禁用该账号", uid, provider)
+			log.Printf("chat uid=%s provider=%s: 上游风控标记（11140 账号级限制），已禁用该账号", uid, provider)
+		}
+		// 整池停手：上游认定看的是设备/出口，不只是这个账号
+		// （见 pool.Pool.Suspend 与 stateSuspend 的注释）。
+		//
+		// 回滚通道（RestrictedRotateMax > 0）下**不暂停**：那条路要的是
+		// "保留旧行为"（继续换号），而暂停会把轮转直接掐死 —— 两者同时
+		// 生效的结果是"打开了开关却还是只打一次"，一个说不通的组合。
+		if h.cfg.RestrictedRotateMax == 0 {
+			if until := h.cfg.Pool.Suspend("上游风控（账号级限制）", 0); !until.IsZero() {
+				log.Printf("chat uid=%s provider=%s: 触发整池暂停至 %s（期间所有请求快速失败，不再打上游）",
+					uid, provider, until.Format(time.RFC3339))
+			}
 		}
 	case gateway.ErrKindNotFound:
 		// 404 短冷却（软冷却），防雪崩。

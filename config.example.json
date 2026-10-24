@@ -139,11 +139,13 @@
     "idle_weight_per_hour": 0.5,
     "idle_weight_max": 5.0,
     "health_check_interval_seconds": 600,
-    "quota_refresh_interval_seconds": 900
+    "quota_refresh_interval_seconds": 900,
+    "restricted_rotate_max": 0
   },
   "session_sticky": {
     "enabled": true,
     "ttl": "30m",
     "gc_interval": "5m"
-  }
+  },
+  "egress": []
 }

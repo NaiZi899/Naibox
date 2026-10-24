@@ -58,7 +58,22 @@ type Auth struct {
 	// 磁盘形态：嵌套形放 `account.deviceToken`，扁平形放顶层 `deviceToken`。
 	// 两种都认 —— 手写凭证的用户不必研究嵌套结构。
 	DeviceToken string
-	FilePath    string // 来源文件；refresh 后原子写回此处
+	// EgressID 该账号绑定的**出站线路**标识（见 config.json 的 egress 段）。
+	//
+	// # 为什么它属于账号
+	//
+	// 上游的风控按"账号背后的设备 + 出口 IP"认定。所有账号共用一个出口时，
+	// 一次判定就覆盖整池 —— 这正是 2026-10-15/16 之后 11140 连坐的机制。
+	// 一账号一出口是唯一能在结构上拆掉这条关联的做法。
+	//
+	// 空 = 不绑定，走出站默认链路（与改造前逐字节相同）。
+	//
+	// ⚠ 磁盘上两种形态都认（嵌套形 `account.egressId`、扁平形 `egressId`），
+	// 且 MarshalNested 必须写回 —— 与 DeviceToken 同一条纪律：不写回的话，
+	// 一次 token 刷新就把用户的绑定静默抹掉（表现是"刷新一次之后又回到
+	// 共用出口"，而且下次刷新还是这样）。
+	EgressID string
+	FilePath string // 来源文件；refresh 后原子写回此处
 }
 
 // Lock 供同进程内其他包（upstream.RefreshToken）在改写 Auth 字段期间加锁。
@@ -102,6 +117,7 @@ func Parse(raw []byte) (*Auth, error) {
 				EnterpriseID string `json:"enterpriseId"`
 				Nickname     string `json:"nickname"`
 				DeviceToken  string `json:"deviceToken"`
+				EgressID     string `json:"egressId"`
 			} `json:"account"`
 		}
 		if err := json.Unmarshal(raw, &n); err != nil {
@@ -117,6 +133,7 @@ func Parse(raw []byte) (*Auth, error) {
 			EnterpriseID: n.Account.EnterpriseID,
 			Nickname:     n.Account.Nickname,
 			DeviceToken:  n.Account.DeviceToken,
+			EgressID:     n.Account.EgressID,
 		}
 	} else {
 		var f struct {
@@ -129,6 +146,7 @@ func Parse(raw []byte) (*Auth, error) {
 			EnterpriseID string `json:"enterpriseId"`
 			Nickname     string `json:"nickname"`
 			DeviceToken  string `json:"deviceToken"`
+			EgressID     string `json:"egressId"`
 		}
 		if err := json.Unmarshal(raw, &f); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -143,6 +161,7 @@ func Parse(raw []byte) (*Auth, error) {
 			EnterpriseID: f.EnterpriseID,
 			Nickname:     f.Nickname,
 			DeviceToken:  f.DeviceToken,
+			EgressID:     f.EgressID,
 		}
 	}
 	if strings.TrimSpace(a.AccessToken) == "" {
@@ -213,6 +232,10 @@ func (a *Auth) MarshalNested() ([]byte, error) {
 			//
 			// 键名与 Parse 的 account.deviceToken 一致（两处必须同步）。
 			"deviceToken": a.DeviceToken,
+			// egressId 同理必须写回：不写回的话，一次 token 刷新就把
+			// 出站线路绑定静默抹掉 —— 表现是"刷新一次之后所有账号又回到
+			// 共用出口"，而且没有任何报错。
+			"egressId": a.EgressID,
 		},
 	}
 	return json.MarshalIndent(doc, "", "  ")

@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -140,6 +141,9 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 	// 这里先用 workbuddy（注册顺序上的第一个），注册表建好后再用 registry.First() 校正。
 	p.SetDefaultProvider(workbuddy.ProviderID)
 	p.SyncToDir(auths) // 与 auths 目录对齐：新账号加入、已删除文件账号剔除（状态保留）
+
+	// 出站线路绑定的自洽性（启动即报，不等到被风控才发现配错）。
+	validateEgressBindings(cfg.Egress, auths)
 
 	// 熔断器 + 在途上限 + 三因子加权调优（从 config 注入，非正值回退默认）。
 	p.SetBreaker(cfg.Pool.BreakerThreshold, cfg.BreakerCooldownDur, cfg.BreakerCooldownMaxD)
@@ -1182,7 +1186,9 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 		StickyCount:       sessCount,
 		RedisMode:         redisMode,
 		SoftCooldown:      cfg.SoftRateDur,
-		MaxBodyMB:         cfg.Server.MaxBodyMB,
+		// 风控命中后的换号预算：默认 0 = 立即停手（见 server.Config 的注释）。
+		RestrictedRotateMax: cfg.Pool.RestrictedRotateMax,
+		MaxBodyMB:           cfg.Server.MaxBodyMB,
 		// 流式两道闸门（总时长 / 首内容帧）。
 		//
 		// ⚠ 它们是**跨上游**的：handler 把它们包在 chat 出站的 body 外层，
@@ -1533,12 +1539,54 @@ func loginBrowserOpener(cfg *Config) func(string) (string, error) {
 func configureUpstream(up *upstream.Client, cfg *Config) {
 	// 聊天 SSE 首字节前（响应头）上限：cfg 已 normalize（缺省回落 timeout_seconds）。
 	up.HeaderTimeout = time.Duration(cfg.Upstream.HeaderTimeoutSeconds) * time.Second
-	if tr, ok := up.ChatHTTP.Transport.(*http.Transport); ok {
-		tr.ResponseHeaderTimeout = up.HeaderTimeout
-	}
+	// 首字节上限必须铺到**所有** Transport（默认链路 + 每条出站线路）。
+	//
+	// ⚠ 改造前这里是一句 `up.ChatHTTP.Transport.(*http.Transport)` 直接赋值：
+	// 引入线路表之后那句只会改到默认链路，线路上的首字节上限会悄悄退回零值
+	// （= 不设上限），表现是"配了线路的部署，聊天卡住不再被掐断"，且无报错。
+	up.SetResponseHeaderTimeout(up.HeaderTimeout)
 	// 聊天 SSE 流中空闲上限（S3 空闲监控读取）。
 	up.IdleTimeout = time.Duration(cfg.Upstream.IdleTimeoutSeconds) * time.Second
 	up.SanitizeFingerprints = cfg.Features.SanitizeBlacklistFingerprints
+	// 出站线路（config.json 的 egress 段）：一条线一套**独立**连接池。
+	//
+	// # 为什么连接池不能共享
+	//
+	// http.Transport 的连接池是按目标 host 复用底层 TCP/TLS 连接的。
+	// 若两个出口共用一个 Transport，只是改了 Proxy 字段，池子里已经建立的
+	// 连接仍会被复用 —— 表现就是"绑了线还是走老出口"，且只在连接复用时发生
+	// （重启后前几个请求看着是对的）。所以每条线必须是自己的 Transport。
+	//
+	// # 为什么这里用 fatalf
+	//
+	// egress 已在 normalize 阶段逐项校验过，走到这里再失败只有一种可能：
+	// 配置文件在加载之后被改过（桌面版有热重载路径）。这种时候静默跳过
+	// 会让"配了线路却仍走共用出口"变成一个无声的失败 —— 宁可起不来。
+	if n := len(cfg.Egress); n > 0 {
+		up.Egress = make(map[string]*upstream.EgressClient, n)
+		for _, e := range cfg.Egress {
+			u, err := url.Parse(e.Proxy)
+			if err != nil {
+				fatalf("egress[%s]: proxy=%q 解析失败: %v", e.ID, e.Proxy, err)
+			}
+			tr := &http.Transport{
+				Proxy: http.ProxyURL(u),
+				// 与 New() 的同名参数保持一致（连接池容量、空闲回收）。
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   20,
+				IdleConnTimeout:       90 * time.Second,
+				ResponseHeaderTimeout: up.HeaderTimeout,
+			}
+			up.Egress[e.ID] = &upstream.EgressClient{
+				HTTP: &http.Client{Timeout: up.HTTP.Timeout, Transport: tr},
+				// 聊天无总时长（SSE 可以跑很久），首字节由 Transport 的
+				// ResponseHeaderTimeout 管 —— 与 New() 的分工一致。
+				Chat: &http.Client{Timeout: 0, Transport: tr},
+			}
+		}
+		logEgress(up, cfg)
+	}
+
 	// 出站身份（全部可省略；省略时出站请求头与改造前逐字节一致）。
 	up.UserAgent = cfg.Upstream.UserAgent
 	up.ClientVersion = cfg.Upstream.ClientVersion
@@ -1566,6 +1614,112 @@ func configureUpstream(up *upstream.Client, cfg *Config) {
 		}
 		up.UAModelFamilies = append(up.UAModelFamilies, wire.UAModelFamilyRule{Match: match, UA: ua})
 	}
+}
+
+// logEgress 记一行出站线路表（排查"账号到底走哪条线"的唯一入口）。
+//
+// 凭据一律脱敏：代理 URL 里常带账号密码（粘性会话的 session-id 就写在
+// 用户名里），整串打进日志等于把它写进日志文件与 issue 附件。
+func logEgress(up *upstream.Client, cfg *Config) {
+	for _, e := range cfg.Egress {
+		log.Printf("出站线路 %q：%s（realm=%s region=%s 上限 %d 个账号）",
+			e.ID, redactProxy(e.Proxy), orDash(e.Realm), orDash(e.Region), e.MaxAccounts)
+	}
+	log.Printf("出站线路共 %d 条：绑定的账号走自己的代理，其余走默认链路", len(up.Egress))
+}
+
+// orDash 空串显示成 "-"（日志里空字段不好读）。
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// redactProxy 把代理 URL 里的凭据换成 ***（保留 scheme/host 便于认线路）。
+func redactProxy(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "（无法解析的 proxy URL）"
+	}
+	host := u.Host
+	if u.User != nil {
+		host = "***@" + host
+	}
+	return u.Scheme + "://" + host
+}
+
+// validateEgressBindings 装配期校验"账号 ↔ 出站线路"的绑定。
+//
+// # 为什么在启动时喊
+//
+// 这三类错误都不会报错、只会**静默降级**成"还是走共用出口"或"地区不匹配"：
+//
+//	① 账号绑了一个不存在的线路 id       → 回落默认链路
+//	② realm 与线路地区对不上（国内号挂海外出口） → 照发，风控一眼可见
+//	③ 一条线上挂了超过 max_accounts 个号 → 照发，IP 复用即关联
+//
+// 而它们的共同后果是"被风控时看不出原因"，所以宁可启动日志里响亮地写出来。
+func validateEgressBindings(egress []EgressConfig, auths []*auth.Auth) {
+	if len(egress) == 0 {
+		bound := 0
+		for _, a := range auths {
+			if a != nil && a.EgressID != "" {
+				bound++
+			}
+		}
+		if bound > 0 {
+			log.Printf("⚠ 有 %d 个账号配了 egressId，但 config.json 没有 egress 段 —— "+
+				"它们会走**共用出口**（这正是 11140 连坐的结构性原因）", bound)
+		}
+		return
+	}
+
+	byID := make(map[string]EgressConfig, len(egress))
+	for _, e := range egress {
+		byID[e.ID] = e
+	}
+	count := make(map[string]int, len(egress))
+	unbound := 0
+	for _, a := range auths {
+		if a == nil {
+			continue
+		}
+		if a.EgressID == "" {
+			unbound++
+			continue
+		}
+		e, ok := byID[a.EgressID]
+		if !ok {
+			log.Printf("⚠ 账号 %s 绑定了不存在的线路 %q —— 会回落共用出口（改 config.json 的 egress 或该账号的 egressId）",
+				a.UID, a.EgressID)
+			continue
+		}
+		count[e.ID]++
+		// realm 一致性：空 realm = 不限，此处不判。
+		if e.Realm != "" && a.Channel != "" && e.Realm != a.Channel {
+			log.Printf("⚠ 账号 %s（渠道 %s）挂在线路 %q（realm=%s）上 —— %s",
+				a.UID, a.Channel, e.ID, e.Realm, realmMismatchHint(a.Channel))
+		}
+	}
+	for _, e := range egress {
+		if n := count[e.ID]; n > e.MaxAccounts {
+			log.Printf("⚠ 线路 %q 上绑了 %d 个账号，超过上限 %d —— 同一出口上的账号越多，"+
+				"\"IP 复用\"这条关联证据越硬", e.ID, n, e.MaxAccounts)
+		}
+	}
+	if unbound > 0 {
+		log.Printf("出站线路：%d 个账号已绑定，%d 个未绑定（未绑定的走共用出口）",
+			len(auths)-unbound, unbound)
+	}
+}
+
+// realmMismatchHint 把"地区对不上"翻译成一句可执行的话。
+func realmMismatchHint(channel string) string {
+	if channel == auth.ChannelIntl {
+		return "国际版账号应挂海外出口（realm=intl）；国内出口会让地区与账号归属互相矛盾"
+	}
+	return "国内账号应挂国内出口（realm=cn）；海外出口与账号归属矛盾，是最常见的自杀式配置"
 }
 
 // logUpstreamIdentity 记一行出站身份（排查"官网使用端显示不对"的唯一入口）。

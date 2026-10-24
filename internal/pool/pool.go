@@ -115,6 +115,13 @@ type Status struct {
 	InFlight     int       `json:"in_flight"`
 	BreakerFails int       `json:"breaker_fails"`
 	BreakerUntil time.Time `json:"breaker_until,omitempty"`
+
+	// Egress 该账号绑定的出站线路 id（空 = 走共用出口）。
+	//
+	// 纯只读展示字段：线路的生效点在 upstream 客户端（按 auth.Auth.EgressID
+	// 选 Transport），这里下发是为了让"这个号走哪条线"在 /status 里可见 ——
+	// 排查 11140 时这是第一个要看的东西（是某条线脏了，还是这个号自身脏了）。
+	Egress string `json:"egress,omitempty"`
 }
 
 // ErrorExplainView 上游对一次错误的解读（脱敏后可下发给前端）。
@@ -178,6 +185,19 @@ type entry struct {
 	until        time.Time // 冷却截止（即时冷却：CoolSoft 429 / CoolHard 余额耗尽）
 	disabled     bool
 	reason       string
+	// egress 该账号绑定的出站线路（来自 auth.Auth.EgressID）。
+	//
+	// # 为什么要镜像到池里
+	//
+	// 出站线路的**执行**发生在 upstream 客户端（按 a.EgressID 选 Transport），
+	// 池子里留一份是为了两件事：① 管理台/看板能按线路聚合（"这批 11140 是
+	// 集中在某条线上，还是账号自身问题"）；② 落盘后即使凭证文件被替换，
+	// state.json 里仍能看出这个号当时挂在哪条线上。
+	//
+	// 与 provider 标签不同：egress 属于"会变的配置"，每次同步都刷新
+	// （用户换线路不需要删了重加账号）。
+	egress string
+
 	// lastExplain 上游对最近一次错误的解读（gateway.ErrorExplainExt 的产物）。
 	// 由 NoteErrorExplain 写入，随 Status 下发；成功一次也不清 —— 见该方法的注释。
 	lastExplain *ErrorExplainView
@@ -364,11 +384,34 @@ type stateAccount struct {
 	SessionDeadStreak int `json:"session_dead_streak,omitempty"`
 	// RestrictedStreak 连续被上游风控拒绝的次数（见 entry.restrictedStreak）。
 	RestrictedStreak int `json:"restricted_streak,omitempty"`
+	// Egress 该账号绑定的出站线路 id（见 entry.egress）。
+	//
+	// 旧状态文件没有这个字段 → 空串 → 管理台显示"未绑定"，
+	// 与"改造前所有账号走共用出口"的事实一致，升级不需要迁移脚本。
+	Egress string `json:"egress,omitempty"`
+}
+
+// stateSuspend 池级暂停的持久化形态。
+//
+// # 为什么暂停必须落盘
+//
+// 与 stateAccount.SoftStreak 同一条纪律，但后果更重：上游的风控状态
+// 不会因为我们重启就消失，而"重启即忘"的表现是——一次重启后所有号
+// 立刻重新上膛，同一台设备/同一条出口上的号被再打一轮。
+// workbuddy2api-hub 的复盘把这个坑写成了一条独立条目（冷却只存内存，
+// 重启 / 刷新 token / 一键测试都会把它清掉）。
+type stateSuspend struct {
+	Until  time.Time `json:"until"`
+	Reason string    `json:"reason,omitempty"`
 }
 
 // stateFile 持久化格式。
 type stateFile struct {
 	Accounts map[string]stateAccount `json:"accounts"`
+	// Suspend 池级暂停（上游风控命中后整池停手）。
+	//
+	// 旧状态文件没有这个键 → nil → 不暂停，与改造前行为完全一致（无需迁移）。
+	Suspend *stateSuspend `json:"suspend,omitempty"`
 }
 
 // flushInterval 后台落盘周期。
@@ -416,7 +459,6 @@ type Pool struct {
 	maxInFlight int
 
 	// defaultProvider 默认上游标识（由装配层注入，见 SetDefaultProvider）。
-	//
 	// 含义：未打标签（provider == ""）的账号按它解释。
 	// 空串表示"没有默认上游概念的纯单上游部署" —— 此时
 	// providerOf(e) 对未打标签账号返回 ""，与改造前的行为完全一致。
@@ -429,6 +471,20 @@ type Pool struct {
 	// persistFails 本地 state.json 连续落盘失败计数（仅 saveLocked 在持锁下读写，无需 atomic）。
 	// 用于落盘失败的日志节流：首败/每 N 次提醒/恢复各打一条，避免磁盘满时刷屏。
 	persistFails int
+
+	// suspendUntil / suspendReason 池级暂停（上游风控命中后的"整池停手"）。
+	//
+	// # 为什么需要池级，而不只是账号级
+	//
+	// 上游的风控标记打在**账号**上，但认定过程看的是账号背后的东西：
+	// 设备令牌、machineId、以及（当前部署形态下）**同一条出口 IP**。
+	// 我们现在的所有号共用一个出口，于是"换一个号继续打"在上游眼里
+	// 只是同一个设备换了张脸 —— 这正是 11140 连坐的机制。
+	// 账号级冷却拦不住这件事：换号是轮转循环的本能。
+	//
+	// 所以必须有"整池停手"这一档，且必须落盘（见 stateSuspend）。
+	suspendUntil  time.Time
+	suspendReason string
 }
 
 // defaultBreaker* 熔断器默认参数（FreeBuff2API 参考口径）。
@@ -467,10 +523,19 @@ const sessionDeadThreshold = 3
 
 // restrictedThreshold 连续被上游风控拒绝多少次才禁用账号。
 //
-// 与 sessionDeadThreshold 取同一个数（3）：一次风控可能是误判，
-// 但连续三次被拒已经不是抖动 —— 而被标记的号留在池里，每次选号都会
-// 白跑一个往返（实测一个号一天被选中 164 次、0 次成功）。
-const restrictedThreshold = 3
+// # 为什么是 1，而不是与 sessionDeadThreshold 同取 3
+//
+// 判据（upstream.ClassifyAccountRestricted）已经在文案上把"风控标记"与
+// 11140 的另一半语义（带重置时刻的软限流）分开了，还能走到这里的都是
+// `request illegal` / `账号存在异常行为` —— 上游已经明确表态，再确认两次
+// 的代价不是"多跑两个往返"，而是"用另外两个号继续打同一条出口/同一台设备"。
+//
+// 社区复盘（workbuddy2api-hub CHANGELOG，2026-10-15/16 收紧之后）给出的
+// 红线是「看到 11140 立即停手，解封前严禁换号继续打同一设备——设备指纹会连坐」，
+// 旧实现一次任务把 7 个号全封就是这条阈值 + 换号重试的组合造成的。
+//
+// 恢复由人工确认（管理台"启用"），或由 NoteSuccess 在解封后自然清零。
+const restrictedThreshold = 1
 
 // StoreSnapshotter 池状态快照镜像的最小接口（redisstore.Store 满足；Noop 空实现安全）。
 // 与本地 state.json 并存，作启动恢复备份：快照比本地新才采用，否则本地优先。
@@ -822,9 +887,10 @@ func (p *Pool) upsertLockedFor(provider string, a *auth.Auth) (added bool) {
 			return false
 		}
 		e.a = a // 保留 credits/cooling 状态
+		e.egress = a.EgressID
 		return false
 	}
-	p.byUID[a.UID] = &entry{a: a, provider: provider}
+	p.byUID[a.UID] = &entry{a: a, provider: provider, egress: a.EgressID}
 	return true
 }
 
@@ -897,6 +963,7 @@ func (p *Pool) upsertSecretLocked(provider string, a *auth.Auth, secret any) (ad
 				e.a = sa
 			}
 		}
+		e.egress = a.EgressID
 		return false
 	}
 	// 新增路径同样兜底，否则"新号入池即空投影"，旅行/成长从那一刻起就报无凭证。
@@ -905,7 +972,7 @@ func (p *Pool) upsertSecretLocked(provider string, a *auth.Auth, secret any) (ad
 			a = sa
 		}
 	}
-	p.byUID[a.UID] = &entry{a: a, provider: provider, secret: secret}
+	p.byUID[a.UID] = &entry{a: a, provider: provider, secret: secret, egress: a.EgressID}
 	return true
 }
 
@@ -1055,6 +1122,15 @@ func (p *Pool) pickFor(provider string, tried map[string]bool, model string) *au
 	defer p.mu.Unlock()
 	now := time.Now()
 	want := p.normalizeProvider(provider)
+
+	// 池级暂停：整池停手，且**不**走下面的"全冷却兜底"。
+	//
+	// ⚠ 兜底（pickEarliestExpiryLocked）会把冷却里最早到期的号捞出来继续打，
+	// 那正是暂停要禁止的事 —— 漏这一行的表现是"暂停期间请求照常发出去"，
+	// 而且看不出来（选号成功、上游照打）。
+	if p.suspendUntil.After(now) {
+		return nil
+	}
 
 	var cands []*entry
 	for uid, e := range p.byUID {
@@ -1766,6 +1842,80 @@ func (p *Pool) NoteUpstreamRestricted(uid string) (disabled bool) {
 	return false
 }
 
+// defaultSuspend* 池级暂停的默认参数。
+const (
+	// defaultSuspendTTL 首次暂停时长。
+	//
+	// 取 15 分钟的理由：上游的账号级限制是**人工/半自动**处置的，
+	// 几分钟内自愈的可能性不大；但暂停过长会让一次误判（比如我们自己
+	// 漏判了一次软限流）变成半小时的整站不可用。15 分钟 + 指数退避
+	// 是"先停手观察，别急着回来"的折中。
+	defaultSuspendTTL = 15 * time.Minute
+	// maxSuspendTTL 连续命中时暂停时长的封顶。
+	//
+	// 与熔断器同取 6h：反复命中说明这条出口/这批账号已被持续标记，
+	// 此时"等一会就好"是自欺 —— 需要的是换出口或人工介入。
+	maxSuspendTTL = 6 * time.Hour
+)
+
+// Suspend 让整池停手一段时间（上游风控命中后的"整池停手"，见 Pool.suspendUntil）。
+//
+// # 语义
+//
+//   - ttl <= 0 → defaultSuspendTTL
+//   - 已处于暂停中再次命中 → 从**原截止时刻**往后翻倍（退避），封顶 maxSuspendTTL
+//   - 立即落盘：暂停是"停机指令"，不能等 5 秒后的 flusher（进程可能在
+//     那一刻被关掉，而重启后它必须仍然停着）
+//
+// 返回生效后的截止时刻。
+//
+// # 为什么作用域是整池，而不是"这个账号"
+//
+// 现阶段所有账号共用一条出口 IP（出站隔离尚未落地），上游只要按 IP 聚合
+// 一次判定就会覆盖整池 —— 逐号暂停等于让轮转循环换个号继续打同一台设备。
+// 出站隔离（每账号一条出口）落地后，本方法应增加 scope 参数收窄到
+// "该出口绑定的账号集合"，届时整池暂停只在单出口部署下等价。
+func (p *Pool) Suspend(reason string, ttl time.Duration) time.Time {
+	if ttl <= 0 {
+		ttl = defaultSuspendTTL
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	base := now
+	if p.suspendUntil.After(now) {
+		// 已在暂停中再次命中：退避，而不是把剩余时间重置成 ttl。
+		ttl *= 2
+		base = p.suspendUntil
+	}
+	until := base.Add(ttl)
+	if cap := now.Add(maxSuspendTTL); until.After(cap) {
+		until = cap
+	}
+	p.suspendUntil = until
+	if reason != "" {
+		p.suspendReason = reason
+	}
+	p.dirty.Store(true)
+	// 立即落盘：与 Remove 同一条理由（"重启后它必须仍然停着"）。
+	p.saveLocked()
+	return until
+}
+
+// SuspendedUntil 报告当前是否处于池级暂停，返回截止时刻与原因。
+// 未暂停（或已到期）时返回零值时刻与空串。
+//
+// 到期不清字段：清理交给下一次 Suspend 或落盘时的 stateOverviewLocked 判定，
+// 避免读路径上拿写锁（本方法会被每个请求的选号前检查调用）。
+func (p *Pool) SuspendedUntil() (time.Time, string) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if !p.suspendUntil.After(time.Now()) {
+		return time.Time{}, ""
+	}
+	return p.suspendUntil, p.suspendReason
+}
+
 // RestrictedStreak 返回账号当前连续被上游风控拒绝的次数（管理台展示用）。
 func (p *Pool) RestrictedStreak(uid string) int {
 	p.mu.RLock()
@@ -2083,6 +2233,11 @@ func (p *Pool) ServableNow() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	now := time.Now()
+	// 池级暂停：/healthz 的语义是"这个实例现在能不能受理对话"，
+	// 暂停期间答案是不能 —— 与 chat 会返回 503 的事实对齐。
+	if p.suspendUntil.After(now) {
+		return false
+	}
 	for _, e := range p.byUID {
 		if e.healthy(now) && !p.inFlightFull(e) {
 			return true
@@ -2176,6 +2331,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		InFlight:     int(e.inFlight.Load()),
 		BreakerFails: e.fails,
 		BreakerUntil: e.breakerUntil,
+		Egress:       e.egress,
 	}
 	if st.Cooling {
 		// 冷却剩余秒数（向上取整，避免 0 显示为已到期）。
@@ -2202,6 +2358,17 @@ func (p *Pool) load() {
 		return
 	}
 	p.applyAccountsLocked(sf.Accounts)
+	p.applySuspendLocked(sf.Suspend)
+}
+
+// applySuspendLocked 用落盘的暂停状态覆盖内存（旧状态文件无此键 → nil → 不暂停）。
+// 调用方必须已持有 p.mu（或正处于构造期）。
+func (p *Pool) applySuspendLocked(s *stateSuspend) {
+	if s == nil || s.Until.IsZero() {
+		return
+	}
+	p.suspendUntil = s.Until
+	p.suspendReason = s.Reason
 }
 
 // applyAccountsLocked 用持久化账号状态覆盖/插入 byUID（placeholder 凭证，Add 时换全）。
@@ -2237,6 +2404,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 			// session 失效连续计数（旧文件无此字段 → 0 = 全新计数）。
 			sessionDeadStreak: s.SessionDeadStreak,
 			restrictedStreak:  s.RestrictedStreak,
+			egress:            s.Egress,
 		}
 	}
 }
@@ -2245,6 +2413,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 func (p *Pool) applySnapshotLocked(s snapshot) {
 	p.byUID = map[string]*entry{}
 	p.applyAccountsLocked(s.Accounts)
+	p.applySuspendLocked(s.Suspend)
 }
 
 func (p *Pool) saveLocked() {
@@ -2301,6 +2470,11 @@ func (p *Pool) notePersistFail(err error) {
 // stateOverviewLocked 收集当前内存状态为 stateFile（供落盘 + 快照镜像复用）。调用方必须已持 p.mu。
 func (p *Pool) stateOverviewLocked() stateFile {
 	sf := stateFile{Accounts: map[string]stateAccount{}}
+	// 只落**未到期**的暂停：过期字段留着会让 state.json 长期带一个
+	// 已经作废的 until，人工排查时无法分辨"还在停"和"停过"。
+	if p.suspendUntil.After(time.Now()) {
+		sf.Suspend = &stateSuspend{Until: p.suspendUntil, Reason: p.suspendReason}
+	}
 	for uid, e := range p.byUID {
 		sf.Accounts[uid] = stateAccount{
 			// ⚠ Quota 是真相来源，**必须落盘**。
@@ -2326,6 +2500,7 @@ func (p *Pool) stateOverviewLocked() stateFile {
 			// session 失效连续计数必须落盘（理由见 stateAccount.SessionDeadStreak）。
 			SessionDeadStreak: e.sessionDeadStreak,
 			RestrictedStreak:  e.restrictedStreak,
+			Egress:            e.egress,
 		}
 	}
 	return sf

@@ -323,6 +323,17 @@ type Client struct {
 	// 直连公网的部署**不应**打开它。
 	PassthroughIP bool
 
+	// Egress 出站线路表：id → 该线路的两个 client（由装配层构造）。
+	//
+	// 进程内**只读**（装配完成后不再改），因此不需要锁。
+	// nil / 空表 = 不启用线路，所有账号走 HTTP/ChatHTTP 的默认链路
+	// （与改造前逐字节相同）。
+	//
+	// 键由 auth.Auth.EgressID 引用；账号没绑定、或绑的 id 不在表里时
+	// 一律回落默认链路 —— 静默回落是刻意的：绑定丢失（例如用户删掉了一条
+	// 线路）不该让一个本来能用的账号直接不可用，而装配期会为这种情况打日志。
+	Egress map[string]*EgressClient
+
 	ChatBaseCN    string
 	BillingBaseCN string
 
@@ -347,6 +358,18 @@ type Client struct {
 	// 用于 Library_read 这类"页面行为"任务。发到错误域会被静默丢弃。
 	WebBaseCN   string
 	WebBaseIntl string
+}
+
+// EgressClient 一条出站线路的两个 client（普通 / 聊天）。
+//
+// # 为什么是两个 client 而不是一个
+//
+// 与 New() 的分工完全一致：普通请求有总时长（120s），聊天请求没有总时长
+// （SSE 可以跑几分钟），首字节由 Transport.ResponseHeaderTimeout 管。
+// 两者共用一个 Transport 是对的（连接池可以互借），但 Timeout 不能共用。
+type EgressClient struct {
+	HTTP *http.Client
+	Chat *http.Client
 }
 
 // New 生产默认值。配置连接池减少 TLS 握手。
@@ -377,6 +400,61 @@ func (c *Client) chatHTTP() *http.Client {
 		return c.ChatHTTP
 	}
 	return c.HTTP
+}
+
+// egressClient 返回该账号绑定的出站线路；未绑定 / 表里没有时返回 nil。
+func (c *Client) egressClient(a *auth.Auth) *EgressClient {
+	if c == nil || len(c.Egress) == 0 || a == nil || a.EgressID == "" {
+		return nil
+	}
+	return c.Egress[a.EgressID]
+}
+
+// httpFor 返回该账号普通请求应使用的 client（未绑定线路 → c.HTTP）。
+func (c *Client) httpFor(a *auth.Auth) *http.Client {
+	if ec := c.egressClient(a); ec != nil && ec.HTTP != nil {
+		return ec.HTTP
+	}
+	return c.HTTP
+}
+
+// chatHTTPFor 返回该账号聊天请求应使用的 client（未绑定线路 → chatHTTP()）。
+func (c *Client) chatHTTPFor(a *auth.Auth) *http.Client {
+	if ec := c.egressClient(a); ec != nil && ec.Chat != nil {
+		return ec.Chat
+	}
+	return c.chatHTTP()
+}
+
+// SetResponseHeaderTimeout 把首字节上限设到**所有** Transport 上（默认链路 + 每条线路）。
+//
+// # 为什么需要它（而不是装配层直接断言 *http.Transport）
+//
+// 改造前装配层写的是 `up.ChatHTTP.Transport.(*http.Transport)` —— 一旦引入
+// 按线路的 Transport，那句断言只会改到默认链路，其余线路的首字节上限
+// 就悄悄退回零值（= 不设上限）。表现是"配了线路的部署，聊天卡住不再被
+// 120s 掐断"，而且没有任何报错。
+//
+// 非 *http.Transport（测试里的 roundTripFunc 包装）一律跳过 —— 与改造前
+// 的断言行为一致。
+func (c *Client) SetResponseHeaderTimeout(d time.Duration) {
+	setTr := func(cl *http.Client) {
+		if cl == nil {
+			return
+		}
+		if tr, ok := cl.Transport.(*http.Transport); ok {
+			tr.ResponseHeaderTimeout = d
+		}
+	}
+	setTr(c.HTTP)
+	setTr(c.ChatHTTP)
+	for _, ec := range c.Egress {
+		if ec == nil {
+			continue
+		}
+		setTr(ec.HTTP)
+		setTr(ec.Chat)
+	}
 }
 
 func (c *Client) chatBase(a *auth.Auth) string {
@@ -485,8 +563,14 @@ func (c *Client) webBase(a *auth.Auth) string {
 }
 
 // doJSON 发请求并解信封；HTTP 非 2xx 或业务 code != 0 时返回带 body 片段的 *Error。
-func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
-	resp, err := c.HTTP.Do(req)
+//
+// # 为什么它必须收账号（而改造前不收）
+//
+// 出站线路（出站 IP）是**账号级**的：同一进程里 A 号走 socks5://…:1081、
+// B 号走 http://…:20001。客户端在构造时并不知道"下一个请求属于哪个号"，
+// 所以选择只能发生在每次出站时 —— 也就是这里。
+func (c *Client) doJSON(a *auth.Auth, req *http.Request) (json.RawMessage, error) {
+	resp, err := c.httpFor(a).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -524,7 +608,7 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 		return err
 	}
 	c.RefreshHeaders(req, a)
-	data, err := c.doJSON(req)
+	data, err := c.doJSON(a, req)
 	if err != nil {
 		return err
 	}
@@ -582,7 +666,7 @@ func (c *Client) ChatStreamWithIP(a *auth.Auth, body []byte, clientIP string) (r
 	c.ChatHeaders(req, a, clientIP, wire.ModelOf(body))
 	ctx, cancel := context.WithCancel(context.Background())
 	req = req.WithContext(ctx)
-	resp, err := c.chatHTTP().Do(req)
+	resp, err := c.chatHTTPFor(a).Do(req)
 	if err != nil {
 		cancel()
 		log.Printf("chat_stream uid=%s: transport error: %v", a.UID, err)
@@ -645,7 +729,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 	req.Header.Set("Origin", origin)
 	req.Header.Set("Referer", origin+"/")
 	req.Header.Set("User-Agent", clientUA)
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.httpFor(a).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -822,7 +906,7 @@ func (c *Client) UserResource(a *auth.Auth) (remain int64, err error) {
 		return 0, err
 	}
 	c.BillingHeaders(req, a)
-	data, err := c.doJSON(req)
+	data, err := c.doJSON(a, req)
 	if err != nil {
 		return 0, err
 	}
@@ -870,7 +954,7 @@ func (c *Client) DailyCheckin(a *auth.Auth) error {
 		return err
 	}
 	c.BillingHeaders(req, a)
-	_, err = c.doJSON(req)
+	_, err = c.doJSON(a, req)
 	return err
 }
 

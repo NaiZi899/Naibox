@@ -72,7 +72,7 @@ func (c *Client) billingJSON(a *auth.Auth, method, path string, body any) (json.
 		return nil, err
 	}
 	c.BillingHeaders(req, a)
-	return c.doJSON(req)
+	return c.doJSON(a, req)
 }
 
 // chatRequestEvent 客户端 `chat_request_send` 事件的完整形状。
@@ -205,7 +205,7 @@ func (c *Client) ReportChatActivityModel(a *auth.Auth, conversationID, requestID
 		return err
 	}
 	c.BillingHeaders(req, a)
-	_, err = c.doJSON(req)
+	_, err = c.doJSON(a, req)
 	return err
 }
 

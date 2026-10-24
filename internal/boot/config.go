@@ -35,6 +35,44 @@ type UAModelFamilyConfig struct {
 	UA string `json:"ua"`
 }
 
+// EgressConfig 一条出站线路（config.json 的 egress[] 元素）。
+//
+// 语义：账号通过 auth.Auth.EgressID 引用它，该账号的全部出站请求
+// （chat / billing / 签到 / 行为上报）都走这条线的代理。
+//
+// # 为什么是"线路"而不是"代理"
+//
+// 一个出口对应的是**上游眼里的一个身份**（IP + ASN + 地区）。它我们会
+// 绑定账号数、做一致性校验（国内号不能挂海外出口）、后续按它聚合
+// 11140 率 —— 都是"线路"这个层级的事，不是"一个代理 URL"能表达的。
+type EgressConfig struct {
+	// ID 线路标识（必填、唯一）；账号侧用同一个字符串引用。
+	ID string `json:"id"`
+	// Proxy 代理 URL，支持 http / https / socks5 / socks5h。
+	//
+	// 粘性会话的做法随供应商而异：常见的是把 session-id 写进用户名，
+	// 或用一个固定端口代表一个出口（"动态端口"产品的端口≈出口槽位）。
+	// 本程序不关心细节 —— 一个 id 对一个 URL，换出口就是改一个 URL。
+	Proxy string `json:"proxy"`
+	// Realm 该线路服务哪个渠道：cn / intl / 空=不限。
+	//
+	// 用于装配期的**一致性校验**：国内账号（channel=cn）挂到海外出口上，
+	// 是最常见的自杀式配置（地区与 realm 对不上，风控一眼可见）。
+	Realm string `json:"realm"`
+	// Region 展示用地区标签（如 "CN-ZJ" / "US-WEST"）。不参与路由。
+	Region string `json:"region"`
+	// MaxAccounts 允许绑定到这条线的账号数；0 = 默认 1，上限 3。
+	//
+	// 为什么默认 1：IP 复用就是关联，这是最便宜的相关性证据。
+	// 上限 3 是给"多号养在同一个家里"这类真实形态留的余量，不是鼓励。
+	MaxAccounts int `json:"max_accounts"`
+	// ProbeURL 出口 IP 自检端点（可选，空 = 不探测）。
+	//
+	// 填了就在启动后按需探一次并缓存 10 分钟，用来回答"这条线现在
+	// 到底是哪个 IP / 哪个地区"。默认空：不给上游多一条固定心跳。
+	ProbeURL string `json:"probe_url"`
+}
+
 // Config 顶层配置。
 type Config struct {
 	Listen    string `json:"listen"`     // ":7863"
@@ -382,6 +420,16 @@ type Config struct {
 		//
 		// 想立刻看最新余额可以点控制台的「刷新全部额度」，不走这条周期。
 		QuotaRefreshIntervalSeconds int `json:"quota_refresh_interval_seconds"`
+		// RestrictedRotateMax 上游风控标记（403 + 11140 账号级限制）命中后
+		// 还允许额外换几个号继续试。
+		//
+		// 默认 0 = 立即停手（整池暂停 + 该号禁用）。这是**刻意的缺省**，
+		// 理由见 server.Config.RestrictedRotateMax 与 pool.Suspend 的注释：
+		// 风控的认定把设备令牌/出口算进去，换号继续打会让标记扩散。
+		//
+		// 非 0 只作现场排查用的回滚通道，通常通过环境变量
+		// NAIBOX_RESTRICTED_ROTATE_MAX 临时覆盖（见 applyEnv）。
+		RestrictedRotateMax int `json:"restricted_rotate_max"`
 	} `json:"pool"`
 
 	SessionSticky struct {
@@ -389,6 +437,22 @@ type Config struct {
 		TTL        string `json:"ttl"`         // 会话绑定 TTL，默认 "30m"
 		GCInterval string `json:"gc_interval"` // 会话 GC 周期，默认 "5m"
 	} `json:"session_sticky"`
+
+	// Egress 出站线路表：一个账号绑一条线，见 auth.Auth.EgressID。
+	//
+	// # 为什么必须有这一层
+	//
+	// 改造前所有账号共用进程所在的网络出口。上游的风控按"账号背后的设备 +
+	// 出口 IP"认定，共用出口等于把整池绑在一根绳上 —— 2026-10-15/16 之后
+	// 11140 的连坐形态就是这么来的（社区复盘：一次任务 7 个号全封）。
+	//
+	// 空数组 = 不启用，所有账号走出站默认链路（与改造前**逐字节相同**）。
+	//
+	// # 为什么不做成管理台设置项
+	//
+	// 它描述的是部署拓扑（哪台机器、哪个代理端口），属于"跟机房一起变"的
+	// 配置，不是运行期调参。放在 config.json 里由部署者维护，管理台只读展示。
+	Egress []EgressConfig `json:"egress"`
 
 	// Admin 管理台（/admin/*，仅本机可访问）相关配置。
 	Admin struct {
@@ -1288,6 +1352,101 @@ func applyEnv(c *Config) {
 				v, prompt.ModeCustom, prompt.ModeAppend, prompt.ModePassthrough)
 		}
 	}
+	// 风控停手的**回滚通道**：NAIBOX_RESTRICTED_ROTATE_MAX（默认 0 = 立即停手）。
+	//
+	// 与 NAIBOX_PROMPT_MODE 同一套理由：默认行为是"看到 11140 就停手"，
+	// 而线上若怀疑上游误判（比如上游把一次软限流措辞改了、我们的判据偏严），
+	// 需要一条不改配置文件的开关把旧轮转行为临时打开。
+	//
+	// 只接受非负整数；非法值忽略并警告（应急通道不该阻断启动）。
+	if v := strings.TrimSpace(os.Getenv("NAIBOX_RESTRICTED_ROTATE_MAX")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.Pool.RestrictedRotateMax = n
+			log.Printf("环境变量 NAIBOX_RESTRICTED_ROTATE_MAX=%d 生效：风控命中后最多额外换 %d 个号"+
+				"（默认 0 = 立即停手，整池暂停）", n, n)
+		} else {
+			log.Printf("环境变量 NAIBOX_RESTRICTED_ROTATE_MAX=%q 不是非负整数，已忽略"+
+				"（保持 config.json 的 pool.restricted_rotate_max=%d）", v, c.Pool.RestrictedRotateMax)
+		}
+	}
+}
+
+// egressSchemes 允许的代理协议。
+//
+// socks5h 与 socks5 的区别是"域名解析在谁那里做"：socks5h 让代理解析
+// （DNS 不会泄漏本地解析结果），这在"出口地区必须与调用地一致"的场景下
+// 是必须的 —— 本地 DNS 解析会让上游看到"IP 在 A 国、DNS 查询来自 B 国"。
+var egressSchemes = map[string]bool{
+	"http": true, "https": true, "socks5": true, "socks5h": true,
+}
+
+// normalizeEgress 校验并归一 egress 段。
+//
+// # 为什么坏项必须 fail fast
+//
+// 静默忽略的表现是"账号还是走共用出口"——而共用出口正是本层要消掉的
+// 东西。用户配了却没生效，比配错更难查（没有任何报错）。
+func (c *Config) normalizeEgress() error {
+	if len(c.Egress) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(c.Egress))
+	for i := range c.Egress {
+		e := &c.Egress[i]
+		e.ID = strings.TrimSpace(e.ID)
+		e.Proxy = strings.TrimSpace(e.Proxy)
+		e.Realm = strings.ToLower(strings.TrimSpace(e.Realm))
+		e.Region = strings.TrimSpace(e.Region)
+		e.ProbeURL = strings.TrimSpace(e.ProbeURL)
+
+		if e.ID == "" {
+			return fmt.Errorf("egress[%d]: id 不能为空（账号靠它引用线路）", i)
+		}
+		if seen[e.ID] {
+			return fmt.Errorf("egress[%d]: id=%q 重复（每条线路必须唯一，否则账号绑哪条是随机的）", i, e.ID)
+		}
+		seen[e.ID] = true
+
+		if e.Proxy == "" {
+			return fmt.Errorf("egress[%s]: proxy 不能为空", e.ID)
+		}
+		u, err := url.Parse(e.Proxy)
+		if err != nil {
+			return fmt.Errorf("egress[%s]: proxy=%q 解析失败: %w", e.ID, e.Proxy, err)
+		}
+		if !egressSchemes[strings.ToLower(u.Scheme)] {
+			return fmt.Errorf("egress[%s]: proxy 协议 %q 不受支持（只接受 http/https/socks5/socks5h）",
+				e.ID, u.Scheme)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("egress[%s]: proxy=%q 缺少主机名", e.ID, e.Proxy)
+		}
+
+		switch e.Realm {
+		case "", "cn", "intl":
+		default:
+			return fmt.Errorf("egress[%s]: realm=%q 非法（只接受 cn / intl / 留空=不限）", e.ID, e.Realm)
+		}
+
+		// 账号数准入：0 = 默认 1（IP 复用即关联），上限 3。
+		if e.MaxAccounts < 0 {
+			return fmt.Errorf("egress[%s]: max_accounts=%d 非法（>= 0）", e.ID, e.MaxAccounts)
+		}
+		if e.MaxAccounts == 0 {
+			e.MaxAccounts = 1
+		}
+		if e.MaxAccounts > 3 {
+			return fmt.Errorf("egress[%s]: max_accounts=%d 过大（上限 3 —— "+
+				"同一条出口上的账号越多，IP 复用这条关联证据越硬）", e.ID, e.MaxAccounts)
+		}
+
+		if e.ProbeURL != "" {
+			if _, err := normalizeBaseURL(e.ProbeURL); err != nil {
+				return fmt.Errorf("egress[%s]: probe_url 非法: %w", e.ID, err)
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Config) normalize() error {
@@ -1327,6 +1486,19 @@ func (c *Config) normalize() error {
 	if c.Pool.QuotaRefreshIntervalSeconds < 0 {
 		return fmt.Errorf("pool.quota_refresh_interval_seconds=%d 非法：必须是 >= 0（0 = 关闭周期刷新）",
 			c.Pool.QuotaRefreshIntervalSeconds)
+	}
+	// 风控停手的额外换号次数：0 合法（= 立即停手，**默认**），负数报错。
+	//
+	// 与 quota_refresh_interval_seconds 同一条理由：`0` 在这里是有意义的配置，
+	// 不能当成"未配置"回落成某个非零默认 —— 那会把默认行为从"停手"改回"换号"。
+	if c.Pool.RestrictedRotateMax < 0 {
+		return fmt.Errorf("pool.restricted_rotate_max=%d 非法：必须是 >= 0（0 = 风控命中后立即停手）",
+			c.Pool.RestrictedRotateMax)
+	}
+	// 出站线路表：坏项 fail fast（理由同 ua_model_families —— 静默忽略的
+	// 表现是"账号还是走共用出口"，而这正是本层要消掉的东西）。
+	if err := c.normalizeEgress(); err != nil {
+		return err
 	}
 	// 管理面基址：空 = 用官方域名；非空必须是 http/https 且带主机名。
 	//

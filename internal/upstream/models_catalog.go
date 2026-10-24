@@ -198,7 +198,7 @@ func (c *Client) FetchModelCatalog(a *auth.Auth) (*ModelCatalog, error) {
 	c.BillingHeaders(req, a)
 	req.Header.Set("User-Agent", clientUA)
 
-	data, err := c.doJSON(req)
+	data, err := c.doJSON(a, req)
 	if err != nil {
 		return nil, err
 	}

@@ -155,6 +155,10 @@ func mirrorKind(k upstream.ErrKind) gateway.ErrorKind {
 		return gateway.ErrKindClient
 	case upstream.ErrContentBlocked:
 		return gateway.ErrKindContentBlocked
+	case upstream.ErrAccountRestricted:
+		// 风控标记必须单独一档：落到 ErrKindClient 会让它既不禁用也不暂停，
+		// 而它的正确处置是"立即停手 + 整池暂停"（见 restricted_stop_test.go）。
+		return gateway.ErrKindAccountRestricted
 	default:
 		return gateway.ErrKindNone
 	}

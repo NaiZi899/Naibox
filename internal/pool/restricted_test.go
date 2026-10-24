@@ -23,9 +23,12 @@ func newRestrictedPool(t *testing.T) *Pool {
 	return p
 }
 
-// TestNoteUpstreamRestrictedDisablesAfterThreshold 连续达到阈值才禁用。
+// TestNoteUpstreamRestrictedDisablesAfterThreshold 达到阈值即禁用。
 //
-// 一次 403 可能是上游误判，也可能是带风控措辞的软限流；连续被拒才是真状态。
+// 阈值现在是 1（见 restrictedThreshold 的注释）：判据已经在文案上把
+// 11140 的另一半语义（带重置时刻的软限流）排除掉了，还能走到这里的
+// 都是上游明确的账号级标记 —— 再"确认两次"的代价是用另外两个号
+// 去撞同一条出口/同一台设备。
 func TestNoteUpstreamRestrictedDisablesAfterThreshold(t *testing.T) {
 	p := newRestrictedPool(t)
 	for i := 1; i <= restrictedThreshold; i++ {
@@ -36,7 +39,7 @@ func TestNoteUpstreamRestrictedDisablesAfterThreshold(t *testing.T) {
 		}
 		if !want {
 			if st, ok := p.Status("u1"); ok && st.Disabled {
-				t.Fatalf("第 %d 次就禁用了 —— 单次风控可能是误判", i)
+				t.Fatalf("第 %d 次就禁用了 —— 未达阈值", i)
 			}
 		}
 	}
@@ -45,22 +48,23 @@ func TestNoteUpstreamRestrictedDisablesAfterThreshold(t *testing.T) {
 	}
 }
 
-// TestNoteUpstreamRestrictedClearedBySuccess 一次成功清零。
+// TestNoteUpstreamRestrictedStreakClearedBySuccess 一次成功清零计数。
 //
-// 不清的话，跨天的无关抖动会叠加到阈值上，把一个已经恢复的号禁掉。
-func TestNoteUpstreamRestrictedClearedBySuccess(t *testing.T) {
+// 不清的话，跨天的无关抖动会叠加到阈值上。阈值为 1 时首次命中就已经禁用，
+// 所以"清零"真正服务的是**调大阈值的部署**（回滚通道 / 现场调参）：
+// 那里计数必须能从 0 重新算，否则一个历史抖动会把号提前禁掉。
+func TestNoteUpstreamRestrictedStreakClearedBySuccess(t *testing.T) {
 	p := newRestrictedPool(t)
-	p.NoteUpstreamRestricted("u1")
 	p.NoteUpstreamRestricted("u1")
 	p.NoteSuccess("u1")
 	if got := p.RestrictedStreak("u1"); got != 0 {
 		t.Fatalf("成功后计数应为 0，实际 %d", got)
 	}
-	for i := 0; i < restrictedThreshold-1; i++ {
-		p.NoteUpstreamRestricted("u1")
-	}
-	if st, ok := p.Status("u1"); ok && st.Disabled {
-		t.Fatalf("清零后重新累积未达阈值就禁用了")
+	// 清零后从零重新累积：下一次命中是否禁用，由阈值本身决定。
+	disabled := p.NoteUpstreamRestricted("u1")
+	if want := restrictedThreshold <= 1; disabled != want {
+		t.Errorf("清零后首次命中：disabled=%v want %v（阈值 %d）",
+			disabled, want, restrictedThreshold)
 	}
 }
 
