@@ -307,6 +307,9 @@ func New(cfg Config) *Handler {
 	// 而上游**只负责把那段 JSON 解释成自己的凭证**
 	//（gateway.AccountImportExt）。详见 account_import.go。
 	h.register("POST /admin/accounts/import", h.accountsImport)
+	// 导入导出文件（zip / 单账号 json）：把导出的凭证原样写回目录。
+	// 与上面那条"粘文本导入"是两条路径 —— 判据不同，见 account_import_file.go。
+	h.register("POST /admin/accounts/import-file", h.accountsImportFile)
 	// 账号数据导出（json / zip / csv / txt）。与导入同层同理由：
 	// 目标是"所有上游共用"，分派按 provider 走网关扩展点。
 	h.register("POST /admin/accounts/export", h.accountsExport)

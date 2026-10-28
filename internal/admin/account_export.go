@@ -65,7 +65,12 @@ const (
 )
 
 // exportFileVersion zip 内 manifest.json 的格式版本。
-const exportFileVersion = 1
+//
+// v1：files[] 只有 name/uid/size/sha256，一个 zip 装一个上游。
+// v2：每条多一个 provider —— 导入时不必再问调用方"这些文件该写进哪个目录"，
+//
+//	混合上游的 zip 也能一次导回去。导入侧同时接受 v1（缺 provider 时退回参数）。
+const exportFileVersion = 2
 
 // accountsExport POST /admin/accounts/export
 //
@@ -326,10 +331,11 @@ func (h *Handler) writeExportZip(w http.ResponseWriter, rows []exportRow, withSe
 	zw := zip.NewWriter(&buf)
 
 	type manFile struct {
-		Name   string `json:"name"`
-		UID    string `json:"uid"`
-		Size   int    `json:"size"`
-		SHA256 string `json:"sha256"`
+		Name     string `json:"name"`
+		UID      string `json:"uid"`
+		Provider string `json:"provider"`
+		Size     int    `json:"size"`
+		SHA256   string `json:"sha256"`
 	}
 	man := struct {
 		FormatVersion   int       `json:"format_version"`
@@ -384,7 +390,8 @@ func (h *Handler) writeExportZip(w http.ResponseWriter, rows []exportRow, withSe
 		}
 		sum := sha256.Sum256(raw)
 		man.Files = append(man.Files, manFile{
-			Name: name, UID: row.status.UID, Size: len(raw), SHA256: hex.EncodeToString(sum[:]),
+			Name: name, UID: row.status.UID, Provider: row.provider,
+			Size: len(raw), SHA256: hex.EncodeToString(sum[:]),
 		})
 	}
 	rawMan, _ := json.MarshalIndent(man, "", "  ")

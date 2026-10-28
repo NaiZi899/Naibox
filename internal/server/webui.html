@@ -502,6 +502,12 @@
   .subgroup{margin:16px 0 6px;font-size:12px;font-weight:600;color:var(--fg);
     padding-top:12px;border-top:1px dashed var(--line)}
   .subgroup:first-child{margin-top:0;padding-top:0;border-top:0}
+  /* 文件选择做成按钮外观：原生 input[type=file] 在暗色主题里是一块白底控件，
+     与旁边三个按钮并排会像外站嵌入。 */
+  .btnfile{display:inline-flex;align-items:center;padding:3px 10px;font-size:12px;
+    background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    color:var(--fg);cursor:pointer;white-space:nowrap}
+  .btnfile:hover{border-color:var(--acc);color:var(--acc)}
   .info-line{font-size:12px;color:var(--dim);line-height:1.7;margin:0 0 12px}
   /* 开关 + 参数并排成一行（如：启用签到 [9,21]） */
   .pair{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
@@ -1036,6 +1042,21 @@
         title="导出人读清单（TXT）：按上游分组，不含凭据">TXT</button>
       <button id="btnExportJSON" style="padding:3px 10px;font-size:12px"
         title="导出含凭据的 JSON（单账号 / 全部打成 zip）：等同账号口令，会先要你确认">JSON（含凭据）</button>
+      <!-- 导入（与上面三个导出按钮对称）。
+           # 为什么必须先是文件选择而不是"粘贴框"
+           导入吃的是**导出产物**（zip 或单账号 json），里面通常是几十上百个文件；
+           粘贴框撑不起上百条凭证，也没法保留文件名（文件名是落盘名）。
+           # provider 下拉默认「按清单判断」
+           v2 的 manifest 每条带 provider，所以混合上游的 zip 也能一次导回去；
+           只有老包（v1）或用户自己打的 zip 才需要在这里指定。 -->
+      <label class="btnfile" title="导入导出的 zip / 单账号 json：把凭证原样写回本机凭证目录">
+        导入
+        <input type="file" id="btnImportFile" accept=".zip,.json,application/zip,application/json" hidden>
+      </label>
+      <select id="importProvider" title="包内没有 provider 时用这个（v2 清单自带，一般无需指定）"
+        style="padding:3px 8px;font-size:12px">
+        <option value="">按清单判断</option>
+      </select>
       <!--
         原先这里还有一个「全部保活」按钮，已删除（用户决定）。
 
@@ -6823,6 +6844,94 @@ let loginProvider = '';
     }
   }
 
+  // importAccounts 上传导出产物并逐上游重载。
+  //
+  // # 为什么导入之后要在这里调重载
+  //
+  // 后端**故意不**在导入里顺手 reload（判据只有一份，见
+  // internal/admin/account_import_file.go 的文件头）。导入回执里带着
+  // `reload:[{provider}]`，由前端按列表调既有的 /admin/accounts/reload ——
+  // 于是"导入后账号出现"这条链路上没有第二份"该扫哪个目录"的实现。
+  async function importAccounts(file, provider) {
+    if (!file) return;
+    const q = new URLSearchParams({ confirm: 'import-secrets' });
+    if (provider) q.set('provider', provider);
+    let rep;
+    try {
+      const res = await fetch('/admin/accounts/import-file?' + q.toString(), {
+        method: 'POST',
+        headers: hdr(),
+        body: file,     // 原始字节：后端按魔术字节判格式，不看 Content-Type
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text || ('HTTP ' + res.status));
+      rep = JSON.parse(text);
+    } catch (e) {
+      toast('导入失败：' + (e.message || e), true);
+      return;
+    }
+
+    // 逐上游重载：失败要单独说（导入成功但没进池 = 用户最容易被骗的一种"成功"）
+    const reloadErr = [];
+    for (const item of (rep.reload || [])) {
+      try {
+        await admin('/admin/accounts/reload', {
+          method: 'POST',
+          body: JSON.stringify({ provider: item.provider }),
+        });
+      } catch (e) {
+        reloadErr.push(item.provider + '：' + (e.message || e));
+      }
+    }
+
+    const parts = [];
+    if (rep.created) parts.push('新增 ' + rep.created);
+    if (rep.replaced) parts.push('覆盖 ' + rep.replaced);
+    if (rep.unchanged) parts.push('未变 ' + rep.unchanged);
+    if (rep.skipped) parts.push('跳过 ' + rep.skipped);
+    if (rep.rejected) parts.push('拒绝 ' + rep.rejected);
+    const summary = parts.length ? parts.join('，') : '没有可导入的条目';
+    if (rep.rejected || rep.skipped || reloadErr.length) {
+      // 有拒绝时把前三条原因摊开：批量导入里"3 条被拒"不写原因等于没说。
+      const why = (rep.results || [])
+        .filter(r => r.action === 'rejected' || r.action === 'skipped')
+        .slice(0, 3)
+        .map(r => r.name + '：' + (r.error || r.action))
+        .join('；');
+      toast('导入完成：' + summary + (why ? '（' + why + '）' : '') +
+        (reloadErr.length ? '；重载失败：' + reloadErr.join('；') : ''), true);
+    } else {
+      toast('导入完成：' + summary, false);
+    }
+    await refresh();
+  }
+
+  function wireImportButton() {
+    const input = $('btnImportFile');
+    if (!input) return;
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      input.value = '';   // 允许重复选同一个文件
+      if (!file) return;
+      const sel = $('importProvider');
+      await importAccounts(file, sel ? sel.value : '');
+    });
+  }
+
+  // 导入下拉的上游清单来自 /admin/providers（与导航同源），只在页面就绪后填一次。
+  function fillImportProviders() {
+    const sel = $('importProvider');
+    if (!sel) return;
+    const groups = (typeof upstreamGroups === 'function' ? upstreamGroups() : []) || [];
+    for (const g of groups) {
+      if (!g || !g.id) continue;
+      const opt = document.createElement('option');
+      opt.value = g.id;
+      opt.textContent = g.id;
+      sel.appendChild(opt);
+    }
+  }
+
   function wireExportButtons() {
     const csv = $('btnExportCSV');
     if (csv) csv.addEventListener('click', () => exportAccounts('csv', false));
@@ -11752,6 +11861,8 @@ let multCatalogFailed = false;
     wireProfilePanel();
     wireEgressPanel();
     wireExportButtons();
+    wireImportButton();
+    fillImportProviders();
     wireBackupPanel();
     // 显示/隐藏 key：只切 input.type，**不**重绘编辑器（重绘会丢其它字段的输入）。
     $('cfKeyToggle').onclick = () => {
