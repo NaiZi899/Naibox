@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/NaiZi899/Naibox/internal/auth"
-	"github.com/NaiZi899/Naibox/internal/prompt"
 )
 
 // 出站边界的 fixture。
@@ -35,7 +34,6 @@ func TestChatStreamWireBodySanitized(t *testing.T) {
 
 	c := New()
 	c.SanitizeFingerprints = true
-	c.PromptMode = prompt.ModePassthrough // ← 隔离提示词层
 	c.ChatBaseCN = ts.URL
 	acct := &auth.Auth{AccessToken: "test-token", Domain: "copilot.tencent.com", UID: "u1"}
 
@@ -68,7 +66,7 @@ func TestChatStreamWireBodySanitized(t *testing.T) {
 
 // 出站边界：关闭脱敏后 wire body 原样保留指纹（验证开关真实有效）。
 //
-// ⚠ 必须同时把 PromptMode 设成 passthrough，否则本用例**测不到脱敏开关**。
+// 提示词改写已删除，本用例直接测 sanitize 开关本身。
 //
 // 为什么：出站管线是 `applyPrompt` → `PrepareBodyOpt...` 两层。
 // 默认的 custom 模式会在脱敏之前就把整条 system 消息**删掉换成网关自有提示词**，
@@ -88,7 +86,6 @@ func TestChatStreamWireBodySanitizeDisabled(t *testing.T) {
 
 	c := New()
 	c.SanitizeFingerprints = false
-	c.PromptMode = prompt.ModePassthrough // ← 隔离提示词层，见上方注释
 	c.ChatBaseCN = ts.URL
 	acct := &auth.Auth{AccessToken: "test-token", Domain: "copilot.tencent.com", UID: "u1"}
 

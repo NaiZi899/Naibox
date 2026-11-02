@@ -45,7 +45,7 @@ var _ DefaultUpstream = upstreamAdapter{}
 // ⚠ 嵌**指针**而不是值：测试里大量出现"先构造、再改字段、然后交给 Config"：
 //
 //	up := newFakeUpstream(t, ...)
-//	up.PromptMode = prompt.ModeCustom   ← 改的是 client
+//	up.UserAgent = "x"                  ← 改的是 client
 //	NewHandler(Config{Upstream: up})
 //
 // 适配器必须**透传**到那个 client（不是快照一份），否则测试改的是原对象、

@@ -31,7 +31,6 @@ import (
 	"github.com/NaiZi899/Naibox/internal/gateway"
 	"github.com/NaiZi899/Naibox/internal/logbuf"
 	"github.com/NaiZi899/Naibox/internal/pool"
-	"github.com/NaiZi899/Naibox/internal/prompt"
 	"github.com/NaiZi899/Naibox/internal/session"
 	"github.com/NaiZi899/Naibox/internal/wire"
 )
@@ -99,17 +98,6 @@ type Config struct {
 	// 长回答不会被它掐掉。
 	StreamFirstByte time.Duration
 
-	// PromptGate 内容拦截降级状态机（可为 nil）。
-	//
-	// # 为什么它必须与出站客户端**共用同一个实例**
-	//
-	// 出站循环在这里 Trigger()，出站客户端在每次发请求前读 Active()。
-	// 两个不同的实例会让机制完全失效：handler 触发了降级，
-	// 客户端却还在用正常提示词 → 每次重试都先撞一次 400。
-	//
-	// nil 表示本部署未接提示词体系：内容拦截退化为"只换号不罚号"
-	// （保守但正确 —— 不会误伤账号，只是会多跑几次往返）。
-	PromptGate *prompt.Gate
 	// Session 会话粘性路由器（可选；nil = 关闭粘性，纯 Pick 轮换）。
 	Session *session.Router
 	// StickyCount 返回当前粘性会话绑定数（供 /status）；nil 时报告 0。
@@ -622,14 +610,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	tried := map[string]bool{}
 	var lastErr error
 
-	// degradedTried 本请求是否已经用过降级提示词重试。
-	//
-	// 初值取"进入本请求时降级是否已激活"：若上一批请求已经把 Gate 触发过，
-	// 那么客户端**本次发的就是 Degraded 提示词** —— 再拦就说明问题在用户内容，
-	// 没有第三次可试。这样"每个请求最多因内容拦截重试一次"是精确成立的，
-	// 而不是靠一个恒为 false 的局部变量（那会让每次请求都白白多试一轮）。
-	degradedTried := h.cfg.PromptGate.Active()
-
 	// 会话粘性：从请求体提取会话键并解析绑定号（找不到/无效则 stickyUID 为空，走普通轮换）。
 	sessKey := ""
 	stickyUID := ""
@@ -895,38 +875,23 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				writePassthroughError(w, status, respBody)
 				return
 			}
-			// 内容策略拦截：**不罚账号**，改用降级提示词重试一次。
+			// 内容策略拦截：不罚账号、不换号，把上游的 400 与原文如实交回客户端。
 			//
-			// 见 gateway.ErrKindContentBlocked 的长注释：内容问题换号没有意义
-			// （每个账号背后是同一套策略），正确的动作是换提示词。
-			// 因此这里刻意**不调** applyErrorPolicy —— 它会把账号冷却/熔断，
-			// 而账号在这件事上没有任何过错。
+			// # 为什么既不换号也不改写提示词
+			//
+			// 拦截由**请求内容**触发，每个账号背后是同一套策略：换号只是把同一个
+			// 400 再打 N 次，最后把一次内容问题包装成"所有账号不可用"的 503。
+			// "改写 system prompt 再试一次"那条自愈路径已随提示词网关一起删除，
+			// 所以这里只剩一个动作 —— 把上游的错误原样交给客户端，让它能改自己的内容。
+			//
+			// 保留本分支（而不是并进 default）的理由：default 会换号。
 			if kind == gateway.ErrKindContentBlocked {
-				if h.retryWithDegradedPrompt(w, st, reqProvider, acct.UID, status, respBody, &degradedTried) {
-					// 内容问题**不是账号问题**，所以这一轮的动作刻意与其它错误不同：
-					//
-					//	不调 applyErrorPolicy → 不冷却 / 不计错 / 不喂熔断
-					//	不调 fail(uid)        → 不解绑会话粘性（会话本身没坏）
-					//
-					// 只释放在途租约，并把该账号从 tried 里**撤掉** ——
-					// 让下一轮能重新选回同一个账号。
-					//
-					// # 为什么必须撤 tried（这是单账号部署的生死线）
-					//
-					// 不撤的话，PickFor 会因为 "已试过" 而跳过它：
-					// 单账号部署下一轮**选不出任何号** → 直接 break →
-					// 返回 503 "all accounts unavailable"。
-					// 于是"降级重试"在最常见的部署形态下根本没发生过，
-					// 用户看到的是"内容拦截 = 服务不可用"。
-					//
-					// 保留粘性绑定则让下一轮优先回到同一个账号（PickByUIDFor 先行），
-					// 多账号部署下若粘性未命中，普通轮换选到别的号也无妨 ——
-					// 内容策略是账号无关的，用哪个号都一样。
-					releaseHeld()
-					delete(tried, acct.UID)
-					continue
-				}
+				msg := contentBlockMsg(respBody)
+				log.Printf("chat uid=%s provider=%s: 内容策略拦截，判定为请求内容本身触发：%s",
+					acct.UID, reqProvider, msg)
+				st.status = status
 				releaseHeld()
+				writeOpenAIError(w, status, "content_blocked", "上游内容策略拦截："+msg)
 				return
 			}
 			// 模型级限流收窄（借鉴 omni2api-panel）：
@@ -1058,6 +1023,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					Status: http.StatusOK,
 					Msg:    inband.Message,
 				}
+				if kind == gateway.ErrKindContentBlocked {
+					// 内容拦截与账号无关，且改写提示词的能力已删除：如实交回客户端。
+					// 不换号 —— 换号只会把同一个 400 再打一次，还可能拖垮整池。
+					msg := contentBlockMsg([]byte(inband.Body))
+					log.Printf("chat uid=%s provider=%s: 流内内容策略拦截，判定为请求内容本身触发：%s",
+						acct.UID, reqProvider, msg)
+					releaseHeld()
+					st.status = http.StatusBadRequest
+					writeOpenAIError(w, http.StatusBadRequest, "content_blocked", "上游内容策略拦截："+msg)
+					return
+				}
 				h.applyErrorPolicy(acct.UID, kind, reqProvider, http.StatusOK, []byte(inband.Body))
 				fail(acct.UID)
 				continue
@@ -1118,6 +1094,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				Kind:   kind,
 				Status: http.StatusOK,
 				Msg:    inband.Message,
+			}
+			if kind == gateway.ErrKindContentBlocked {
+				// 内容拦截与账号无关，且改写提示词的能力已删除：如实交回客户端。
+				// 不换号 —— 换号只会把同一个 400 再打一次，还可能拖垮整池。
+				msg := contentBlockMsg([]byte(inband.Body))
+				log.Printf("chat uid=%s provider=%s: 流内内容策略拦截，判定为请求内容本身触发：%s",
+					acct.UID, reqProvider, msg)
+				releaseHeld()
+				st.status = http.StatusBadRequest
+				writeOpenAIError(w, http.StatusBadRequest, "content_blocked", "上游内容策略拦截："+msg)
+				return
 			}
 			h.applyErrorPolicy(acct.UID, kind, reqProvider, http.StatusOK, []byte(inband.Body))
 			fail(acct.UID)
@@ -1223,73 +1210,6 @@ func (h *Handler) finishStreamTimeout(
 	log.Printf("chat stream uid=%s provider=%s: %s（已提交 200，写流内错误帧 + [DONE] 收尾）",
 		uid, providerID, hit.Error())
 	writeStreamTimeoutFrame(w, hit)
-}
-
-// retryWithDegradedPrompt 处理一次**内容策略拦截**（借鉴 omni2api-panel）。//
-// # 语义
-//
-//	返回 true  → 已触发降级，调用方应 continue 让下一轮用中性提示词重发
-//	返回 false → 已向客户端写出终态错误，调用方应立即 return（不再重试）
-//
-// # 为什么"重试一次"就够了，不做更多
-//
-// 上游只给一句"blocked"，无法区分「system 指纹误报」与「用户内容真的违规」。
-// 换中性提示词重试一次是**唯一**能区分两者的实验：
-//
-//	重试后通过 → 是①，降级有效，本请求正常返回
-//	重试后仍被拦 → 是②，问题在用户内容里，再怎么换提示词/换账号都没用
-//
-// 继续重试只会把一次内容问题拖成 MaxRotate 次白跑往返，
-// 最后返回"所有账号不可用" —— 一个把内容问题误报成账号池故障的错误结论。
-// 因此第二次被拦时**立刻如实告诉调用方**，带上上游原文。
-//
-// # 为什么账号不罚
-//
-// 内容策略是**账号无关**的：同一套策略在所有账号后面。因此这条路径
-// 绝不调用 applyErrorPolicy（不冷却、不计错、不喂熔断）。
-// 调用方只做 fail(uid) —— 那是**释放租约 + 解绑粘性**的资源动作，不是惩罚。
-//
-// # status 兜底
-//
-// 传入的是上游的原始状态码（正常是 400）。若上游给的是 2xx（错误藏在流内），
-// 直接把它转发给客户端会让客户端以为成功 —— 因此夹到 400。
-// 这一点很重要：本函数是在"读流内错误"的分支上被复用的。
-func (h *Handler) retryWithDegradedPrompt(
-	w http.ResponseWriter, st *chatStat, providerID, uid string,
-	status int, respBody []byte, degradedTried *bool,
-) bool {
-	msg := contentBlockMsg(respBody)
-	if h.cfg.PromptGate != nil && !*degradedTried {
-		h.cfg.PromptGate.Trigger()
-		*degradedTried = true
-		log.Printf("chat uid=%s provider=%s: 内容策略拦截，已切降级提示词重试一次（降级至 %s）: %s",
-			uid, providerID, h.cfg.PromptGate.Until().Format(time.RFC3339), msg)
-		return true
-	}
-	// 中性提示词仍被拦（或本部署没接提示词体系）→ 判定为用户内容触发审核。
-	//
-	// 注意 nil gate 时也走这里：没有降级能力还继续换号是纯浪费，
-	// 如实返回上游错误比"所有账号不可用"更有信息量。
-	log.Printf("chat uid=%s provider=%s: 内容策略拦截（%s），判定为请求内容本身触发：%s",
-		uid, providerID, contentBlockExhaustedReason(h.cfg.PromptGate, *degradedTried), msg)
-	if status < 400 || status > 599 {
-		status = http.StatusBadRequest
-	}
-	writeOpenAIError(w, status, "content_blocked", "上游内容策略拦截："+msg)
-	st.status = status
-	return false
-}
-
-// contentBlockExhaustedReason 给日志一个能区分两种终态的措辞。
-func contentBlockExhaustedReason(gate *prompt.Gate, degradedTried bool) string {
-	switch {
-	case gate == nil:
-		return "未接提示词体系，无法降级"
-	case degradedTried:
-		return "降级提示词后仍被拦"
-	default:
-		return "降级重试次数已用尽"
-	}
 }
 
 // contentBlockMsg 摘要上游错误体，供日志与返回给客户端的文案使用。

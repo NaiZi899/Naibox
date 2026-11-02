@@ -38,7 +38,6 @@ import (
 	"github.com/NaiZi899/Naibox/internal/loomy"
 	"github.com/NaiZi899/Naibox/internal/oauth"
 	"github.com/NaiZi899/Naibox/internal/pool"
-	"github.com/NaiZi899/Naibox/internal/prompt"
 	"github.com/NaiZi899/Naibox/internal/qoder"
 	"github.com/NaiZi899/Naibox/internal/raccoon"
 	"github.com/NaiZi899/Naibox/internal/redisstore"
@@ -94,6 +93,16 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 	cfgPath := opt.ConfigPath
 	if cfgPath == "" {
 		cfgPath = "config.json"
+	}
+
+	// 已删除功能的残留段清理：提示词网关（mode / file / 降级重试）已整体移除，
+	// 老 config.json 里的 prompt 段现在只是一个会误导人的死键。
+	//
+	// 失败只记日志：老配置 + 只读盘不该变成"起不来"。清理幂等，下次有写权限再清。
+	if removed, lerr := stripLegacyPromptSection(cfgPath); lerr != nil {
+		log.Printf("config: 清理废弃的 prompt 段失败（不影响启动）：%v", lerr)
+	} else if removed {
+		log.Printf("config: 已移除废弃的 prompt 段（提示词网关功能已删除）")
 	}
 
 	cfg, err := LoadAt(cfgPath, opt.DataDir)
@@ -184,29 +193,7 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 	// 超时 / 脱敏 / 出站身份（含按模型族分档）全部在 configureUpstream 里 ——
 	// 抽成函数是为了让"构造一个配置好的出站客户端"只有一处（装配层与测试共用）。
 	configureUpstream(up, cfg)
-	// 系统提示词体系（借鉴 omni2api-panel）：模式 + 正文 + 降级状态机。
-	//
-	// 正文由 cfg.normalize() 在启动时就加载好（文件不可读会在那里直接报错）。
-	// 状态机在这里创建，**同一个实例**必须同时交给两处：
-	//
-	//	up.PromptGate   出站客户端读它，决定用 PromptText 还是 Degraded
-	//	h.cfg.PromptGate 出站循环写它（观察到内容拦截时 Trigger）
-	//
-	// 两处共用同一个 *prompt.Gate 是本机制成立的前提 ——
-	// 各建一个的话，handler 触发的降级客户端永远看不到，退化成"每次重试都先撞 400"。
-	up.PromptMode = cfg.PromptMode
-	up.PromptText = cfg.PromptText
-	promptGate := prompt.NewGate()
-	up.PromptGate = promptGate
 	logUpstreamIdentity(up, "全局")
-	{
-		src := "内置默认"
-		if cfg.Prompt.File != "" {
-			src = cfg.Prompt.File
-		}
-		log.Printf("系统提示词：mode=%s 来源=%s（%d 字节）", cfg.PromptMode, src, len(cfg.PromptText))
-	}
-
 	checkinLog := checkinlog.New(cfg.CheckinLogPath, cfg.CheckinLogKeepDays)
 
 	// 请求日志落盘：挂到 server 包的环形缓冲上，实时视图走内存、历史视图走文件。
@@ -1226,10 +1213,7 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 		StreamMax:       time.Duration(cfg.Upstream.StreamMaxSeconds) * time.Second,
 		StreamFirstByte: time.Duration(cfg.Upstream.StreamFirstByteSeconds) * time.Second,
 		// 上游工具自动注入（loomy 的生图/搜索）。缺省开启，见 docs/chat-tools.md。
-		DisableChatTools: cfg.Server.DisableChatTools,
-		// ⚠ 必须是**同一个** promptGate 实例（与 up.PromptGate 一起给）：
-		// handler 在这里写、出站客户端在那里读。两个实例 = 机制失效。
-		PromptGate:        promptGate,
+		DisableChatTools:  cfg.Server.DisableChatTools,
 		ModelCatalog:      server.ModelCatalog,
 		ModelCatalogState: server.ModelCatalogState,
 		// 实例身份：配置里给了就用配置的，否则用编译期默认值。
@@ -1317,7 +1301,7 @@ func Run(ctx context.Context, opt Options) (*Runtime, error) {
 					if s := logRing.Sink(); s != nil {
 						s.SetKeepDays(days)
 					}
-				}, withPromptGate(promptGate)),
+				}),
 				// 自定义上游管理页：读写 config.json 的 custom_upstreams 段。
 				// 没有自定义上游时它仍然可用（页面上可以新增第一条）。
 				CustomUpstreams: newCustomStore(cfgPath, cfg),

@@ -18,8 +18,6 @@ import (
 	"github.com/NaiZi899/Naibox/internal/codearts"
 	"github.com/NaiZi899/Naibox/internal/custom"
 	"github.com/NaiZi899/Naibox/internal/loomy"
-	"github.com/NaiZi899/Naibox/internal/prompt"
-	"github.com/NaiZi899/Naibox/internal/wire"
 )
 
 // UAModelFamilyConfig 一条"按模型名前缀覆写 UA"的规则。
@@ -367,37 +365,6 @@ type Config struct {
 		// SanitizeBlacklistFingerprints 出站请求体黑名单指纹脱敏（默认 true；false 完全还原）。
 		SanitizeBlacklistFingerprints bool `json:"sanitize_blacklist_fingerprints"`
 	} `json:"features"`
-
-	// Prompt 系统提示词体系（借鉴 omni2api-panel）。
-	//
-	// 客户端（Claude Code / Codex 等 CLI）注入的 system prompt 模板句
-	// 会被上游内容审核**逐字精确匹配**并整单拦截（400）。本段决定网关怎么处理：
-	//
-	//	mode=custom（默认） 出站前用网关自有提示词替换客户端 system/developer
-	//	mode=passthrough    透传客户端原始 system，撞了再靠降级兜底
-	//
-	// 两层分工与降级机制详见 internal/prompt 包注释。
-	Prompt struct {
-		// Mode 三选一："custom" / "append" / "passthrough"；空 = custom。
-		//
-		//	custom      出站前用网关自有提示词**替换**客户端 system / developer。
-		//	            从源头消灭该来源的指纹，代价是丢掉客户端自己的 system
-		//	            （例如 Claude Code 的工程约定）。
-		//	append      保留客户端 system / developer，在其后**追加一条网关 system**。
-		//	            保留客户端人格，但客户端自动注入的模板句**仍然在请求里** ——
-		//	            指纹只能靠追加那段"改写认知"和 sanitize 层兜底，
-		//	            不能保证不误杀（撞上了走 gate 降级重试）。
-		//	passthrough 原样透传，不做任何改写；撞指纹时同样由降级机制兜底。
-		//
-		// 也可以用环境变量 NAIBOX_PROMPT_MODE 临时覆盖（回滚通道，见 applyEnv）。
-		Mode string `json:"mode"`
-		// File 自定义提示词文件路径。空 = 用内置默认。
-		//
-		// ⚠ 路径非空但不可读（或内容为空）→ **启动直接报错**（fail fast）。
-		// 不静默回落内置默认：那会让"路径打错一个字符"表现为
-		// "网关一切正常，只是我的人格没了" —— 一个完全无信号的失败。
-		File string `json:"file"`
-	} `json:"prompt"`
 
 	Upstash struct {
 		URL   string `json:"url"`   // 空 = 纯内存模式；支持完整 rediss:// URL 或 https://xxx.upstash.io host
@@ -1036,21 +1003,6 @@ type Config struct {
 	ScheduleCheckinInterval   time.Duration `json:"-"`
 	ScheduleKeepaliveInterval time.Duration `json:"-"`
 
-	// Prompt 解析后（供 main 直接取用）。
-	//
-	// PromptMode 一定是 prompt.ModeCustom / prompt.ModeAppend / prompt.ModePassthrough
-	// 之一（normalize 已把空值收敛成 custom，非法值报错）。
-	// 环境变量 NAIBOX_PROMPT_MODE 的合法值已经在 applyEnv 阶段覆盖完毕，
-	// 所以这里看到的就是**最终生效**的模式。
-	//
-	// PromptText 是**已经加载好的提示词正文**：normalize 阶段就会读文件，
-	// 因此文件不可读会在启动时报错，而不是等到第一次请求。
-	// 它一定非空（空文件被 normalize 判为错误），且**不含脱敏指纹**——
-	// 含指纹的提示词会让 sanitize 层把它改写一遍再发出去，属于静默失真，
-	// 所以 normalize 直接 fail fast（见那里的 wire.HasFingerprint 校验）。
-	PromptMode string `json:"-"`
-	PromptText string `json:"-"`
-
 	// Codearts 解析后（供 main 直接取用）。
 	//
 	// CodeartsEnabled 为 false 时下面两个字段无意义：不注册上游、不加载凭证。
@@ -1363,37 +1315,6 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WB2A_SANITIZE_FINGERPRINTS"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Features.SanitizeBlacklistFingerprints = b
-		}
-	}
-	// 提示词模式的**回滚通道**：NAIBOX_PROMPT_MODE=custom|append|passthrough。
-	//
-	// # 为什么单独给一个环境变量
-	//
-	// prompt.mode 直接决定"请求发到上游后会不会被内容审核拦"。线上出问题时
-	// 第一需求是**立刻换回上一个模式**，而不是编辑 JSON、重启、再排查现场 ——
-	// 桌面版尤其如此：config.json 落在用户目录里，运维拿不到也改不动；
-	// 环境变量在启动器/容器里就是一行。
-	//
-	// # 为什么必须写在 applyEnv（而不是 normalize 里）
-	//
-	// applyEnv 早于 normalize 的合法性 switch 执行，这里直接写合法值进去，
-	// 就不会被 normalize 当成"配置里写了非法值"报错。反过来若在 switch
-	// 之后再覆盖，等于绕过校验，两边语义会打架。
-	//
-	// # 非法值为什么只警告不阻断
-	//
-	// 这是应急通道：打错一个字母不该让进程起不来（那会把"想救火"变成
-	// "救不了火"）。真正写错的配置仍然由 normalize 报错 —— 那条路是
-	// 用户亲手编辑的文件，值得 fail fast；环境变量是临时开关，值得容错。
-	// 日志只打这一条（applyEnv 每次加载配置执行一次）。
-	if v := strings.TrimSpace(os.Getenv("NAIBOX_PROMPT_MODE")); v != "" {
-		switch v {
-		case prompt.ModeCustom, prompt.ModeAppend, prompt.ModePassthrough:
-			c.Prompt.Mode = v
-		default:
-			log.Printf("环境变量 NAIBOX_PROMPT_MODE=%q 不是合法取值，已忽略"+
-				"（只接受 %q / %q / %q）；提示词模式仍按 config.json 的 prompt.mode",
-				v, prompt.ModeCustom, prompt.ModeAppend, prompt.ModePassthrough)
 		}
 	}
 	// 风控停手的**回滚通道**：NAIBOX_RESTRICTED_ROTATE_MAX（默认 0 = 立即停手）。
@@ -1759,85 +1680,6 @@ func (c *Config) normalize() error {
 		c.Server.MaxBodyMB = 1024
 	}
 
-	// 系统提示词：模式收敛 + **在此处就加载正文**。
-	//
-	// 加载放在 normalize 而不是第一次请求，是为了 fail fast：
-	// 提示词文件路径写错时，进程**起不来**并直接说明原因，
-	// 而不是启动成功、请求正常、只是自定义人格静默失效。
-	//
-	// 环境变量 NAIBOX_PROMPT_MODE 的覆盖已经在 applyEnv 里做完（早于本段），
-	// 所以下面的 switch 只处理 config.json 送来的值。
-	c.PromptMode = strings.TrimSpace(c.Prompt.Mode)
-	switch c.PromptMode {
-	case prompt.ModeCustom, prompt.ModeAppend, prompt.ModePassthrough:
-		// 合法值原样保留
-	case "":
-		// 未配置 → **透传**（不改写，一个字节都不动）。
-		//
-		// 2026-10 起默认值从 custom 改成 passthrough：改写会改变上游看到的
-		// 渠道画像，而上游按累积采样判定渠道是否正常（实测有部署在改了模式
-		// 七小时后被整片拦截）。这个代价该由显式选择改写的人承担，
-		// 不该由"什么都没配"的人默认承担。
-		c.PromptMode = prompt.ModePassthrough
-	default:
-		// 非法值**报错**而不是静默当 custom：
-		// 用户写 "passthru" / "Custom " 时，静默按 custom 处理会让
-		// "我明明配了透传，为什么人格还是被换掉了" 变成一个无从下手的问题。
-		return fmt.Errorf("prompt.mode=%q 非法：只接受 %q、%q 或 %q",
-			c.Prompt.Mode, prompt.ModeCustom, prompt.ModeAppend, prompt.ModePassthrough)
-	}
-	// passthrough 模式下不需要加载正文：它不会用（降级用的 Degraded 是常量）。
-	// 但**仍然校验文件**（若非空），因为那是一个明显的配置意图矛盾 ——
-	// 配了自定义人格却选了透传，多半是改了一半，早点说出来比默默忽略好。
-	text, err := prompt.Load(c.PromptMode, c.Prompt.File)
-	if err != nil {
-		return err
-	}
-	c.PromptText = text
-	// 指纹自检（fail fast）：提示词正文本身命中脱敏表时，出站前会被
-	// sanitize 层逐串改写（例如裸 11128 → 11-128），于是"配置文件里写的"
-	// 和"上游实际收到的"不是同一份 —— 静默失真，用户无从发现。
-	//
-	// 只报"命中"而不贴片段/正文：提示词可能很长，把整段打进错误信息既刷屏
-	// 又可能把用户内容写进日志；规则表在 internal/wire，这里直接复用
-	// wire.HasFingerprint，不另开一份（两份规则必然漂移）。
-	//
-	// # 为什么 passthrough 下这一条降级为 warning 而不是错误
-	//
-	// passthrough 根本不会把这段文本发出去（文件内容只被校验、不被使用），
-	// 所以"被 sanitize 改写"这件事在它身上不成立。
-	//
-	// 更要紧的是：passthrough 正是 NAIBOX_PROMPT_MODE 这条回滚通道要落到的
-	// 模式。若此处照样 fail fast，用户在现场止血时会撞上"切了 passthrough
-	// 也起不来，因为人格文件本身带指纹"——回滚通道当场失效，而这恰恰是
-	// 唯一能救火的那条路。所以这里只提示，不阻断。
-	if wire.HasFingerprint(text) {
-		src := "内置默认提示词"
-		if f := strings.TrimSpace(c.Prompt.File); f != "" {
-			src = "文件 " + f
-		}
-		if c.PromptMode == prompt.ModePassthrough {
-			log.Printf("提示词：%s 含脱敏指纹串，但 mode=passthrough 不会发出它，"+
-				"仅作提示；切回 custom/append 之前必须先改掉（否则会被 sanitize 改写，"+
-				"配置里看到的与上游收到的不是同一份）", src)
-		} else {
-			return fmt.Errorf("系统提示词含脱敏指纹串（会被 sanitize 改写后发出，"+
-				"配置里看到的与上游收到的不是同一份），请改掉后再启动：来源 %s", src)
-		}
-	}
-	if c.PromptMode == prompt.ModePassthrough && strings.TrimSpace(c.Prompt.File) != "" {
-		log.Printf("提示词：mode=passthrough 时 prompt.file 不生效（透传客户端原始 system）；" +
-			"文件已校验可读，但内容不会被使用")
-	}
-	// append + 空 file：技术上能跑，但几乎一定是漏配 —— 空 file 意味着
-	// "追加的那段"就是内置默认人格（约 2KB），于是在客户端 system 之后
-	// 再叠一份完整人格：token 成本双份，语义也双份（两段人格互相牵扯）。
-	// 不阻断启动（有人确实想这样预热），但必须让用户在启动日志里看见代价。
-	if c.PromptMode == prompt.ModeAppend && strings.TrimSpace(c.Prompt.File) == "" {
-		log.Printf("提示词：mode=append 但 prompt.file 为空 —— 会在客户端 system 之后" +
-			"再追加一份内置默认人格（约 2KB），token 成本与语义都是双份；" +
-			"append 通常应配一份**只写差异**的短文件")
-	}
 	if !strings.HasPrefix(c.Listen, ":") && !strings.Contains(c.Listen, ":") {
 		c.Listen = ":" + c.Listen
 	}

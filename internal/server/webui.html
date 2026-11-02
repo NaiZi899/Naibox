@@ -1330,29 +1330,6 @@
         <div class="info-line" style="margin-bottom:0">指纹脱敏：<span id="setSanitizeRO">…</span></div>
       </fieldset>
 
-      <fieldset>
-        <legend>系统提示词 <span class="badge badge--cold">重启生效</span></legend>
-        <div class="formgrid">
-          <div class="field"><label>system 提示词模式</label>
-            <select id="setPromptMode">
-              <option value="custom">网关替换客户端 system</option>
-              <option value="append">网关客户端并存</option>
-              <option value="passthrough">仅保留客户端 system（默认）</option>
-            </select></div>
-          <div class="field"><label>人格文件路径</label>
-            <input type="text" id="setPromptFile" placeholder="留空 = 使用内置默认"></div>
-        </div>
-        <div class="info-line dim">
-          生效范围：仅对 WorkBuddy 上游生效。<br>
-          append + 留空文件：会在内置默认人格之后再叠一段（token 与语义都是双份）。<br>
-          改动模式或正文等于改上游看到的渠道画像，上游按累积采样判定，不会立刻报错；出问题时把模式切回「仅保留客户端 system」并重启。
-        </div>
-        <!-- 模式已保存但尚未重启时的显色提示。默认隐藏，由 fillSettings 按
-             settings.prompt_mode（配置值）与 prompt_status.mode（生效值）是否一致决定。 -->
-        <div class="notice warn" id="setPromptRestartHint" hidden></div>
-        <div class="info-line"><span id="setPromptStatusRO" class="dim">…</span></div>
-      </fieldset>
-
       <fieldset class="readonly">
         <legend>会话粘性 <span class="badge badge--ro">只读</span></legend>
         <div class="info-line" style="margin-bottom:0">会话粘性让同一会话尽量落在同一账号上（避免多账号轮转把对话拆散）。<br>
@@ -6322,31 +6299,8 @@ let loginProvider = '';
     ['setCheckinLogDays', 'checkin_log_keep_days', 'int'],
     ['setReqLogDays', 'request_log_keep_days', 'int'],
     ['setUpTimeout', 'upstream_timeout_seconds', 'int'],
-    ['setPromptMode', 'prompt_mode', 'str'],
-    ['setPromptFile', 'prompt_file', 'str'],
   ];
 
-  // prompt_status.source 的形态是 "builtin" 或 "file:<路径>"（见 admin.PromptStatus）。
-  //
-  // 这里按**前缀**判定而不是等值匹配：后端给的是 "file:/x/y.md"，等值匹配会把它
-  // 原样丢给用户看；而那个路径恰恰是他最需要确认的东西 —— 显示成「文件 <路径>」
-  // 才能一眼看出当前生效的是哪一份，而不是只知道"来自文件"。
-  const PROMPT_SRC_LABEL = { builtin: '内置' };
-  function promptSrcText(src) {
-    if (!src) return '—';
-    if (src.indexOf('file:') === 0) return '文件 ' + src.slice(5);
-    return PROMPT_SRC_LABEL[src] || src;
-  }
-  // 三个模式在提示文案里的短名，与 <select> 的 option 文案保持一致 ——
-  // 两处对不上时用户会以为状态行说的是另一个设置项。
-  const PROMPT_MODE_LABEL = {
-    custom: '网关替换客户端 system',
-    append: '网关客户端并存',
-    passthrough: '仅保留客户端 system',
-  };
-  function promptModeText(mode) {
-    return PROMPT_MODE_LABEL[mode] || mode || '—';
-  }
   let savedSettings = null;
 
   // hiddenProviders 被"账号池显示过滤"勾选隐藏的上游 id（来源：config.json 的
@@ -6422,47 +6376,6 @@ let loginProvider = '';
     setRO('setStickyRO',
       (s.session_sticky_enabled ? '已启用 · TTL ' + (s.session_sticky_ttl || '30m') : '已禁用') +
       '（当前正在使用，切换会中断在途会话；如需调整请改 config.json 后重启）');
-    // 系统提示词生效状态（只读，来自 /admin/settings 的 prompt_status）。
-    // 与上面三行同理：值只展示，**不进** SET_FIELDS。
-    // prompt_status 挂在响应顶层（settings 之外），所以先看 extra 再看 s。
-    const ps = (extra && extra.prompt_status) || (s && s.prompt_status) || null;
-    setRO('setPromptStatusRO', !ps ? '当前生效：—' :
-      '当前生效：' + (ps.mode || '—')
-      + ' · 来源 ' + promptSrcText(ps.source)
-      + ' · ' + (typeof ps.bytes === 'number' ? ps.bytes : 0) + ' 字节'
-      + (ps.degraded_until ? ' · 降级中（至 ' + ps.degraded_until + '）' : ''));
-    // 模式改了但还没重启 → 显色提示。
-    //
-    // 判据是「配置里存的模式」与「此刻真正在转发用的模式」不一致，
-    // 所以它不只在下拉框改动后出现，页面一加载就能看见待生效的改动 ——
-    // 否则用户会以为保存完就生效了，而上游那边还在按旧画像判定。
-    {
-      const hint = $('setPromptRestartHint');
-      if (hint) {
-        const pending = (s && s.prompt_mode) || '';
-        const eff = (ps && ps.mode) || '';
-        const pendingFile = String((s && s.prompt_file) || '').trim();
-        const activeFile = (ps && String(ps.source || '').indexOf('file:') === 0)
-          ? String(ps.source).slice(5) : '';
-        const changes = [];
-        if (pending && eff && pending !== eff) {
-          changes.push('模式已保存为「' + promptModeText(pending) + '」');
-        }
-        if (pendingFile !== activeFile) {
-          changes.push(pendingFile
-            ? '人格文件已改为「' + pendingFile + '」'
-            : '已改为使用内置人格');
-        }
-        if (changes.length) {
-          hint.hidden = false;
-          hint.textContent = changes.join('；') + '，需重启应用后生效；当前仍按「'
-            + promptModeText(eff) + '」转发。';
-        } else {
-          hint.hidden = true;
-          hint.textContent = '';
-        }
-      }
-    }
     // 运行信息：保留连接入口/配置文件/API Key；凭证目录与 Redis 模式已隐藏
     //（信息价值低，且凭证目录暴露本地路径没有展示收益）。
     const ro = [

@@ -402,7 +402,8 @@ func (c *Client) GenerateImage(ctx context.Context, a *Auth, body []byte) ([]byt
 //
 // # 解析失败时原样返回
 //
-// 与 internal/prompt 的 Rewrite 同一条理由：本函数的职责是"优化"，不是"校验"。
+// 同一条理由（曾经的 internal/prompt.Rewrite 也是这个约定，该包已删除）：
+// 本函数的职责是"优化"，不是"校验"。
 // 在这里造一个错误，等于把一个上游能诊断的问题变成一个我们自己编的问题。
 func prepareBody(body []byte) []byte {
 	if len(body) == 0 {

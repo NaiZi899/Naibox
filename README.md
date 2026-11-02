@@ -123,7 +123,7 @@ cp config.example.json config.json
 | 请求日志 | 历史分页与 SSE 实时推送 |
 | 可用模型 | 合并目录与能力标注 |
 | 对话测试 | 选模型直接发一条 |
-| 设置 | 调度、超时、提示词、日志保留、显示过滤 |
+| 设置 | 调度、超时、日志保留、显示过滤 |
 | 自定义上游 | 新增、编辑、测试、启停、删除 |
 | 关于软件 | 项目地址与推荐项目 |
 
@@ -167,23 +167,14 @@ Loomy 的 `generate_image` 与 `web_search` 由网关注入，agent 框架直接
 | 基础 | `listen`、`api_key`、`service_name`、`auth_dir`、`state_file` |
 | 界面 | `ui.hidden_providers`、`server.max_body_mb`、`server.disables_chat_tools` |
 | 账号池 | `pool.*`、`session_sticky.*`、`schedule.*` |
-| 出站 | `upstream.*`、`prompt.*` |
+| 出站 | `upstream.*` |
 | 存储 | `upstash.*`，不配则纯内存 |
 
 | 改动 | 生效 |
 |---|---|
-| 自定义上游、提示词、上游超时、账号池、监听地址 | 重启网关 |
+| 自定义上游、上游超时、账号池、监听地址 | 重启网关 |
 | 日志保留、签到与保活开关、显示过滤、API Key 轮换、账号操作 | 立即生效 |
 
-提示词有三种模式。
-
-| 模式 | 行为 |
-|---|---|
-| `passthrough`（默认） | 客户端 system 原样透传 |
-| `custom` | 删除客户端 system，换成网关提示词 |
-| `append` | 保留客户端 system，再追加一条网关 system |
-
-`prompt.file` 不可读或为空会让启动失败。`NAIBOX_PROMPT_MODE=passthrough` 是回滚开关。
 
 ## 自定义上游
 

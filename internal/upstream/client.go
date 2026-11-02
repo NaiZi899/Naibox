@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/NaiZi899/Naibox/internal/auth"
-	"github.com/NaiZi899/Naibox/internal/prompt"
 	"github.com/NaiZi899/Naibox/internal/wire"
 )
 
@@ -114,8 +113,8 @@ var sessionDeadMarkers = []string{"Offline user session not found", "12153"}
 //	换 3 个号就是白跑 3 次往返，最后返回"所有账号不可用"，
 //	把一个内容问题误报成账号池故障。
 //
-// 单独识别之后，core 的动作变成"换提示词重试"（见 internal/prompt 的降级机制），
-// 并且**不罚账号**（内容问题不是账号问题）。
+// 单独识别之后，core 的动作变成"不换号、不罚账号、把上游 400 如实交回客户端"
+// （提示词改写已随提示词网关删除，这里不再有降级重试）。
 //
 // # 三个标记的来源
 //
@@ -240,23 +239,6 @@ type Client struct {
 
 	// SanitizeFingerprints 出站请求体黑名单指纹脱敏开关（默认 true；false 完全还原）。
 	SanitizeFingerprints bool
-
-	// PromptMode 系统提示词模式：prompt.ModePassthrough（默认）/ prompt.ModeCustom /
-	// prompt.ModeAppend。
-	//
-	// 空串按 passthrough 处理（与配置缺省一致，见 prompt.Inject 的真值表）：
-	// 没配过就不改写，一个字节都不动。
-	PromptMode string
-	// PromptText 生效的系统提示词文本（custom 替换 / append 追加时使用）。
-	//
-	// 空串时回落 prompt.Default()，而不是"什么都不做" ——
-	// 后者会让"装配漏了注入"变成一个完全静默的功能失效。
-	PromptText string
-	// PromptGate 内容拦截降级状态机（nil = 永不降级，恒用 PromptText）。
-	//
-	// 由 core 在观察到内容拦截时 Trigger()；本客户端在每次出站前读它，
-	// 处于降级期则改用 prompt.Degraded 中性提示词。
-	PromptGate *prompt.Gate
 
 	// ── 出站身份（全部 opt-in，缺省与改造前逐字节一致）─────────────────
 	//
@@ -466,62 +448,13 @@ func (c *Client) chatBase(a *auth.Auth) string {
 
 // prepareBody 组装出站请求体。
 //
-// # 顺序是硬约束：先提示词替换，再协议改写与脱敏
+// # 出站正文只做一件事：协议改写 + 逐串脱敏
 //
-//	applyPrompt        ← 删掉客户端的 system/developer，插一条我们自己的
-//	PrepareBodyOpt...  ← 强制 stream / 归一 role 与 tool_choice / 注入 thinking /
-//	                     sanitize 逐串擦指纹
-//
-// 先做提示词替换的理由：替换之后，**我们自己的那条 system 是干净的**
-// （不含任何指纹），于是 sanitize 在它上面是零成本的空转，全部算力
-// 都花在真正需要擦的 user/assistant/tool 消息上。
-//
-// 反过来的话，sanitize 要先在客户端的 system 上跑一遍正则，
-// 随后那条消息又被整体删掉 —— 白做功，且顺序一乱就很容易让人以为
-// "sanitize 负责 system"（它不负责，见 internal/prompt 包注释的分工表）。
+// 提示词改写（曾经的 applyPrompt）已随提示词网关一起删除，所以这里不再有
+// "先替换 system 再做 sanitize"的顺序约束 —— 客户端自己的 system 原样发出，
+// sanitize 对全部消息一视同仁地擦黑名单指纹。
 func (c *Client) prepareBody(body []byte) []byte {
-	body = c.applyPrompt(body)
 	return PrepareBodyOptWithEfforts(body, c.SanitizeFingerprints, c.effortsSnapshot())
-}
-
-// applyPrompt 按 PromptMode 与降级状态改写请求体里的系统提示词。
-//
-// # 路由规则只有一份
-//
-// mode × 降级状态的组合已经收进 prompt.Inject（见 internal/prompt/policy.go
-// 的真值表）。本函数只负责一件**装配层**的事：把空正文回落成内置默认，
-// 然后交给那唯一的策略函数。空 mode 不再在这里归一 —— 它的语义（透传）
-// 由策略函数回答，免得同一件事在两处各有一份答案。
-//
-// 之所以不在这里自己写 switch：早先 custom/passthrough 两态时各写一遍是可行的，
-// 一旦加上 append，"降级期 append 该怎么办"就会在调用方和提示词包各有一份答案，
-// 而这两份答案随后必然漂移。策略与装配分开，加模式就不再需要改这里。
-//
-// # append 在降级期为什么与 custom 同路
-//
-// append 的语义是"保留客户端 system，再叠一条网关 system"。降级期存在的前提
-// 正是那份**客户端 system 刚刚撞了内容策略**，此时叠加消不掉任何指纹，
-// 只会让请求体更长、命中逐字匹配表的面积更大。所以降级期一律整段换成
-// 中性提示词，三种模式在这里没有区别（理由详见 internal/prompt/policy.go）。
-//
-// # custom 模式下 PromptText 为空时回落内置默认
-//
-// 见 Client.PromptText 的注释：让"装配漏了注入"表现为"功能仍按默认工作"，
-// 而不是"功能完全不生效且无任何信号"。
-func (c *Client) applyPrompt(body []byte) []byte {
-	if c == nil {
-		return body
-	}
-	mode := c.PromptMode
-	text := c.PromptText
-	if text == "" {
-		text = prompt.Default()
-	}
-	return prompt.Inject(body, prompt.Profile{
-		Name: "default",
-		Mode: mode,
-		Text: text,
-	}, c.PromptGate.Active())
 }
 
 // effortsSnapshot 返回 effort 能力缓存副本；nil 表示未知（透传不降级）。

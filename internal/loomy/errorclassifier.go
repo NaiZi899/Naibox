@@ -139,7 +139,7 @@ var cstZone = time.FixedZone("CST", 8*60*60)
 
 // nextMidnightCST 返回 now 之后最近的 CST 00:00。
 //
-// 边界语义（与 internal/prompt 的同名逻辑一致）：
+// 边界语义（与已删除的 internal/prompt 同名逻辑一致，行为不变）：
 //
 //	23:59:59 → 几秒后的次日 00:00
 //	00:00:00 → **次日** 00:00（刚过零点，下一个零点是明天）

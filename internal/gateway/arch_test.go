@@ -781,7 +781,6 @@ func TestSharedInfraIsGenuinelyShared(t *testing.T) {
 	registered := map[string]bool{
 		"auth":       true, // 凭证结构（上游产出 *auth.Auth，核心 pool/server/admin 消费）
 		"checkinlog": true, // 签到/动作历史日志
-		"prompt":     true, // 提示词降级（出站改写 + 核心降级状态机共用）
 		"wire":       true, // 出站线协议改写（workbuddy 与 codearts 共用，见 wire_reexport.go）
 		// dailycheckin 签到类动作的共享驱动（lobsterai 与 qoder 共用）。
 		//
@@ -861,7 +860,6 @@ func TestSharedInfraIsGenuinelyShared(t *testing.T) {
 	//
 	//	上游 ↔ 上游    例：wire（workbuddy 与 codearts 共用出站改写）
 	//	上游 ↔ 核心    例：auth（上游产出 *auth.Auth，核心 pool/server/admin 消费）
-	//	                     prompt（上游出站改写 + 核心降级状态机共用）
 	//
 	// 只数上游会把第二类误判成"陈旧"。这不是假设 —— 本次把 codearts 的出站
 	// 改写从 internal/upstream 挪到 internal/wire 之后，auth 与 prompt 的

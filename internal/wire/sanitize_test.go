@@ -144,6 +144,5 @@ func TestPrepareBodyDefaultSanitizes(t *testing.T) {
 
 // 出站边界集成：ChatStream 发往上游的 wire body 必须无残留指纹。
 //
-// ⚠ 同样必须把 PromptMode 钉成 passthrough（理由与下面那条 disabled 用例相同）：
-// 默认 custom 模式会先把整条 system 换掉，指纹"消失"就不是脱敏干的，
-// 本用例会变成一条永远绿的假测试。
+// 提示词改写已删除，system 会原样发出，因此本用例测到的"指纹消失"
+// 只可能来自脱敏层本身。
