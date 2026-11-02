@@ -48,6 +48,26 @@ func TestNoteUpstreamRestrictedDisablesAfterThreshold(t *testing.T) {
 	}
 }
 
+// TestStatusCarriesRestrictedMark 状态里必须能看到"被风控标记过"这件事与时刻。
+//
+// 界面靠这两个字段显示「风控」徽标：它不能并进"冷却中" —— 冷却会自己到期，
+// 风控要人工确认后重新启用，两者对用户的下一步动作完全不同。
+func TestStatusCarriesRestrictedMark(t *testing.T) {
+	p := newRestrictedPool(t)
+	p.NoteUpstreamRestricted("u1")
+
+	st, ok := p.Status("u1")
+	if !ok {
+		t.Fatal("池里找不到 u1")
+	}
+	if st.RestrictedStreak != 1 {
+		t.Errorf("Status.RestrictedStreak=%d want 1（界面据此显示风控徽标）", st.RestrictedStreak)
+	}
+	if st.RestrictedAt.IsZero() {
+		t.Error("Status.RestrictedAt 未填充 —— 界面无法回答\"什么时候被标记的\"")
+	}
+}
+
 // TestNoteUpstreamRestrictedStreakClearedBySuccess 一次成功清零计数。
 //
 // 不清的话，跨天的无关抖动会叠加到阈值上。阈值为 1 时首次命中就已经禁用，

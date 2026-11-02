@@ -474,7 +474,10 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	if redisMode == "" {
 		redisMode = "noop"
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	// 池级暂停（上游风控命中后的整池停手）：页面要能解释"为什么一个号都选不出来"，
+	// 否则用户只会看到"账号都健康但请求一直 503"。
+	suspendUntil, suspendReason := h.cfg.Pool.SuspendedUntil()
+	out := map[string]any{
 		"accounts":        h.cfg.Pool.List(),
 		"total":           total,
 		"healthy":         healthy,
@@ -483,7 +486,13 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		"in_flight_full":  inFlightFull,
 		"sticky_sessions": sticky,
 		"redis_mode":      redisMode,
-	})
+	}
+	if !suspendUntil.IsZero() {
+		out["suspend_until"] = suspendUntil.Format(time.RFC3339)
+		out["suspend_reason"] = suspendReason
+		out["suspend_remaining_sec"] = int64(time.Until(suspendUntil).Seconds() + 0.999)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 const defaultMaxBodyMB = 8

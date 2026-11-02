@@ -496,9 +496,9 @@
   /* 设置页重设计（用户本轮要求）新增的呈现类：生效时机徽章 / 组内子块 / 信息条 */
   .badge{font-size:var(--fs-xs);font-family:var(--mono);padding:1px 7px;border-radius:999px;
     border:1px solid currentColor;margin-left:8px;vertical-align:1px}
-  .badge--hot{color:#3fb950}          /* 立即生效 */
-  .badge--cold{color:#d29922}         /* 重启生效 */
-  .badge--ro{color:#8b949e}           /* 只读 */
+  .badge--hot{color:var(--ok)}        /* 立即生效 */
+  .badge--cold{color:var(--warn)}     /* 重启生效 */
+  .badge--ro{color:var(--dim)}        /* 只读 */
   .subgroup{margin:16px 0 6px;font-size:var(--fs-sm);font-weight:600;color:var(--fg);
     padding-top:12px;border-top:1px dashed var(--line)}
   .subgroup:first-child{margin-top:0;padding-top:0;border-top:0}
@@ -550,9 +550,13 @@
   tr:last-child td{border-bottom:0}
   td.mono{font-family:var(--mono);font-size:var(--fs-sm)}
   .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:var(--fs-xs);font-weight:600}
-  .pill.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
-  .pill.warn{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
-  .pill.err{background:color-mix(in srgb,var(--err) 16%,transparent);color:var(--err)}
+  /* 语义胶囊：底色是 16% 淡染，文字再往 --fg 混 70% ——
+     纯语义色直接压在自家淡染上，浅色主题实测只有 3.69:1（warn）/ 3.79:1（ok），
+     低于 AA 4.5:1；混 --fg 之后浅色升到 5.29/5.32，深色 7.10/6.89。
+     同一个表达式在深浅两套主题里都变"更醒目"，不需要写两组值。 */
+  .pill.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:color-mix(in srgb,var(--ok) 70%,var(--fg))}
+  .pill.warn{background:color-mix(in srgb,var(--warn) 16%,transparent);color:color-mix(in srgb,var(--warn) 70%,var(--fg))}
+  .pill.err{background:color-mix(in srgb,var(--err) 16%,transparent);color:color-mix(in srgb,var(--err) 70%,var(--fg))}
   /* 中性胶囊（.pill.dim）：底色是 --dim 的淡染，但**文字用 --fg 而不是 --dim**。
      ─────────────────────────────────────────────────────────────────
      原先文字也用 --dim，在浅色主题下实测对比只有 **3.52:1**，低于 WCAG AA
@@ -848,6 +852,16 @@
      保留 transitionend / animationend 会触发这件事，交互逻辑不受影响。
      必须同时覆盖 transition / animation / scroll-behavior —— 只关其中一项
      时剩下的仍会动，用户看到的是"还是有动画"。 */
+  /* 触屏没有 hover 语义：`:hover` 会一直粘在最后点过的元素上，
+     看起来像"这项被选中了"（行高亮尤其容易被误读成选中态）。
+     这里把悬停态还原成静态样式，而不是删掉 :hover 规则 ——
+     桌面端的悬停反馈要保留。 */
+  @media (hover: none) and (pointer: coarse){
+    tr:hover > td, tbody tr:hover > td{background:inherit}
+    button:hover:not(.primary):not(.danger){background:inherit}
+    .copyable:hover{border-color:var(--line);background:inherit}
+    .copyable:hover .copyhint{opacity:0}
+  }
   @media (prefers-reduced-motion: reduce){
     *,*::before,*::after{
       animation-duration:1ms !important;
@@ -906,6 +920,11 @@
     <button id="conn" class="primary">连接</button>
   </span>
 </header>
+
+<!-- 池级暂停横幅：上游风控命中后整池停手时的唯一全局提示。
+     放在 header 与 main 之间，任何页签都看得见 —— 否则用户会以为是当前页坏了。
+     数据来自 /status 的 suspend_until / suspend_reason（由 renderSuspendBanner 填）。 -->
+<div id="suspendBanner" class="notice warn" hidden style="margin:0 16px"></div>
 
 <main>
  <div class="layout">
@@ -2423,6 +2442,22 @@ let loginProvider = '';
   //
   // 传 null 表示"这一项本次拿不到"，此时显示「—」而不是沿用旧值 ——
   // 沿用旧值会让用户看到一个已经过期的绿点。
+  // renderSuspendBanner 池级暂停的全局提示。
+  //
+  // 判据只有一个：/status 给了 suspend_until。没有这个字段就隐藏 ——
+  // 老后端的响应里没有它，行为与改造前一致（不显示空横幅）。
+  function renderSuspendBanner(s) {
+    const el = $('suspendBanner');
+    if (!el) return;
+    const until = s && s.suspend_until ? Date.parse(s.suspend_until) : NaN;
+    if (!isFinite(until) || until <= Date.now()) { el.hidden = true; el.textContent = ''; return; }
+    const mins = Math.max(1, Math.round((until - Date.now()) / 60000));
+    el.hidden = false;
+    el.textContent = '上游风控暂停中：所有账号暂时停手，约 ' + mins + ' 分钟后自动恢复'
+      + (s.suspend_reason ? '（' + s.suspend_reason + '）' : '')
+      + ' —— 期间请求会快速失败并带 Retry-After，不再打上游。';
+  }
+
   function renderTopStats(h, s) {
     const el = $('topstats');
     if (!el) return;
@@ -3774,6 +3809,17 @@ let loginProvider = '';
   function statusCellHTML(a) {
     if (!a) return '<span class="pill dim">—</span>';
     if (a.disabled) return '<span class="pill err">已禁用</span>';
+    // 风控标记（上游 11140 账号级限制）：与"冷却中"是两回事 —— 冷却会自己到期，
+    // 风控要人工确认后重新启用，而且换号继续打会让标记扩散到同一条出口上的其它号。
+    // 图标 + 文字双通道：不只靠颜色（色盲与灰度截图下颜色会消失）。
+    if (a.restricted_streak > 0) {
+      const ago = a.restricted_at ? (' ' + timeAgo(a.restricted_at)) : '';
+      const why = '上游风控标记（11140 账号级限制）'
+        + (a.reason ? ('：' + a.reason) : '')
+        + '｜风控不是限流：需人工确认后重新启用；换号继续打同一出口会让标记扩散';
+      return '<span class="pill warn" title="' + esc(why) + '">⚠ 风控' + esc(ago) + '</span>';
+    }
+
 
     const ex = a.last_error || null;
     // titleText 组装悬浮提示：**当前状态那一句** + 状态码 / 分类 / 详细解读 / 时间。
@@ -11080,6 +11126,7 @@ let multCatalogFailed = false;
     // 顶栏状态条：复用本次已拿到的 h/s 与 manifest，不额外发请求。
     // 放在 manifest 加载之后，这样"上游 N"才是本次的真实值。
     renderTopStats(h, s);
+    renderSuspendBanner(s);
     // 任务调度面板同样复用 manifest.jobs，不额外发请求。
     renderJobs();
     // 服务名同样来自 manifest（B8）：清掉前端硬编码后，

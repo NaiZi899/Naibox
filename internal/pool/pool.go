@@ -122,6 +122,13 @@ type Status struct {
 	// 选 Transport），这里下发是为了让"这个号走哪条线"在 /status 里可见 ——
 	// 排查 11140 时这是第一个要看的东西（是某条线脏了，还是这个号自身脏了）。
 	Egress string `json:"egress,omitempty"`
+
+	// RestrictedStreak / RestrictedAt 上游风控标记的计数与时刻（0 / 零值 = 没被标记过）。
+	//
+	// 界面据此显示「风控」徽标：这一档不能并进"冷却中"—— 冷却会自己到期，
+	// 风控要人工确认后重新启用，两者对用户的下一步动作完全不同。
+	RestrictedStreak int       `json:"restricted_streak,omitempty"`
+	RestrictedAt     time.Time `json:"restricted_at,omitempty"`
 }
 
 // ErrorExplainView 上游对一次错误的解读（脱敏后可下发给前端）。
@@ -245,6 +252,12 @@ type entry struct {
 	// 一次风控可能是上游误判或瞬时抖动，但同一个号连续被拒就是真状态 ——
 	// 实测被标记的号会持续 403 一整天，而它在此之前一直显示"健康"。
 	restrictedStreak int
+	// restrictedAt 最近一次被上游风控标记的时刻（与 restrictedStreak 一起落盘）。
+	//
+	// 界面用它回答"这个号是什么时候被标记的"：风控不是等一会儿就好的限流，
+	// 只有时刻能让人判断"标记是不是发生在刚才那次异常之后"。
+	// 不复用 lastErr —— 那是任何一个错误的时刻，语义不同。
+	restrictedAt time.Time
 
 	// inFlight 单账号在途请求数（运行态，不持久化）。用 atomic 避免 Pick 热路径拿写锁。
 	inFlight atomic.Int64
@@ -383,7 +396,8 @@ type stateAccount struct {
 	// 这件事被忘掉 —— 那样它永远攒不满阈值。
 	SessionDeadStreak int `json:"session_dead_streak,omitempty"`
 	// RestrictedStreak 连续被上游风控拒绝的次数（见 entry.restrictedStreak）。
-	RestrictedStreak int `json:"restricted_streak,omitempty"`
+	RestrictedStreak int       `json:"restricted_streak,omitempty"`
+	RestrictedAt     time.Time `json:"restricted_at,omitempty"`
 	// Egress 该账号绑定的出站线路 id（见 entry.egress）。
 	//
 	// 旧状态文件没有这个字段 → 空串 → 管理台显示"未绑定"，
@@ -1857,6 +1871,7 @@ func (p *Pool) NoteUpstreamRestricted(uid string) (disabled bool) {
 	e.restrictedStreak++
 	e.errTotal++
 	e.lastErr = time.Now()
+	e.restrictedAt = e.lastErr
 	if e.restrictedStreak >= restrictedThreshold {
 		e.disabled = true
 		e.reason = "上游风控（连续 " + itoa(e.restrictedStreak) + " 次，需人工确认后启用）"
@@ -2352,12 +2367,14 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		LastSuccessTime: e.lastSuccess,
 		LastErrTime:     e.lastErr,
 		// 深拷贝一份解读：与 Quota 同一条理由 —— 调用方改了 Status 不该改到池内状态。
-		LastError:    cloneExplain(e.lastExplain),
-		Until:        e.until,
-		InFlight:     int(e.inFlight.Load()),
-		BreakerFails: e.fails,
-		BreakerUntil: e.breakerUntil,
-		Egress:       e.egress,
+		LastError:        cloneExplain(e.lastExplain),
+		Until:            e.until,
+		InFlight:         int(e.inFlight.Load()),
+		BreakerFails:     e.fails,
+		BreakerUntil:     e.breakerUntil,
+		Egress:           e.egress,
+		RestrictedStreak: e.restrictedStreak,
+		RestrictedAt:     e.restrictedAt,
 	}
 	if st.Cooling {
 		// 冷却剩余秒数（向上取整，避免 0 显示为已到期）。
@@ -2430,6 +2447,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 			// session 失效连续计数（旧文件无此字段 → 0 = 全新计数）。
 			sessionDeadStreak: s.SessionDeadStreak,
 			restrictedStreak:  s.RestrictedStreak,
+			restrictedAt:      s.RestrictedAt,
 			egress:            s.Egress,
 		}
 	}
@@ -2526,6 +2544,7 @@ func (p *Pool) stateOverviewLocked() stateFile {
 			// session 失效连续计数必须落盘（理由见 stateAccount.SessionDeadStreak）。
 			SessionDeadStreak: e.sessionDeadStreak,
 			RestrictedStreak:  e.restrictedStreak,
+			RestrictedAt:      e.restrictedAt,
 			Egress:            e.egress,
 		}
 	}
