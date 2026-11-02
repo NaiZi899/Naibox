@@ -109,7 +109,7 @@
     --fs-sm:12px;        /* 次要正文 */
     --fs-md:13px;        /* 表格正文 */
     --fs-lg:14px;        /* 页面正文 */
-    --fs-xl:24px;        /* 仪表盘大数字 */
+    --fs-xl:24px;--fs-display:22px;--fs-lead:16px;        /* 仪表盘大数字 */
     /* 两个历史遗留的一次性字号也收进来，免得继续以魔法数字散落。
        它们**不属于**上面 6 档（页标题本就比正文大一档、代码块要半像素）。 */
     --fs-title:15px;
@@ -147,15 +147,15 @@
   header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;
     padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel);
     position:sticky;top:0;z-index:9}
-  h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.2px}
-  h1 small{color:var(--dim);font-weight:400;margin-left:8px;font-size:12px}
+  h1{font-size:var(--fs-title);margin:0;font-weight:650;letter-spacing:.2px}
+  h1 small{color:var(--dim);font-weight:400;margin-left:8px;font-size:var(--fs-sm)}
   .spacer{flex:1}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block}
   .dot.ok{background:var(--ok);box-shadow:0 0 8px var(--ok)}
   .dot.bad{background:var(--err);box-shadow:0 0 8px var(--err)}
   /* 顶栏状态条：一排常驻读数（健康 / 账号 / 上游 / 刷新时刻）。
      用较窄的等宽字体与细分隔线，避免与主标题抢注意力。 */
-  .topstats{display:flex;align-items:center;gap:0;font-size:12px;color:var(--dim)}
+  .topstats{display:flex;align-items:center;gap:0;font-size:var(--fs-sm);color:var(--dim)}
   .topstats .ts{padding:0 10px;border-left:1px solid var(--line);white-space:nowrap}
   .topstats .ts:first-child{border-left:0}
   .topstats .ts b{color:var(--fg);font-weight:600;font-family:ui-monospace,Consolas,monospace}
@@ -180,7 +180,7 @@
   .sidebar{position:sticky;top:66px;align-self:start;display:flex;flex-direction:column;gap:2px;
     background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px}
   .sidebar button{text-align:left;background:transparent;border:0;border-radius:8px;
-    padding:9px 11px 9px 15px;font-size:13px;color:var(--dim);cursor:pointer;
+    padding:9px 11px 9px 15px;font-size:var(--fs-md);color:var(--dim);cursor:pointer;
     transition:background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease);
     position:relative}
   .sidebar button:hover{background:var(--panel2);color:var(--fg)}
@@ -204,7 +204,7 @@
   .navgroup{display:flex;flex-direction:column;gap:2px}
   .navgroup + .navgroup{margin-top:6px;padding-top:6px;border-top:1px solid var(--line)}
   .navgrouphd{display:flex;align-items:center;gap:6px;background:transparent;border:0;
-    padding:5px 8px 5px 10px;font-size:10.5px;letter-spacing:.5px;color:var(--dim);
+    padding:5px 8px 5px 10px;font-size:var(--fs-micro);letter-spacing:.5px;color:var(--dim);
     text-transform:uppercase;cursor:pointer;font-weight:600}
   .navgrouphd:hover{color:var(--fg)}
   /* 折叠三角：用 border 画，旋转表示展开/收起 */
@@ -225,13 +225,13 @@
     padding:0 5px;letter-spacing:0;text-transform:none}
   .navitems{display:flex;flex-direction:column;gap:2px}
   /* 契约降级提示：manifest 拉不到时在导航里显示原因，而不是静默少几个面板 */
-  .navdegraded{font-size:11px;line-height:1.5;color:var(--warn);
+  .navdegraded{font-size:var(--fs-xs);line-height:1.5;color:var(--warn);
     border:1px dashed var(--line);border-radius:8px;padding:7px 9px}
   .content{display:grid;gap:18px;min-width:0}
   /* 账号表的上游分组标题行：整行跨列，作为该组账号的视觉分组线。
      用 <tr> 而不是额外表格 —— 保持单一 table 让列宽与主体一致。 */
   tr.grouprow > td{background:var(--panel2);border-top:1px solid var(--line);
-    padding:7px 12px;font-weight:600;font-size:12px;letter-spacing:.2px}
+    padding:7px 12px;font-weight:600;font-size:var(--fs-sm);letter-spacing:.2px}
   tr.grouprow:first-child > td{border-top:0}
   tr.grouprow .gname{margin-right:8px}
   /* 分组行右侧的动作区（T10：添加账号 / 重载 auths）。
@@ -240,7 +240,7 @@
      float:right 只把动作区推到右边，其余不受影响。 */
   tr.grouprow .gacts{float:right;display:inline-flex;align-items:center;gap:6px;font-weight:400}
   /* 分组行内的小按钮：比面板标题上的按钮更小，因为它在表格行里 */
-  tr.grouprow .gact{padding:2px 8px;font-size:11px;font-weight:400}
+  tr.grouprow .gact{padding:2px 8px;font-size:var(--fs-xs);font-weight:400}
   /* 折叠三角（R3）。与模型面板的 .mcaret **同一套画法**（border 画三角），
      这样"可折叠"在一处学会、处处认得出。
      ⚠ 这里刻意**不**复用 .mcaret 这个类名 —— 见 accountGroupRow 的注释：
@@ -276,7 +276,7 @@
     margin-right:2px;opacity:.7}
   .acctgroup.collapsed > .ghead .acaret{transform:rotate(-90deg)}
   .acctgroup.collapsed > .gfolded-hint{display:inline}
-  .acctgroup > .gfolded-hint{display:none;font-size:11px}
+  .acctgroup > .gfolded-hint{display:none;font-size:var(--fs-xs)}
   /* ⚠ 选择器必须是 `.acctgroup > .ghead > .gacts`（三层）。
      我第一版写的是 `.acctgroup > .gacts` —— 而 .gacts 是 .ghead 的**子节点**，
      不是 .acctgroup 的直接子节点，所以那条规则**从来没有匹配过**，
@@ -296,7 +296,7 @@
      重载 auths）**全部右对齐**。靠的就是 margin-left:auto ——
      在 flex 容器里把该元素及其后所有兄弟推到行尾。 */
   .acctgroup > .ghead > .gacts{margin-left:auto;display:inline-flex;align-items:center;gap:6px}
-  .acctgroup > .ghead > .gacts .gact{padding:2px 8px;font-size:11px;font-weight:400}
+  .acctgroup > .ghead > .gacts .gact{padding:2px 8px;font-size:var(--fs-xs);font-weight:400}
   .acctgroup > table{width:100%;border-collapse:collapse}
   .acctgroup.collapsed > table{display:none}
   /* ⚠ 这里**不能**有 tr.acctrow.collapsed{display:none} —— 加回来就是把回归带回来。
@@ -325,22 +325,22 @@
   /* 通用上游面板（列表 + 领取）的样式。
      刻意朴素：它要能渲染**任意**上游的任意列表形状，
      所以不做花哨卡片，只保证"看着整齐、信息不丢"。 */
-  .ghead2{font-size:12px;font-weight:600;color:var(--dim);margin:0 0 8px;
+  .ghead2{font-size:var(--fs-sm);font-weight:600;color:var(--dim);margin:0 0 8px;
     letter-spacing:.3px}
   .ghead2 + .ghead2{margin-top:14px}
   .glist{display:flex;flex-direction:column;gap:6px}
   .gitem{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-    padding:8px 11px;background:var(--panel2);border-radius:9px;font-size:13px}
+    padding:8px 11px;background:var(--panel2);border-radius:9px;font-size:var(--fs-md)}
   .gitem .gname{font-weight:600}
-  .gitem .gqty{font-size:12px;color:var(--acc);font-weight:600}
-  .gitem .gmeta{flex-basis:100%;font-size:11px;color:var(--dim);
+  .gitem .gqty{font-size:var(--fs-sm);color:var(--acc);font-weight:600}
+  .gitem .gmeta{flex-basis:100%;font-size:var(--fs-xs);color:var(--dim);
     font-family:ui-monospace,Consolas,monospace;word-break:break-all}
-  .gbad{padding:8px 11px;border-radius:9px;font-size:12px;color:var(--err);
+  .gbad{padding:8px 11px;border-radius:9px;font-size:var(--fs-sm);color:var(--err);
     border:1px solid var(--err);background:transparent}
   .kvs{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px 14px}
   /* 嵌套对象（U2 的关键）：缩进 + 弱化标签，区分顶层与子项 */
   .kvs.nested{display:grid;grid-template-columns:1fr;padding:6px 10px;background:rgba(0,0,0,.04);border-radius:6px;margin-top:4px}
-  .kvs .kv{display:flex;justify-content:space-between;gap:10px;font-size:12px;
+  .kvs .kv{display:flex;justify-content:space-between;gap:10px;font-size:var(--fs-sm);
     padding:5px 0;border-bottom:1px solid var(--line)}
   .kvs .k{color:var(--dim)}
   .kvs .v{font-weight:600;word-break:break-all;text-align:right}
@@ -357,7 +357,7 @@
   @media (max-width:820px){
     .layout{grid-template-columns:1fr;padding:12px}
     .sidebar{position:static;flex-direction:row;overflow-x:auto;gap:6px}
-    .sidebar button{white-space:nowrap;padding:7px 10px;font-size:12px}
+    .sidebar button{white-space:nowrap;padding:7px 10px;font-size:var(--fs-sm)}
     .sidebar button.active::before{display:none}
     .sidebar .badge{display:none}
     /* 窄屏导航变成横向滚动条：分组折叠在横排里会把入口藏得找不着，
@@ -392,18 +392,18 @@
      同时给一个 `.field.chk.stack` 修饰类，限定适用范围，不污染其他
      复选框组（如「签到 / 保活 / 猫到站领奖」这些 label 短的，不需要单行）。 */
   .field.chk.stack{display:grid;grid-template-columns:auto 1fr;column-gap:8px;row-gap:2px;align-items:start;padding:4px 0}
-  .field.chk.stack .hint{grid-column:2;font-size:11px;color:var(--dim);margin-top:1px;line-height:1.4}
+  .field.chk.stack .hint{grid-column:2;font-size:var(--fs-xs);color:var(--dim);margin-top:1px;line-height:1.4}
   .field.chk.stack label{line-height:1.5;align-self:start}
   .fieldgroup{display:flex;flex-direction:column;gap:10px}
   .fieldgroup + .fieldgroup{margin-top:4px}
   .fieldgroup.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px 14px}
   .field{display:flex;flex-direction:column;gap:5px}
-  .field label{font-size:11px;color:var(--dim);letter-spacing:.3px}
-  .field .hint{font-size:11px;color:var(--dim)}
+  .field label{font-size:var(--fs-xs);color:var(--dim);letter-spacing:.3px}
+  .field .hint{font-size:var(--fs-xs);color:var(--dim)}
   .field input[type=text],.field input[type=number],.field select{width:100%}
   .field.chk{flex-direction:row;align-items:center;gap:8px}
   .field.chk input{width:auto}
-  .field.chk label{font-size:13px;color:var(--fg)}
+  .field.chk label{font-size:var(--fs-md);color:var(--fg)}
   /* ---- 自定义上游：表格下方的内联编辑器 ----
      为什么需要这几条，而不全复用现成类：
        · `section>h2` 只命中**面板**标题。编辑器头是面板内部的表单头，
@@ -414,10 +414,10 @@
          编辑器有 14 个字段，单列会拉出一条很长的表单，所以只在编辑器内换成
          自适应栅格；全局 .fieldgroup 一个字都不动。 */
   .ceditor{border-top:1px solid var(--line)}
-  .ceditor>h2{margin:0;padding:11px 16px;font-size:12px;font-weight:650;letter-spacing:.6px;
+  .ceditor>h2{margin:0;padding:11px 16px;font-size:var(--fs-sm);font-weight:650;letter-spacing:.6px;
     color:var(--dim);border-bottom:1px solid var(--line);
     display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-  .ceditor>h2 b{color:var(--fg);font-size:13px;letter-spacing:0}
+  .ceditor>h2 b{color:var(--fg);font-size:var(--fs-md);letter-spacing:0}
   .ceditor .fieldgroup{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
     gap:12px 16px}
   .ceditor .field.wide{grid-column:1/-1}
@@ -425,44 +425,44 @@
     padding:12px 16px;border-top:1px solid var(--line);background:var(--panel2)}
   /* 表格「操作」列的多个按钮：inline-flex 排开，行高不被按钮自身的内边距撑高 */
   .row-actions{display:inline-flex;gap:4px;flex-wrap:wrap}
-  .row-actions button{padding:2px 8px;font-size:11px;font-weight:400}
+  .row-actions button{padding:2px 8px;font-size:var(--fs-xs);font-weight:400}
   /* API Key 的显示/隐藏按钮贴在输入框右侧：不额外占一列，两者关系也更明确 */
   .keyfield{position:relative}
-  .keyfield input{width:100%;padding-right:58px;font-family:var(--mono);font-size:12px}
+  .keyfield input{width:100%;padding-right:58px;font-family:var(--mono);font-size:var(--fs-sm)}
   .keyfield button{position:absolute;right:4px;top:50%;transform:translateY(-50%);
-    padding:2px 8px;font-size:11px;background:transparent;border-color:transparent;color:var(--dim)}
+    padding:2px 8px;font-size:var(--fs-xs);background:transparent;border-color:transparent;color:var(--dim)}
   .keyfield button:hover{color:var(--acc);border-color:transparent}
   /* 关于软件 */
   .about-hero{display:flex;align-items:center;gap:16px;padding:4px 0 18px;border-bottom:1px solid var(--line)}
   .about-icon{width:64px;height:64px;border-radius:16px;flex:none}
-  .about-name{font-size:22px;font-weight:700;letter-spacing:.2px}
-  .about-tagline{margin-top:4px;font-size:13px;color:var(--dim)}
-  .about-intro{max-width:760px;margin-top:16px;font-size:13px;line-height:1.9}
+  .about-name{font-size:var(--fs-display);font-weight:700;letter-spacing:.2px}
+  .about-tagline{margin-top:4px;font-size:var(--fs-md);color:var(--dim)}
+  .about-intro{max-width:760px;margin-top:16px;font-size:var(--fs-md);line-height:1.9}
   /* 使用说明（关于页内的 markdown 渲染结果）。
      # 为什么单立一组样式而不是复用 .about-intro
      说明书里有 h2/h3/列表/代码块，.about-intro 只描述段落；混用会让
      "标题比正文小"这类排版事故出现。宽度收到 820px：长行读起来累。 */
   .about-manual{max-width:820px;margin-top:22px;padding-top:16px;border-top:1px solid var(--line)}
-  .about-manual h3{font-size:13px;margin:0 0 10px;color:var(--fg);letter-spacing:.4px}
-  .about-manual h2{font-size:16px;margin:22px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--line)}
-  .about-manual h4{font-size:13px;margin:16px 0 6px;color:var(--fg)}
-  .about-manual p{margin:8px 0;font-size:13px;line-height:1.85;color:var(--fg)}
+  .about-manual h3{font-size:var(--fs-md);margin:0 0 10px;color:var(--fg);letter-spacing:.4px}
+  .about-manual h2{font-size:var(--fs-lead);margin:22px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .about-manual h4{font-size:var(--fs-md);margin:16px 0 6px;color:var(--fg)}
+  .about-manual p{margin:8px 0;font-size:var(--fs-md);line-height:1.85;color:var(--fg)}
   .about-manual ul{margin:8px 0 8px 18px;padding:0}
-  .about-manual li{font-size:13px;line-height:1.85;margin:4px 0}
-  .about-manual code{font-family:var(--mono);font-size:12px;background:var(--code-bg);
+  .about-manual li{font-size:var(--fs-md);line-height:1.85;margin:4px 0}
+  .about-manual code{font-family:var(--mono);font-size:var(--fs-sm);background:var(--code-bg);
     border:1px solid var(--line);border-radius:5px;padding:1px 5px}
   .about-manual pre{background:var(--code-bg);border:1px solid var(--line);border-radius:9px;
     padding:11px 13px;overflow:auto;margin:10px 0}
-  .about-manual pre code{background:transparent;border:0;padding:0;font-size:12.5px;line-height:1.7}
+  .about-manual pre code{background:transparent;border:0;padding:0;font-size:var(--fs-code);line-height:1.7}
   .about-manual a{color:var(--acc)}
-  .about-manual table{border-collapse:collapse;margin:10px 0;font-size:12.5px}
+  .about-manual table{border-collapse:collapse;margin:10px 0;font-size:var(--fs-code)}
   .about-manual th,.about-manual td{border:1px solid var(--line);padding:6px 10px;text-align:left}
   /* 分页条：说明书 12 章一次铺开会把人淹掉，按「三章一页」切成 4 页。
      # 为什么分页而不是折叠
      折叠只能藏，不能减少"当前这一屏要读多少"；分页能让人一眼知道总量（第 3/4 页）。 */
   .md-pager{display:flex;align-items:center;gap:6px;flex-wrap:wrap;
     margin:18px 0 2px;padding-top:12px;border-top:1px solid var(--line)}
-  .md-pager button{padding:3px 10px;font-size:12px;background:var(--panel2);
+  .md-pager button{padding:3px 10px;font-size:var(--fs-sm);background:var(--panel2);
     border:1px solid var(--line);border-radius:7px;color:var(--fg);cursor:pointer}
   .md-pager button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
   .md-pager button:disabled{opacity:.4;cursor:not-allowed}
@@ -472,13 +472,13 @@
   .about-intro p{margin:0 0 12px}
   .about-actions{margin-top:18px}
   .about-friends{margin-top:28px}
-  .about-friends h3{margin:0 0 10px;font-size:12px;font-weight:650;letter-spacing:.6px;color:var(--dim)}
+  .about-friends h3{margin:0 0 10px;font-size:var(--fs-sm);font-weight:650;letter-spacing:.6px;color:var(--dim)}
   .friend-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
   .friend-card{display:flex;flex-direction:column;align-items:flex-start;gap:4px;
     padding:12px 14px;text-align:left;background:var(--panel2);border:1px solid var(--line);border-radius:10px}
   .friend-card:hover{border-color:var(--acc)}
-  .friend-name{font-size:13px;font-weight:600;color:var(--fg)}
-  .friend-url{font-size:11px;color:var(--dim);font-family:var(--mono);word-break:break-all}
+  .friend-name{font-size:var(--fs-md);font-weight:600;color:var(--fg)}
+  .friend-url{font-size:var(--fs-xs);color:var(--dim);font-family:var(--mono);word-break:break-all}
   /* 关窗询问：页面内模态，保持与控制台同一套令牌（深浅色都跟随）。 */
   .cmodal-mask{position:fixed;inset:0;z-index:90;display:flex;align-items:center;justify-content:center;
     padding:24px;background:rgba(0,0,0,.42)}
@@ -487,59 +487,69 @@
     border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 48px rgba(0,0,0,.28)}
   .cmodal-head{display:flex;align-items:flex-start;gap:14px}
   .cmodal-icon{width:44px;height:44px;border-radius:12px;flex:none}
-  .cmodal-title{font-size:15px;font-weight:650;color:var(--fg)}
-  .cmodal-text{margin-top:6px;font-size:12px;line-height:1.7;color:var(--dim)}
+  .cmodal-title{font-size:var(--fs-title);font-weight:650;color:var(--fg)}
+  .cmodal-text{margin-top:6px;font-size:var(--fs-sm);line-height:1.7;color:var(--dim)}
   .cmodal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px;flex-wrap:wrap}
-  .cmodal-note{margin-top:14px;font-size:11px;color:var(--dim)}
+  .cmodal-note{margin-top:14px;font-size:var(--fs-xs);color:var(--dim)}
   fieldset{border:1px solid var(--line);border-radius:10px;padding:14px;margin:0 0 16px}
-  legend{font-size:12px;color:var(--dim);padding:0 8px;letter-spacing:.4px}
+  legend{font-size:var(--fs-sm);color:var(--dim);padding:0 8px;letter-spacing:.4px}
   /* 设置页重设计（用户本轮要求）新增的呈现类：生效时机徽章 / 组内子块 / 信息条 */
-  .badge{font-size:11px;font-family:var(--mono);padding:1px 7px;border-radius:999px;
+  .badge{font-size:var(--fs-xs);font-family:var(--mono);padding:1px 7px;border-radius:999px;
     border:1px solid currentColor;margin-left:8px;vertical-align:1px}
   .badge--hot{color:#3fb950}          /* 立即生效 */
   .badge--cold{color:#d29922}         /* 重启生效 */
   .badge--ro{color:#8b949e}           /* 只读 */
-  .subgroup{margin:16px 0 6px;font-size:12px;font-weight:600;color:var(--fg);
+  .subgroup{margin:16px 0 6px;font-size:var(--fs-sm);font-weight:600;color:var(--fg);
     padding-top:12px;border-top:1px dashed var(--line)}
   .subgroup:first-child{margin-top:0;padding-top:0;border-top:0}
   /* 文件选择做成按钮外观：原生 input[type=file] 在暗色主题里是一块白底控件，
      与旁边三个按钮并排会像外站嵌入。 */
-  .btnfile{display:inline-flex;align-items:center;padding:3px 10px;font-size:12px;
+  .btnfile{display:inline-flex;align-items:center;padding:3px 10px;font-size:var(--fs-sm);
     background:var(--panel2);border:1px solid var(--line);border-radius:8px;
     color:var(--fg);cursor:pointer;white-space:nowrap}
   .btnfile:hover{border-color:var(--acc);color:var(--acc)}
-  .info-line{font-size:12px;color:var(--dim);line-height:1.7;margin:0 0 12px}
+  .info-line{font-size:var(--fs-sm);color:var(--dim);line-height:1.7;margin:0 0 12px}
   /* 开关 + 参数并排成一行（如：启用签到 [9,21]） */
   .pair{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
   .pair .field{margin:0}
   .pair input[type=text],.pair input[type=number]{width:120px}
-  .readonly dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0;font-size:13px}
-  .readonly dt{color:var(--dim);font-size:12px}
-  .readonly dd{margin:0;font-family:var(--mono);font-size:12px;word-break:break-all}
+  .readonly dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0;font-size:var(--fs-md)}
+  .readonly dt{color:var(--dim);font-size:var(--fs-sm)}
+  .readonly dd{margin:0;font-family:var(--mono);font-size:var(--fs-sm);word-break:break-all}
   section{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-  section>h2{margin:0;padding:11px 16px;font-size:12px;font-weight:650;letter-spacing:.6px;
+  section>h2{margin:0;padding:11px 16px;font-size:var(--fs-sm);font-weight:650;letter-spacing:.6px;
     text-transform:uppercase;color:var(--dim);border-bottom:1px solid var(--line);
     display:flex;align-items:center;gap:10px}
   .body{padding:16px}
   .cards{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch}
   .card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:11px 14px;
     display:flex;flex-direction:column;justify-content:center;min-height:66px;width:max-content;min-width:120px}
-  .card .k{font-size:11px;color:var(--dim);letter-spacing:.4px}
-  .card .v{font-size:24px;font-weight:700;font-family:var(--mono);margin-top:4px}
+  .card .k{font-size:var(--fs-xs);color:var(--dim);letter-spacing:.4px}
+  .card .v{font-size:var(--fs-xl);font-weight:700;font-family:var(--mono);margin-top:4px;
+    /* 等宽数位：统计卡并排时，「1,234」与「1234」必须占同样的宽度 ——
+       否则读者要靠位数去数量级，而小字号下这一点并不明显。 */
+    font-variant-numeric:tabular-nums}
   /* 仪表盘内的子段落：一块一个 h3，块间用分隔线切开。
      每个子段自己的 .body 有内边距，这里不再重复 padding。 */
   .boardsec + .boardsec{border-top:1px solid var(--line)}
-  .boardsec h3{margin:0;padding:11px 16px 0;font-size:13px;font-weight:600;
+  .boardsec h3{margin:0;padding:11px 16px 0;font-size:var(--fs-md);font-weight:600;
     letter-spacing:.3px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   .boardsec h3 .spacer{flex:1}
   .boardsec h3 button{font-weight:400}
   .v.ok{color:var(--ok)} .v.warn{color:var(--warn)} .v.err{color:var(--err)} .v.dim{color:var(--dim)}
-  table{width:100%;border-collapse:collapse;font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:var(--fs-md)}
+  /* 数字列：等宽数位 + 右对齐。.mono 现在覆盖全部数值列与 UID，
+     只补数位宽度不动对齐；纯计数列再额外加 .cell-num 走右对齐。 */
+  /* 字号令牌的**刻意例外**：徽章/角标/分页标签用 9–11.5px，低于令牌floor(10.5)。
+     它们不承载正文信息（1–2 个汉字或数字），放大反而挤压布局；
+     改这些值前先量一次实际渲染，别按"统一字号"的直觉动。 */
+  td.mono{font-variant-numeric:tabular-nums}
+  .cell-num{text-align:right;font-variant-numeric:tabular-nums}
   th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
-  th{color:var(--dim);font-weight:500;font-size:11px;letter-spacing:.4px;text-transform:uppercase}
+  th{color:var(--dim);font-weight:500;font-size:var(--fs-xs);letter-spacing:.4px;text-transform:uppercase}
   tr:last-child td{border-bottom:0}
-  td.mono{font-family:var(--mono);font-size:12px}
-  .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600}
+  td.mono{font-family:var(--mono);font-size:var(--fs-sm)}
+  .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:var(--fs-xs);font-weight:600}
   .pill.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
   .pill.warn{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
   .pill.err{background:color-mix(in srgb,var(--err) 16%,transparent);color:var(--err)}
@@ -557,16 +567,16 @@
   .ggroup:last-child{border-bottom:0}
   .ghead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
     padding:9px 16px;background:var(--panel2);border-bottom:1px solid var(--line)}
-  .ghead .gname{font-weight:600;font-size:13px}
+  .ghead .gname{font-weight:600;font-size:var(--fs-md)}
   .ggroup table{width:100%}
   /* 说明列会很长（最长约 50 个汉字），必须解除全局 nowrap 并限宽换行，
      否则整张表被撑开、右侧的「操作」按钮要横向滚动才看得到。 */
   .ggroup td.gtask{white-space:normal;max-width:230px;line-height:1.5}
   /* 到期列：内容短（"剩 18 天"/"9-30（剩 19 天）"），不换行以免行高被撑开。
      颜色语义由内层 span 的 warn/err 类负责，这里只管排版。 */
-  .ggroup td.exp{white-space:nowrap;font-size:12px}
-  .ggroup td.gdesc{white-space:normal;max-width:440px;line-height:1.6;font-size:12px}
-  .ggroup td.gdesc .howto{color:var(--dim);font-size:11px;margin-top:5px}
+  .ggroup td.exp{white-space:nowrap;font-size:var(--fs-sm)}
+  .ggroup td.gdesc{white-space:normal;max-width:440px;line-height:1.6;font-size:var(--fs-sm)}
+  .ggroup td.gdesc .howto{color:var(--dim);font-size:var(--fs-xs);margin-top:5px}
   .chips{display:flex;flex-wrap:wrap;gap:7px}
   /* 任务进度条：细、无圆角感、与数值同列。
      光看 "4/5" 不如一眼看出还剩多少，尤其是在一屏十几行任务时。 */
@@ -577,14 +587,14 @@
   /* 次要按钮：接单是登记动作、不产生收益，视觉上不应与「领取 N 分」争注意力。 */
   .ghost{background:transparent;border-color:var(--line);color:var(--dim)}
   .ghost:hover{border-color:var(--acc);color:var(--acc)}  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;
-    padding:3px 11px;font-family:var(--mono);font-size:12px;cursor:pointer}
+    padding:3px 11px;font-family:var(--mono);font-size:var(--fs-sm);cursor:pointer}
   .chip:hover{border-color:var(--acc);color:var(--acc)}
-  .chip span{color:var(--dim);font-size:11px;margin-left:5px}
+  .chip span{color:var(--dim);font-size:var(--fs-xs);margin-left:5px}
   /* 成本倍率标记：x0 免费 / 低倍率中性 / 高倍率醒目。
      倍率是"选哪个模型"的决策依据，所以给个比 ctx 更强的视觉权重 ——
      同时用颜色区分"免费"与"贵"，但**不只靠颜色**（各自带 x 前缀的数字，色盲也可读）。 */
   .chip .mult{margin-left:6px;padding:1px 6px;border-radius:999px;
-    background:color-mix(in srgb,var(--dim) 14%,transparent);color:var(--dim);font-size:11px}
+    background:color-mix(in srgb,var(--dim) 14%,transparent);color:var(--dim);font-size:var(--fs-xs)}
   .chip .mult.free{color:var(--ok);background:color-mix(in srgb,var(--ok) 15%,transparent)}
   .chip .mult.hi{color:var(--warn);background:color-mix(in srgb,var(--warn) 17%,transparent)}
   /* 「上游未提供倍率」（x无）**没有**自己的样式规则（R4）。
@@ -609,7 +619,7 @@
   .mgroup:last-child{margin-bottom:0}
   .mgrouphead{display:flex;align-items:center;gap:7px;width:100%;
     padding:5px 8px;background:transparent;border:0;border-radius:6px;
-    font-size:11px;font-weight:600;letter-spacing:.4px;color:var(--dim);
+    font-size:var(--fs-xs);font-weight:600;letter-spacing:.4px;color:var(--dim);
     text-transform:uppercase;cursor:pointer;font-family:inherit;text-align:left}
   .mgrouphead:hover{color:var(--fg);background:var(--panel2)}
   /* 折叠三角：与 .navgrouphd::before 同一套画法（border 画三角） */
@@ -622,15 +632,15 @@
      不需要动画，且避免 height 过渡在长列表上的重排开销。 */
   .mgroup.collapsed .chips{display:none}
   .mowner{color:var(--fg);text-transform:none;letter-spacing:0}
-  .mcount2{font-weight:400;font-size:10.5px;text-transform:none;letter-spacing:0}
+  .mcount2{font-weight:400;font-size:var(--fs-micro);text-transform:none;letter-spacing:0}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-  textarea{width:100%;min-height:74px;resize:vertical;font-family:var(--mono);font-size:13px}
-  .key{flex:1;min-width:230px;font-family:var(--mono);font-size:12px}
+  textarea{width:100%;min-height:74px;resize:vertical;font-family:var(--mono);font-size:var(--fs-md)}
+  .key{flex:1;min-width:230px;font-family:var(--mono);font-size:var(--fs-sm)}
   pre{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:13px;
     margin:12px 0 0;white-space:pre-wrap;word-break:break-word;
-    font-family:var(--mono);font-size:12.5px;max-height:340px;overflow:auto}
+    font-family:var(--mono);font-size:var(--fs-code);max-height:340px;overflow:auto}
   .err{color:var(--err)} .dim{color:var(--dim)}
-  .tog{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:12px;user-select:none}
+  .tog{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:var(--fs-sm);user-select:none}
   /* 分段按钮的选中态。历史代码用内联 style 切换，这里补一条 class 规则，
      供新增的视图切换使用，避免再堆内联样式。 */
   .tog button.on{background:var(--acc);color:#fff;font-weight:600}
@@ -643,7 +653,7 @@
   .copyhint{float:right;font-size:10px;color:var(--acc);opacity:0;
     transition:opacity var(--dur-fast) var(--ease);letter-spacing:.3px}
   pre.copyable:hover{border-color:var(--acc)}
-  .minibtn{font-size:11px;padding:1px 7px;border-radius:6px;margin-left:6px;vertical-align:middle}
+  .minibtn{font-size:var(--fs-xs);padding:1px 7px;border-radius:6px;margin-left:6px;vertical-align:middle}
   /* 全局通知区：固定在右上角、挂在 body 下（不在 .content 里），
      因此不受「面板 section 显隐」影响 —— 这是修复「刷新按钮没提示」的关键。
      历史实现把提示写进 #taskbar，而 #taskbar 在账号池 section 内，
@@ -652,7 +662,7 @@
     display:flex;flex-direction:column;gap:8px;align-items:flex-end;
     max-width:min(420px,42vw);pointer-events:none}
   .notice{pointer-events:auto;background:var(--panel2);border:1px solid var(--line);
-    border-radius:10px;padding:9px 13px;font-size:12.5px;line-height:1.6;
+    border-radius:10px;padding:9px 13px;font-size:var(--fs-code);line-height:1.6;
     box-shadow:var(--sh-3);max-height:40vh;overflow:auto;
     word-break:break-word;white-space:normal}
   .notice[hidden]{display:none}
@@ -665,14 +675,14 @@
     max-width:min(520px,52vw)}
   /* 统一分页条：任务历史与请求日志共用同一套控件与语义（见 renderPager）。 */
   .pager{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
-    padding:9px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim)}
-  .pager button{font-size:12px;padding:3px 10px}
+    padding:9px 16px;border-top:1px solid var(--line);font-size:var(--fs-sm);color:var(--dim)}
+  .pager button{font-size:var(--fs-sm);padding:3px 10px}
   .pager button:disabled{opacity:.45;cursor:not-allowed}
   .pager .pageno{font-family:var(--mono);color:var(--fg)}
-  .pager select{font-size:12px;padding:3px 8px}
+  .pager select{font-size:var(--fs-sm);padding:3px 8px}
   /* 每页条数改为可输入的数字框：宽度只够放 3 位数字，避免撑开分页条。
      去掉原生上下箭头，改用键盘上下键 + 直接输入（箭头在小宽度下会挤掉数字位）。 */
-  .pager .pagesize{width:62px;font-size:12px;padding:3px 6px;font-family:var(--mono);
+  .pager .pagesize{width:62px;font-size:var(--fs-sm);padding:3px 6px;font-family:var(--mono);
     text-align:center;background:var(--panel2);color:var(--fg);
     border:1px solid var(--line);border-radius:8px}
   .pager .pagesize:focus{outline:none;border-color:var(--acc)}
@@ -4027,9 +4037,9 @@ let loginProvider = '';
       token_expiry: `<td>${tokenExpiryCellHTML(a)}</td>`,
       checkin: `<td>${ck}</td>`,
       welfare: `<td>${welfareCellHTML(a)}</td>`,
-      success: `<td class="mono">${esc(a.success_count)}</td>`,
-      breaker: `<td class="mono">${esc(a.breaker_fails)}</td>`,
-      in_flight: `<td class="mono">${esc(a.in_flight)}</td>`,
+      success: `<td class="mono cell-num">${esc(a.success_count)}</td>`,
+      breaker: `<td class="mono cell-num">${esc(a.breaker_fails)}</td>`,
+      in_flight: `<td class="mono cell-num">${esc(a.in_flight)}</td>`,
       ops: `<td style="white-space:nowrap">${act}</td>`,
     };
     const cols = acctColumnsFor(providerOf(a));
@@ -6513,8 +6523,8 @@ let loginProvider = '';
         <td class="mono dim" title="完整 key 只在创建时显示一次">${esc(k.masked || k.id)}</td>
         <td>${st}</td>
         <td>${quota} ${remain}</td>
-        <td class="mono">${esc(k.requests)}</td>
-        <td class="mono">${esc(k.fails)}</td>
+        <td class="mono cell-num">${esc(k.requests)}</td>
+        <td class="mono cell-num">${esc(k.fails)}</td>
         <td class="mono">${k.rpm > 0 ? k.rpm + '/min' : '不限'}</td>
         <td class="dim">${created}</td>
         <td style="white-space:nowrap">${ops}</td>
