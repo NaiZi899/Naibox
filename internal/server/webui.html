@@ -3808,10 +3808,11 @@ let loginProvider = '';
   // 误读成"现在还是坏的"。
   function statusCellHTML(a) {
     if (!a) return '<span class="pill dim">—</span>';
-    if (a.disabled) return '<span class="pill err">已禁用</span>';
     // 风控标记（上游 11140 账号级限制）：与"冷却中"是两回事 —— 冷却会自己到期，
     // 风控要人工确认后重新启用，而且换号继续打会让标记扩散到同一条出口上的其它号。
     // 图标 + 文字双通道：不只靠颜色（色盲与灰度截图下颜色会消失）。
+    // 排在「已禁用」之前：风控也是禁用态，但它比"已禁用"具体 —— 后者可能是
+    // 人工停用或凭证失效，用户要做的下一步完全不同。
     if (a.restricted_streak > 0) {
       const ago = a.restricted_at ? (' ' + timeAgo(a.restricted_at)) : '';
       const why = '上游风控标记（11140 账号级限制）'
@@ -3819,6 +3820,7 @@ let loginProvider = '';
         + '｜风控不是限流：需人工确认后重新启用；换号继续打同一出口会让标记扩散';
       return '<span class="pill warn" title="' + esc(why) + '">⚠ 风控' + esc(ago) + '</span>';
     }
+    if (a.disabled) return '<span class="pill err">已禁用</span>';
 
 
     const ex = a.last_error || null;
